@@ -35,6 +35,8 @@ JUDGE_SYSTEM = ("너는 주식 신호 질의응답 시스템의 평가자다. �
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # 값이 질문 시점(t)과 같아도 되는 키: 시점 자체, 신호일, 신호일에 만든 판단 기록
 SAME_DAY_OK = {"as_of", "signal_row_date", "date", "model_block_start", "window_kst"}
+# 데이터가 아니라 안내 문구인 키: 상한으로 낮췄거나 거부했다는 설명에는 요청한 이후 날짜가 그대로 들어간다
+NOTICE_KEYS = {"as_of_note", "note", "rule", "source"}
 
 
 def violations(result, as_of: str) -> list[str]:
@@ -54,7 +56,7 @@ def violations(result, as_of: str) -> list[str]:
                 return
             is_document = "available_from" in node  # 검색 문서는 공개 시점(available_from)으로만 판단한다
             for k, v in node.items():
-                if is_document and k in ("date", "text"):
+                if (is_document and k in ("date", "text")) or k in NOTICE_KEYS:
                     continue
                 walk(v, k, depth + 1)
         elif isinstance(node, list):
@@ -113,7 +115,10 @@ def write_report(rows: list[dict]) -> None:
     """평가 결과 요약과 질문별 표를 evaluation/reports/query_eval.md 에 쓴다."""
     df = pd.DataFrame(rows)
     rate = lambda col: f"{df[col].dropna().astype(bool).mean():.0%} ({int(df[col].dropna().astype(bool).sum())}/{df[col].notna().sum()})"
-    same_model = config.JUDGE_MODEL == llm.scoring_model_id()
+    base_id = lambda m: m.split(".", 1)[1] if m.split(".", 1)[0] in ("us", "global", "eu", "apac") else m  # 교차 리전 경로 접두사는 빼고 비교
+    same_model = base_id(config.JUDGE_MODEL) == base_id(llm.scoring_model_id())
+    done = df[df["faithfulness"].notna()] if "faithfulness" in df else df.iloc[0:0]
+    judged = lambda f: (f(done) + (f" ({len(done)}/{len(df)}개 채점)" if len(done) < len(df) else "")) if len(done) else "보류 (judge 미실행)"
     lines = [
         "# /query 에이전트 평가", "",
         f"> 질문 {len(df)}개 · 에이전트 모델 {llm.scoring_model_id()} · judge {config.JUDGE_MODEL}"
@@ -124,10 +129,10 @@ def write_report(rows: list[dict]) -> None:
         f"| 기대 도구를 부름 | {rate('sources_ok')} |",
         f"| 기대 방향을 답에 씀 | {rate('direction_ok')} |",
         f"| 도구 결과에 시점 이후 자료 없음 (자동 검사) | {rate('leak_ok')} |",
-        f"| judge: 시점 위반 없음 | {(~df['temporal_violation']).mean():.0%} |",
-        f"| judge: 기대 사항 충족 | {df['meets_note'].mean():.0%} |",
-        f"| judge: 근거 충실도 평균 (1~5) | {df['faithfulness'].mean():.2f} |",
-        f"| judge: 질문 적합도 평균 (1~5) | {df['relevance'].mean():.2f} |",
+        f"| judge: 시점 위반 없음 | {judged(lambda d: f'{(~d.temporal_violation.astype(bool)).mean():.0%}')} |",
+        f"| judge: 기대 사항 충족 | {judged(lambda d: f'{d.meets_note.astype(bool).mean():.0%}')} |",
+        f"| judge: 근거 충실도 평균 (1~5) | {judged(lambda d: f'{d.faithfulness.mean():.2f}')} |",
+        f"| judge: 질문 적합도 평균 (1~5) | {judged(lambda d: f'{d.relevance.mean():.2f}')} |",
         f"| 비용 (에이전트) | ${df['cost_usd'].sum():.3f} |", "",
         "## 질문별", "",
         "| # | 질문 | 시점 | 도구 | 방향 | 유출 검사 | 충실 | 적합 | 기대 | 시점 위반 | judge 의견 |",
@@ -136,30 +141,52 @@ def write_report(rows: list[dict]) -> None:
     mark = lambda v: "-" if v is None or (isinstance(v, float) and pd.isna(v)) else ("O" if v else "X")
     for i, r in enumerate(rows, start=1):
         lines.append(f"| {i} | {r['question']} | {mark(r['as_of_ok'])} | {mark(r['sources_ok'])} | {mark(r['direction_ok'])} | "
-                     f"{mark(r['leak_ok'])} | {r['faithfulness']} | {r['relevance']} | {mark(r['meets_note'])} | "
-                     f"{'X' if r['temporal_violation'] else 'O'} | {r['comment']} |")
+                     f"{mark(r['leak_ok'])} | {r.get('faithfulness') or '-'} | {r.get('relevance') or '-'} | {mark(r.get('meets_note'))} | "
+                     f"{mark(None if r.get('temporal_violation') is None else not r['temporal_violation'])} | {r.get('comment') or '판정 보류'} |")
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main():
-    """질문마다 에이전트로 답하고 자동 검사와 judge 채점을 한 뒤 보고서를 쓴다."""
+EMPTY_JUDGE = {k: None for k in JudgeScore.model_fields}
+
+
+def judge_safely(row, result, model) -> dict:
+    """judge 채점. 요청 제한 등으로 실패하면 보류(None)로 두고 이유를 남긴다."""
+    try:
+        return judge(row, result, model).model_dump()
+    except Exception as e:
+        return {**EMPTY_JUDGE, "comment": None, "judge_error": type(e).__name__}
+
+
+def main(judge_only: bool = False, use_judge: bool = True):
+    """질문마다 에이전트로 답하고 자동 검사와 judge 채점을 한 뒤 보고서를 쓴다.
+
+    judge_only 면 에이전트를 다시 부르지 않고, 저장된 답변(DETAILS)으로 자동 검사를 다시 계산하고 judge 가 보류된 질문만 채점한다.
+    use_judge 가 거짓이면 judge 를 부르지 않는다(--recheck: 저장된 답변으로 자동 검사만 다시 계산).
+    """
     queries = pd.read_csv(QUERIES, dtype=str).fillna("")
     judge_model = llm.get_judge_llm()
+    saved = {d["question"]: d for d in json.loads(DETAILS.read_text(encoding="utf-8"))} if judge_only and DETAILS.exists() else {}
     rows, details = [], []
     for _, row in queries.iterrows():
-        try:
-            result = agent.answer(row["question"])
-        except Exception as e:  # 한 질문의 실패가 평가 전체를 멈추지 않게 한다
-            result = {"answer": f"오류: {type(e).__name__}: {e}", "contexts": [],
-                      "trace": [{"step": "answer", "as_of": None, "cost_usd": 0.0, "error": str(e)}]}
-        checks = auto_checks(row, result)
-        score = judge(row, result, judge_model)
-        rows.append({"question": row["question"], **checks, **score.model_dump()})
-        details.append({"question": row["question"], "result": result, "checks": checks, "judge": score.model_dump()})
+        if judge_only and row["question"] in saved:
+            d = saved[row["question"]]
+            result = d["result"]
+            checks = auto_checks(row, result)  # 검사 규칙이 바뀌었을 수 있어 다시 계산한다
+            done = d["judge"].get("faithfulness") is not None
+            score = d["judge"] if done or not use_judge else judge_safely(row, result, judge_model)
+        else:
+            try:
+                result = agent.answer(row["question"])
+            except Exception as e:  # 한 질문의 실패가 평가 전체를 멈추지 않게 한다
+                result = {"answer": f"오류: {type(e).__name__}: {e}", "contexts": [],
+                          "trace": [{"step": "answer", "as_of": None, "cost_usd": 0.0, "error": str(e)}]}
+            checks = auto_checks(row, result)
+            score = judge_safely(row, result, judge_model)
+        rows.append({"question": row["question"], **checks, **score})
+        details.append({"question": row["question"], "result": result, "checks": checks, "judge": score})
         print(f"{row['question'][:30]:<30} 시점 {checks['as_of_ok']} 도구 {checks['sources_ok']} 방향 {checks['direction_ok']} "
-              f"유출검사 {checks['leak_ok']} | judge 충실 {score.faithfulness} 적합 {score.relevance} 기대 {score.meets_note} "
-              f"시점위반 {score.temporal_violation}", flush=True)
+              f"유출검사 {checks['leak_ok']} | judge {score.get('judge_error') or '완료'}", flush=True)
     DETAILS.parent.mkdir(parents=True, exist_ok=True)
     DETAILS.write_text(json.dumps(details, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     write_report(rows)
@@ -167,4 +194,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    recheck = "--recheck" in sys.argv
+    main(judge_only="--judge-only" in sys.argv or recheck, use_judge=not recheck)

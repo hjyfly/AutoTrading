@@ -117,3 +117,22 @@ def test_정답이_없는_날은_적중률에서_뺀다():
 def test_가격이_빠진_날짜가_있으면_멈춘다():
     with pytest.raises(ValueError):
         bt.simulate(pd.Series([UP, UP, UP], index=DAYS), SAMSUNG.iloc[:2], INVERSE)
+
+
+def test_기준B_는_두_모델을_같은_날_현금으로_시작해_비교한다(monkeypatch, tmp_path):
+    days = pd.bdate_range("2026-02-02", periods=3)
+    samsung = pd.Series([100.0, 110.0, 99.0], index=days)
+    inverse = pd.Series([100.0, 90.0, 100.0], index=days)
+    monkeypatch.setattr(bt, "load_prices", lambda: (samsung, inverse))
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "NEWS_START", "2026-02-02")
+    monkeypatch.setattr(config, "NEWS_END", "2026-02-04")
+    pd.DataFrame({"label": [UP, DOWN, FLAT]}, index=days).to_parquet(tmp_path / "labels.parquet")
+    numeric = pd.DataFrame({"signal": [UP] * 6}, index=pd.bdate_range("2026-01-28", periods=3).append(days))
+    news = pd.DataFrame({"signal": [FLAT, DOWN, DOWN], "adjusted": [True, True, True], "news_scored": True}, index=days)
+    r = bt.evaluate_b(numeric, news)
+    numeric_expected = 0.999 * 99 / 100  # 2/2 매수(현금 시작) 후 끝까지 삼성
+    news_expected = 1.0 * 0.999 * 100 / 90  # 2/2 보합이라 현금, 2/3 인버스 매수, 2/4 인버스 +11.1%
+    assert r["judge_b"]["numeric"]["total_return"] == pytest.approx(numeric_expected - 1)
+    assert r["judge_b"]["news"]["total_return"] == pytest.approx(news_expected - 1)
+    assert r["period"] == ("2026-02-02", "2026-02-04", 3)

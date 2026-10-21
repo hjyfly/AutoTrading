@@ -77,6 +77,8 @@ def _live(kind: str, name: str, start: str, end: str) -> pd.DataFrame:
         return collect_prices.fetch_ohlcv(config.SAMSUNG_CODE, start, end)
     if kind == "prices" and name == "samsung_investor_flows":
         return collect_prices.fetch_foreign_net(config.SAMSUNG_CODE, start, end)
+    if kind == "prices" and name == f"inverse_{config.INVERSE_ETF_CODE}":
+        return collect_prices.fetch_ohlcv(config.INVERSE_ETF_CODE, start, end)
     if kind == "prices" and name in config.KR_EXTRA:
         return collect_prices.fetch_close(config.KR_EXTRA[name], start, end)
     if kind == "macro":
@@ -93,8 +95,10 @@ def last_closed_date(kind: str, name: str, now: pd.Timestamp | None = None) -> p
     """그 시장에서 종가가 확정된 가장 최근 현지 날짜."""
     tz, close = MARKET_CLOSE.get(kind if kind == "prices" else name, US_CLOSE)
     local = (now if now is not None else pd.Timestamp.now(tz="UTC")).tz_convert(tz).tz_localize(None)
-    hour, minute = map(int, close.split(":"))
     day = local.normalize()
+    if kind == "prices":  # 수능일 등 늦게 마감하는 날
+        close = config.KRX_LATE_CLOSE.get(str(day.date()), close)
+    hour, minute = map(int, close.split(":"))
     return day if local - day >= pd.Timedelta(hours=hour, minutes=minute) else day - pd.Timedelta(days=1)
 
 
@@ -109,6 +113,7 @@ def series_until(kind: str, name: str, cut: pd.Timestamp) -> tuple[pd.DataFrame,
         try:
             if start <= end:
                 fresh = _live(kind, name, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+                fresh = fresh[fresh.index <= end]  # 제공처가 끝날을 무시하고 장중 행을 줘도 버린다
                 fresh = fresh[fresh.index > stored.index.max()] if not stored.empty else fresh
                 stored = pd.concat([stored, fresh]) if not stored.empty else fresh
                 note = f"저장된 데이터 + 실시간 조회({len(fresh)}일 추가)"

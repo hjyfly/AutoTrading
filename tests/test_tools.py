@@ -183,3 +183,8 @@ def test_에이전트_도구_목록():
     names = {t.name for t in tools.TOOLS}
     assert {"get_price", "get_indicators", "search_news", "get_signal", "get_news_judgement"} <= names
     assert all(t.description for t in tools.TOOLS)
+
+
+def test_수능일은_16시30분_마감():
+    assert tools.last_closed_date("prices", "samsung_ohlcv", pd.Timestamp("2026-11-19 07:00", tz="UTC")) == pd.Timestamp("2026-11-18")  # 16:00 KST
+    assert tools.last_closed_date("prices", "samsung_ohlcv", pd.Timestamp("2026-11-19 07:31", tz="UTC")) == pd.Timestamp("2026-11-19")

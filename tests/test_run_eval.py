@@ -61,3 +61,9 @@ def test_방향_기대가_없으면_검사하지_않는다():
     row = ROW.copy()
     row["expected_direction"] = ""
     assert ev.auto_checks(row, make_result("2026-03-04", [], "x", []))["direction_ok"] is None
+
+
+def test_상한_안내_문구의_날짜는_위반이_아니다():
+    result = {"as_of": "2026-03-04", "as_of_note": "요청 시점 2026-03-04 이후(2026-03-13)는 조회하지 않아 2026-03-04 기준으로 답함",
+              "rows": [{"date": "2026-03-03"}]}
+    assert ev.violations(result, "2026-03-04") == []

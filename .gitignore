@@ -25,3 +25,6 @@ Thumbs.db
 data/processed/selected_news.parquet
 data/scores/eval/
 data/processed/signals_live.parquet
+data/processed/scoreboard.json
+data/logs/
+data/scores/traces_archive/

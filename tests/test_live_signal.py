@@ -80,3 +80,13 @@ def test_결과는_날짜별로_덮어쓴다(tmp_path, monkeypatch):
     ls.save({"date": pd.Timestamp("2026-10-22"), "signal": "하락"})
     saved = pd.read_parquet(tmp_path / "live.parquet")
     assert saved["signal"].tolist() == ["상승", "하락"]
+
+
+def test_뉴스_없이_다시_실행해도_이전_뉴스_보정을_유지한다(tmp_path, monkeypatch):
+    monkeypatch.setattr(ls, "LIVE_PATH", tmp_path / "live.parquet")
+    t = pd.Timestamp("2026-10-21")
+    ls.save({"date": t, "model": "base", "signal": "상승", "numeric_signal_label": "보합", "news_consensus": 4.0, "news_consensus_conf": 0.8})
+    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": k.get("feature_set", "base"), "signal": "보합",
+                                                               "confidence": 0.5, "data_sources": {}})
+    out = ls.make_signal("2026-10-21", with_news=False)
+    assert out["news_consensus"] == 4.0 and out["signal"] == "상승"

@@ -5,7 +5,9 @@ JUDGE_REGION = "us-east-1"  # "us." 교차 리전 프로필은 미국 리전에�
 JUDGE_TEMPERATURE = 0
 
 # 뉴스 채점 모델. .env 의 BEDROCK_MODEL_ID 가 없으면 이 값을 쓴다
-SCORING_MODEL_DEFAULT = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+# 2026-10-21 마이그레이션: us. 프로필이 요청 제한으로 호출당 2~5분 걸려 같은 Sonnet 4.5 의 global. 교차 리전 프로필로 옮겼다.
+# us. 경로로 채점한 판단 기록은 data/scores/traces_archive/us_sonnet45/ 에 보관했다. judge 는 기존 그대로 둔다(사용자 결정)
+SCORING_MODEL_DEFAULT = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # 데이터 기간 (SERVICE.md 섹션 5)
 DATA_START = "2023-10-23"
@@ -36,6 +38,7 @@ KST = "Asia/Seoul"
 MARKET_CLOSE = {"prices": ("Asia/Seoul", "15:30"), "hstech": ("Asia/Hong_Kong", "16:10"),
                 "dxy": ("America/New_York", "17:15"), "wti_fut": ("America/New_York", "17:15")}  # ICE·NYMEX 선물은 17:00 ET 마감
 US_MARKET_CLOSE = ("America/New_York", "16:30")
+KRX_LATE_CLOSE = {"2026-11-19": "16:30"}  # 수능일 등 늦게 마감하는 날(KRX 공지 기준으로 추가한다)
 
 # Google 뉴스 RSS 검색을 신호 구간보다 며칠 앞에서 시작할지. 발행일을 하루 넘게 늦춰 배정하므로 넓게 잡는다
 RSS_LOOKBACK_DAYS = 4
@@ -102,6 +105,8 @@ SCORING_PERSONAS = {
     "risk_manager": "리스크 관리자. 하방 위험, 거시 충격, 정책·지정학 불확실성을 중시하고 낙관을 경계한다.",
 }
 SCORES_PATH = "data/scores/news_scores.parquet"
+THROTTLE_RETRIES = 10  # Bedrock 요청 제한(Throttling) 때 다시 시도하는 횟수
+THROTTLE_WAIT_SEC = 60
 TRACES_DIR = "data/scores/traces"
 
 # 미래 정보 유출 테스트 (DAY2_PLAN.md 3절, 기본값)
@@ -184,6 +189,17 @@ LGBM_PARAMS = {
 }
 
 MIN_TRAIN_ROWS = 120  # 재학습에 필요한 최소 학습 행
+
+# 매일 자동 실행과 알림 (사용자 결정: Gmail)
+DAILY_RUN_TIME_KST = "15:20"  # 작업 스케줄러 등록 시각. 뉴스 구간(~15:15)이 닫힌 뒤
+LOG_DIR = "data/logs"
+SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 465
+NAVER_BASIC_URL = "https://m.stock.naver.com/api/stock/{code}/basic"  # 오늘 거래 여부 확인용(마지막 체결 시각)
+
+# 실시간 성적표 (②안 앞으로의 성과 비교, 기본값)
+SCOREBOARD_PATH = "data/processed/scoreboard.json"
+DRIFT_WINDOW = 20  # 최근 정답 확정 신호 N 개로 성능 저하를 본다
+# 경고: 최근 N 개 3분류 정확도가 같은 기간 '항상 가장 많은 정답' 비율보다 낮으면 (모델이 단순 규칙보다 못함)
 
 # 뉴스 보정 규칙 (DAY3_PLAN.md 3절 방법 A, 사용자 결정). 결과를 보기 전에 고정한다
 NEWS_ADJUST_SCORE = 3

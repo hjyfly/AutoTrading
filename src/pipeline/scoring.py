@@ -1,6 +1,7 @@
 import json
 import operator
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -224,7 +225,19 @@ def main(dates: list[str] | None = None):
         if (Path(config.TRACES_DIR) / f"{pd.Timestamp(t).date()}.json").exists():
             print(pd.Timestamp(t).date(), "이미 채점됨")
             continue
-        trace = score_day(t)
+        trace = None
+        for attempt in range(config.THROTTLE_RETRIES):
+            try:
+                trace = score_day(t)
+                break
+            except Exception as e:  # Bedrock 요청 제한이면 기다렸다 다시, 그 밖의 오류는 그대로 알린다
+                if "Throttling" not in type(e).__name__ and "Throttling" not in str(e):
+                    raise
+                print(pd.Timestamp(t).date(), f"요청 제한, {config.THROTTLE_WAIT_SEC}초 뒤 다시 ({attempt + 1}/{config.THROTTLE_RETRIES})", flush=True)
+                time.sleep(config.THROTTLE_WAIT_SEC)
+        if trace is None:
+            print("요청 제한이 풀리지 않아 멈춘다. 다시 실행하면 이어서 채점한다", flush=True)
+            break
         f = trace["final"]
         print(pd.Timestamp(t).date(), f"합의 {f['score']:+d} (확신도 {f['confidence']:.2f}),",
               "채점자", {p: o["score"] for p, o in trace["round2"].items()}, f"비용 ${trace['cost_usd']:.4f}", flush=True)

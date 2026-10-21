@@ -90,7 +90,8 @@ def judge(result: pd.DataFrame, labels: pd.DataFrame) -> dict:
 
 def write_report(results: dict[str, tuple[pd.DataFrame, dict]]) -> Path:
     """evaluation/reports/leak_test.md 에 판정과 날짜별 답을 쓴다."""
-    lines = ["# 미래 정보 유출 테스트", "", f"> 모델: {llm.scoring_model_id()} · 기준: DAY2_PLAN.md 3절", ""]
+    today = pd.Timestamp.now(tz=config.KST).date()
+    lines = ["# 미래 정보 유출 테스트", "", f"> 작성일: {today} · 모델: {llm.scoring_model_id()} · 기준: DAY2_PLAN.md 3절", ""]
     for name, (result, verdict) in results.items():
         lines += [f"## {name}", "",
                   f"- 판정: **{'통과' if verdict['passed'] else '실패'}**",

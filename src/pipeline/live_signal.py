@@ -90,6 +90,11 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
     out = numeric_signal(as_of)
     t = out["date"]
     out.update(numeric_signal_label=out["signal"], news_status="요청 안 함", news_consensus=None, news_consensus_conf=None)
+    previous = _previous_news(t)
+    if not with_news and previous is not None:  # 같은 날 다시 실행해도 이미 만든 뉴스 보정은 지우지 않는다
+        out.update(news_consensus=previous[0], news_consensus_conf=previous[1],
+                   signal=news_signal.adjust(out["signal"], previous[0], previous[1]),
+                   news_status="이전에 만든 뉴스 채점을 다시 씀")
     if with_news:
         if not news_ready(t):
             out["news_status"] = f"{t.date()} {config.SIGNAL_CUTOFF_KST} 이후에 뉴스 보정을 만들 수 있다"
@@ -103,10 +108,24 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
     return out
 
 
+def _previous_news(t: pd.Timestamp) -> tuple[float, float] | None:
+    """그날 기존 모델 기록에 남아 있는 뉴스 합의 점수와 확신도."""
+    if not LIVE_PATH.exists():
+        return None
+    live = pd.read_parquet(LIVE_PATH)
+    if "model" not in live.columns:
+        live["model"] = "base"
+    rows = live[(live.index == t) & (live["model"] == "base")]
+    if rows.empty or pd.isna(rows["news_consensus"].iloc[-1]):
+        return None
+    return float(rows["news_consensus"].iloc[-1]), float(rows["news_consensus_conf"].iloc[-1])
+
+
 def save(result: dict):
     """신호 결과 한 줄을 signals_live.parquet 에 (날짜, 모델) 기준으로 덮어 쓴다."""
     row = pd.DataFrame([{k: v for k, v in result.items() if k != "data_sources"}]).set_index("date")
     row["model"] = result.get("model", "base")
+    row["created_at"] = pd.Timestamp.now(tz=config.KST).tz_localize(None)  # 실제로 그 시각에 만든 신호인지 가리기 위해
     if LIVE_PATH.exists():
         old = pd.read_parquet(LIVE_PATH)
         if "model" not in old.columns:

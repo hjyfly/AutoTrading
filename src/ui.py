@@ -8,12 +8,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # streamlit run 으로 실행해도 src 를 찾게 한다
 
+import json
+
 import altair as alt
 import pandas as pd
 import streamlit as st
 
 from src import agent, config, llm, tools
-from src.pipeline import live_signal
+from src.pipeline import live_signal, scoreboard
 
 st.set_page_config(page_title=f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
 
@@ -28,7 +30,10 @@ def load_signals() -> pd.DataFrame:
         numeric.loc[news.index, "signal"] = news["signal"]
     live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
     if live_path.exists():
-        live = pd.read_parquet(live_path)[["signal", "confidence"]]
+        live = pd.read_parquet(live_path)
+        if "model" in live.columns:  # 차트에는 최종 신호(기존 모델)만 쓴다
+            live = live[live["model"] == "base"]
+        live = live[["signal", "confidence"]]
         numeric = pd.concat([numeric[~numeric.index.isin(live.index)], live]).sort_index()
     return numeric
 
@@ -122,7 +127,7 @@ with data_col:
     if "note" in sig:
         st.info(sig["note"])
 
-    tab_chart, tab_ind, tab_judge, tab_news, tab_perf = st.tabs(["가격·신호", "지표", "판단 기록", "뉴스", "성과"])
+    tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live = st.tabs(["가격·신호", "지표", "판단 기록", "뉴스", "성과", "실시간 성적"])
     with tab_chart:
         days = st.slider("기간(거래일)", 20, 250, 120)
         st.altair_chart(price_chart(as_of, days), width="stretch")
@@ -163,6 +168,23 @@ with data_col:
         else:
             st.caption("선택한 날짜 전까지의 모의 매매 자산 곡선. 전체 성과 판정은 evaluation/reports/day3_backtest.md")
             st.altair_chart(chart, width="stretch")
+    with tab_live:
+        st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다(②안). "
+                   "기존 모델과 후보 모델을 비교하고, 장 마감 뒤에 만든 사후 기록은 제외한다.")
+        if st.button("성적표 새로 계산"):
+            with st.spinner("계산 중"):
+                scoreboard.build()
+        board_path = Path(config.SCOREBOARD_PATH)
+        if not board_path.exists():
+            st.info("아직 성적표가 없다. 위 버튼으로 만든다.")
+        else:
+            board = json.loads(board_path.read_text(encoding="utf-8"))
+            st.caption(f"계산 시각 {board['updated_at']} · 가격 마지막 날 {board.get('price_last_date', '-')}")
+            for line in scoreboard.summary_lines(board):
+                (st.warning if "경고" in line else st.write)(line)
+            curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
+            if curves:
+                st.line_chart(pd.DataFrame(curves))
 
 # ---- 왼쪽: 질의응답 ----
 with chat_col:

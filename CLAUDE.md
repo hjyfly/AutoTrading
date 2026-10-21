@@ -10,6 +10,8 @@
   - judge(평가용 LLM)는 src/config.py 의 상수(JUDGE_MODEL·JUDGE_REGION·JUDGE_TEMPERATURE)로 고정하고 바꾸지 않는다. 버전 비교는 항상 같은 judge 로 한다
   - judge 는 .env 의 리전과 별개로 JUDGE_REGION 에서 호출한다
   - 개발 테스트: judge 와 채점 모델이 같은 Sonnet 4.5 여도 된다. 평가 리포트에 "같은 모델 평가(편향 가능)"라고 적는다
+  - 채점·에이전트는 global. 프로필, judge 는 us. 프로필이다(2026-10-21 요청 제한으로 채점 경로만 마이그레이션). 둘 다 같은 Sonnet 4.5 가중치다
+  - 채점 모델 ID 를 바꾸면 유출 테스트를 다시 돌리고, 뉴스 구간 전체를 다시 채점한다(점수 표에 모델이 섞이면 멈춘다)
   - 최종 검증: judge 를 채점 모델과 다른 모델로 바꾼다. 바꾼 뒤에는 개발 중 평가 점수와 직접 비교하지 않는다
   - judge 호출 비용도 PoC 한도에 포함한다. cost_log.csv 에 역할(scoring | judge | agent | embedding)을 함께 기록한다
 - Agent 생성은 langchain.agents 의 create_agent 를 쓴다
@@ -50,7 +52,10 @@ src/pipeline/train.py            LightGBM 워크포워드 학습
 src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙)
 src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(그 달 재학습 시점, 정답 기간 간격)
                                  뉴스 보정은 15:15 이후 요청할 때만(LLM 7회). 결과는 data/processed/signals_live.parquet
-src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡선·지표·판단 기록)
+src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
+src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고
+src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(기존·후보·뉴스 보정) → 성적표 → Gmail 알림
+src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_PASSWORD·NOTIFY_TO)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
 tests/                           위 모듈의 테스트
 .claude/agents/                  개발용 검증 서브에이전트 (아래 "검증 에이전트" 참고)
@@ -86,6 +91,7 @@ evaluation/reports/  PoC 보고서
   - 있음: DART_API_KEY, FRED_API_KEY(지금은 미사용. 옛 FRED 원본을 다시 만들 때만)
   - 선택: LLM_PROVIDER(기본 bedrock), BEDROCK_MODEL_ID(기본 config.SCORING_MODEL_DEFAULT = Sonnet 4.5)
   - 추가 필요: BEDROCK_EMBEDDING_MODEL_ID (RAG 색인 단계에서)
+  - 선택: GMAIL_SENDER, GMAIL_APP_PASSWORD, NOTIFY_TO (Gmail 알림. 값은 코드·로그·문서에 남기지 않는다)
   - 나중에 추가: ANTHROPIC_API_KEY
 - 시점 규칙(SERVICE.md 섹션 6): 데이터를 읽는 함수는 모두 as_of 날짜를 받고, 그 시점에 알 수 없던 데이터는 돌려주지 않는다
   - 숫자 데이터는 t-1일 종가까지, 뉴스는 t-1일 15:15 ~ t일 15:15 (KST)
