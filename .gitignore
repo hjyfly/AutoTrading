@@ -1,0 +1,22 @@
+# 비밀 값
+.env
+.env.*
+
+# 수집 원본(기사 원문 포함)과 재생성 가능한 색인
+data/raw/
+data/index/
+data/processed/news.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# 에디터·OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

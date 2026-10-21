@@ -1,0 +1,12 @@
+langchain
+langchain-aws
+langgraph
+python-dotenv
+pytest
+pandas
+pyarrow
+requests
+pykrx
+finance-datareader
+fredapi
+yfinance
