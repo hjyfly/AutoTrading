@@ -200,11 +200,17 @@ def _save_raw(df: pd.DataFrame, path: Path) -> pd.DataFrame:
 def main(signal_dates: list[str] | None = None):
     """샘플 신호일마다 GDELT·RSS 기사를 모아 data/raw/news 와 data/processed/news.parquet 에 저장한다.
 
+    signal_dates 가 ["all"] 이면 뉴스 구간의 모든 거래일, 없으면 샘플 신호일(매주 수요일)을 수집한다.
     원본: GDELT 는 <날짜>.parquet, RSS 는 rss_<날짜>.parquet. 이미 있는 원본은 다시 받지 않는다.
     처음 수집한 <날짜>.parquet 에는 발행 시각 처리가 잘못된 RSS 행이 섞여 있어, 그 파일에서는 GDELT 행만 쓴다.
     """
     days = trading_days()
-    targets = [pd.Timestamp(d) for d in signal_dates] if signal_dates else sample_signal_dates(days)
+    if signal_dates == ["all"]:  # 뉴스 구간의 모든 거래일
+        targets = list(days[(days >= config.NEWS_START) & (days <= config.NEWS_END)])
+    elif signal_dates:
+        targets = [pd.Timestamp(d) for d in signal_dates]
+    else:
+        targets = sample_signal_dates(days)
     raw_dir = Path(config.RAW_DIR) / "news"
     raw_dir.mkdir(parents=True, exist_ok=True)
     frames = []

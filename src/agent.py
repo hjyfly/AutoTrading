@@ -1,0 +1,146 @@
+"""/query 질의응답 에이전트. 질문에서 시점(as_of)을 정하고, 그 시점에 알 수 있던 정보만으로 답한다."""
+import json
+import re
+
+import pandas as pd
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import tool
+
+from src import config, llm, retriever, tools
+
+FULL_DATE = re.compile(r"(?<!\d)(\d{4})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?(?!\d)")
+COMPACT_DATE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
+MONTH_DAY = re.compile(r"(?<![\d.\-/])(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+SLASH_DAY = re.compile(r"(?<![\d.\-/])(\d{1,2})[/.](\d{1,2})(?![\d.\-/])")
+MONTH_WEEK = re.compile(r"(\d{1,2})\s*월\s*(첫째|둘째|셋째|넷째|다섯째)\s*주")
+WEEK_ORDINAL = {"첫째": 1, "둘째": 2, "셋째": 3, "넷째": 4, "다섯째": 5}
+
+
+class InvalidDateError(ValueError):
+    """질문에 있는 날짜가 달력에 없는 날짜다."""
+
+SYSTEM_PROMPT = """너는 삼성전자 {horizon}거래일 방향 신호 시스템의 질의응답 에이전트다. 한국어로 답한다.
+
+지금 질문의 시점은 {as_of} (한국 시각 {cutoff} 신호 시점)이다.
+- 이 시점 이후의 가격·뉴스·공시·신호·성과는 모른다. 도구가 그보다 뒤를 조회하지 않게 되어 있고, 도구가 거부하면 거부했다고 답에 적는다.
+- 질문 일부가 이 시점 이후에 관한 것이어도, 이 시점에 알 수 있는 부분(그날 신호·근거 등)은 빠짐없이 답한다.
+- 학습 중에 알게 된 이후의 일도 쓰지 않는다. 도구 결과에 없는 사실은 지어내지 않는다.
+
+도구 사용:
+- 특정 날짜의 신호·이유를 물으면 get_signal 과 get_news_judgement 를 먼저 쓴다.
+- 지표·가격·수급·거시 상황은 get_indicators, get_price, get_investor_flows, get_macro 로 확인한다.
+- 이유·맥락·회사 정보는 search_documents(판단 기록·공시·보고서 검색)와 get_company_report 를 쓴다.
+- 모델 성과 질문에만 get_backtest_summary 를 쓴다.
+
+답 형식:
+- 신호를 물으면 방향(상승·보합·하락), 확신도, 근거를 먼저 쓴다.
+- 근거마다 어느 도구·날짜의 자료인지 밝힌다.
+- 투자 권유가 아니라 모델 판단의 설명이라는 점을 마지막에 한 줄 적는다.
+"""
+
+
+def _make_date(year: int, month: int, day: int) -> pd.Timestamp:
+    """달력에 있는 날짜만 만든다. 없으면 InvalidDateError."""
+    try:
+        return pd.Timestamp(year, month, day)
+    except ValueError as e:
+        raise InvalidDateError(f"{year}-{month:02d}-{day:02d} 는 없는 날짜다") from e
+
+
+def _with_year(month: int, day: int, today: pd.Timestamp) -> pd.Timestamp:
+    """연도가 없는 날짜는 오늘 이전의 가장 가까운 해로 본다."""
+    year = today.year if (month, day) <= (today.month, today.day) else today.year - 1
+    return _make_date(year, month, day)
+
+
+def _week_end(month: int, ordinal: int, today: pd.Timestamp) -> pd.Timestamp:
+    """'M월 N째 주'를 그 주(월~일, 1일이 든 주가 첫째 주)의 금요일로 본다. 그 주의 신호를 설명하려면 주말까지 알아야 한다."""
+    first = _with_year(month, 1, today)
+    week_start = first - pd.Timedelta(days=first.weekday()) + pd.Timedelta(weeks=ordinal - 1)
+    friday = week_start + pd.Timedelta(days=4)
+    month_end = first + pd.offsets.MonthEnd(0)
+    if week_start > month_end:
+        raise InvalidDateError(f"{month}월에는 {ordinal}째 주가 없다")
+    return min(friday, month_end)
+
+
+def extract_as_of(question: str, today: pd.Timestamp | None = None) -> str | None:
+    """질문에 있는 날짜를 모두 찾아 가장 이른 날짜를 as_of 로 쓴다(보수적). 없으면 None(오늘).
+
+    알아듣는 표기: 2026-03-11, 2026.3.11, 2026년 3월 11일, 20260311, 3월 11일, 3/11, 3.11, 3월 둘째 주(그 주 금요일).
+    연도가 없으면 오늘 이전의 가장 가까운 해. 달력에 없는 날짜면 InvalidDateError.
+    """
+    today = today or tools.resolve_as_of(None)
+    found, taken = [], []
+
+    def free(m):  # 이미 더 긴 표기로 읽은 자리는 다시 읽지 않는다
+        return all(m.end() <= s or m.start() >= e for s, e in taken)
+
+    for pattern, build in [
+        (FULL_DATE, lambda m: _make_date(int(m[1]), int(m[2]), int(m[3]))),
+        (COMPACT_DATE, lambda m: _make_date(int(m[1]), int(m[2]), int(m[3]))),
+        (MONTH_WEEK, lambda m: _week_end(int(m[1]), WEEK_ORDINAL[m[2]], today)),
+        (MONTH_DAY, lambda m: _with_year(int(m[1]), int(m[2]), today)),
+        (SLASH_DAY, lambda m: _with_year(int(m[1]), int(m[2]), today)),
+    ]:
+        for m in pattern.finditer(question):
+            if free(m):
+                found.append(build(m))
+                taken.append((m.start(), m.end()))
+    return str(min(found).date()) if found else None
+
+
+@tool
+def search_documents(query: str, as_of: str = "", types: str = "") -> dict:
+    """판단 기록(judgement)·DART 사업 개요(dart)·보고서(report)에서 질문과 가까운 문서를 찾는다. 질문 시점 이후 문서는 나오지 않는다.
+    types 는 쉼표로 구분한 문서 종류(비우면 전체)."""
+    t, note = tools.capped(as_of or None)
+    found = retriever.search(query, as_of=str(t.date()), k=config.RAG_TOP_K, types=[x.strip() for x in types.split(",") if x.strip()] or None)
+    return tools._with_note({"as_of": str(t.date()), "documents": found}, note)
+
+
+AGENT_TOOLS = [*tools.TOOLS, search_documents]
+
+
+def collect_contexts(messages: list) -> tuple[list[dict], list[dict]]:
+    """에이전트 메시지에서 도구 결과(contexts)와 도구 호출 순서(trace)를 뽑는다."""
+    calls, contexts, trace = {}, [], []
+    for m in messages:
+        if isinstance(m, AIMessage):
+            for c in m.tool_calls:
+                calls[c["id"]] = c
+                trace.append({"step": "tool_call", "tool": c["name"], "args": c["args"]})
+        elif isinstance(m, ToolMessage):
+            call = calls.get(m.tool_call_id, {})
+            try:
+                result = json.loads(m.content)
+            except (TypeError, ValueError):
+                result = m.content
+            contexts.append({"tool": call.get("name", m.name), "args": call.get("args", {}), "result": result})
+    return contexts, trace
+
+
+def answer(question: str, model=None) -> dict:
+    """질문 하나에 답한다. 돌려주는 값은 제출 형식(answer, contexts, trace)이다.
+
+    질문에 날짜가 여러 개면 가장 이른 날짜를 시점으로 쓴다(보수적). 시스템 프롬프트의 시점은 질문마다 채운다.
+    """
+    try:
+        as_of = extract_as_of(question)
+    except InvalidDateError as e:
+        return {"answer": f"질문의 날짜를 알아들을 수 없다: {e}. 날짜를 다시 확인해 달라.", "contexts": [],
+                "trace": [{"step": "answer", "as_of": None, "as_of_from_question": True, "cost_usd": 0.0, "error": str(e)}]}
+    with tools.request_as_of(as_of) as cap:
+        agent = create_agent(model or llm.get_agent_llm(), AGENT_TOOLS, system_prompt=SYSTEM_PROMPT.format(
+            as_of=cap.date(), horizon=config.LABEL_HORIZON_DAYS, cutoff=config.SIGNAL_CUTOFF_KST))
+        spent_before = llm.total_cost()
+        result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+    messages = result["messages"]
+    contexts, trace = collect_contexts(messages)
+    final = messages[-1]
+    text = final.content if isinstance(final.content, str) else "".join(
+        part.get("text", "") for part in final.content if isinstance(part, dict))
+    trace.append({"step": "answer", "as_of": str(cap.date()), "as_of_from_question": as_of is not None,
+                  "cost_usd": round(llm.total_cost() - spent_before, 6)})
+    return {"answer": text, "contexts": contexts, "trace": trace}

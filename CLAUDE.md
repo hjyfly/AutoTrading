@@ -11,7 +11,7 @@
   - judge 는 .env 의 리전과 별개로 JUDGE_REGION 에서 호출한다
   - 개발 테스트: judge 와 채점 모델이 같은 Sonnet 4.5 여도 된다. 평가 리포트에 "같은 모델 평가(편향 가능)"라고 적는다
   - 최종 검증: judge 를 채점 모델과 다른 모델로 바꾼다. 바꾼 뒤에는 개발 중 평가 점수와 직접 비교하지 않는다
-  - judge 호출 비용도 PoC 한도에 포함한다. cost_log.csv 에 역할(scoring | judge)을 함께 기록한다
+  - judge 호출 비용도 PoC 한도에 포함한다. cost_log.csv 에 역할(scoring | judge | agent | embedding)을 함께 기록한다
 - Agent 생성은 langchain.agents 의 create_agent 를 쓴다
   - create_agent: /query 질의응답 에이전트(src/agent.py)
   - LangGraph StateGraph 직접 구성: 뉴스 채점 흐름(채점자 3명 → 토론 1회 → 최종 정리). 순서가 고정된 흐름이라 create_agent 로 만들지 않는다
@@ -28,7 +28,9 @@ evaluation/        test_queries.csv 와 평가 리포트
 
 ### 제출 규약 파일의 역할
 - src/agent.py      /query 에이전트. 판단 기록을 근거로 "왜 그 신호였는가"에 답한다
-- src/tools.py      에이전트 도구: 날짜별 신호 조회, 지표 값 조회, 모의 매매 결과 조회
+- src/tools.py      에이전트 도구 9개: 일봉·수급·거시 지표·차트 지표·공시·뉴스 조회, 신호·판단 기록·모의 매매 결과 조회
+                    수집·계산 함수(src/pipeline)를 감싸기만 하고 새로 계산하지 않는다. 모든 도구는 as_of 시점에 알 수 있던 정보만 돌려준다
+                    저장된 데이터를 먼저 쓰고, 저장 범위를 넘으면 실시간으로 받되 data/raw 에 쓰지 않는다
 - src/retriever.py  판단 기록·기사·DART 공시 검색(RAG). 모든 검색은 as_of 날짜 이후 문서를 제외한다
 
 ### 추가로 허용하는 파일 (이 목록 밖의 파일은 만들기 전에 묻는다)
@@ -41,19 +43,24 @@ src/pipeline/collect_news.py     GDELT(한국어 매체 포함) + Google 뉴스 
 src/pipeline/collect_dart.py     시점별 DART 공시
 src/pipeline/features.py         차트 지표 계산, 시점 규칙에 맞춘 학습용 표
 src/pipeline/labels.py           5거래일 ±3% 정답 데이터
+src/pipeline/select_news.py      신호일마다 채점할 기사 30건 선별
 src/pipeline/scoring.py          뉴스 채점 LangGraph
 src/pipeline/leak_test.py        미래 정보 유출 테스트
 src/pipeline/train.py            LightGBM 워크포워드 학습
+src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙)
+src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(그 달 재학습 시점, 정답 기간 간격)
+                                 뉴스 보정은 15:15 이후 요청할 때만(LLM 7회). 결과는 data/processed/signals_live.parquet
+src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡선·지표·판단 기록)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
-src/pipeline/index.py            판단 기록을 Chroma 에 색인
 tests/                           위 모듈의 테스트
 .claude/agents/                  개발용 검증 서브에이전트 (아래 "검증 에이전트" 참고)
-.gitignore, requirements.txt     git 제외 목록, 의존성
+.gitignore, .gitattributes, requirements.txt   git 제외 목록, 줄바꿈 규칙(LF 고정), 의존성
+evaluation/run_eval.py, evaluation/__init__.py /query 평가 실행
 *.md                             기획·계획 문서 (SERVICE.md, DAY1_PLAN.md 등)
 
 data/raw/        수집 원본. 수집 후 수정하지 않는다
 data/processed/  지표·학습용 표·정답 데이터
-data/scores/     뉴스 채점 결과와 판단 기록(JSON)
+data/scores/     뉴스 채점 결과(news_scores.parquet)와 판단 기록(traces/<날짜>.json, 기사 제목이 있어 git 제외)
 data/index/      Chroma 색인
 evaluation/reports/  PoC 보고서
 
@@ -62,10 +69,14 @@ evaluation/reports/  PoC 보고서
 - 답은 answer, contexts, trace 세 키로 돌려준다
   - answer: 방향(상승/보합/하락) + 확신도 + 근거 요약
   - contexts: 답에 쓴 기사·DART 공시·지표 값 (출처와 날짜 포함)
-  - trace: 채점자 3명의 점수와 토론 요약, 에이전트가 부른 도구 순서
+  - trace: 에이전트가 부른 도구 순서와 인자, 질문 시점(as_of), 비용. 채점자 3명 점수·토론은 get_news_judgement 결과로 contexts 에 들어간다
 - 질문 예: "2026-03-05 삼성전자 신호는?", "3월 둘째 주에 하락 신호가 나온 이유는?"
-- 질문에 날짜가 있으면 그 날짜를 as_of 로 쓴다. 날짜가 없으면 데이터의 가장 최근 거래일을 쓴다
-- evaluation/test_queries.csv 열: question, as_of, expected_direction, expected_sources
+- 질문에 날짜가 있으면 그 날짜를 as_of 로 쓴다. 날짜가 없으면 오늘(KST)을 쓴다
+- 요청마다 tools.request_as_of(as_of) 안에서 에이전트를 돌린다. 도구는 그 날짜보다 뒤를 조회하지 않는다(늦은 날짜는 낮추거나 거부)
+- 날짜를 콕 집은 질문은 get_signal·get_news_judgement 로, 이유·맥락 질문은 retriever.search(as_of 필터) 로 찾는다
+- evaluation/test_queries.csv 열: question, as_of, expected_direction, expected_sources(;로 구분), note(judge 가 보는 기대 사항)
+- 평가 실행: evaluation/run_eval.py. 자동 검사(시점·도구·방향·시점 이후 자료)와 judge 채점 → evaluation/reports/query_eval.md
+  (질문별 상세 결과는 기사 제목이 들어 있어 data/scores/eval/ 에 두고 git 에 올리지 않는다)
 
 ## 코드 규칙
 - 파일 하나에 한 가지 역할만 둔다
@@ -99,4 +110,4 @@ evaluation/reports/  PoC 보고서
 - 증권사 주문 API나 자동 주문 코드를 만들지 않는다
 - 유료 데이터 출처를 추가하지 않는다
 - 학습·검증·채점에서 as_of 이후 데이터를 쓰지 않는다
-- .env 와 data/raw 의 기사 원문, 기사 제목·URL 을 모은 data/processed/news.parquet 는 git 에 올리지 않는다
+- .env 와 data/raw 의 기사 원문, 기사 제목·URL 을 모은 data/processed/news.parquet·selected_news.parquet 는 git 에 올리지 않는다

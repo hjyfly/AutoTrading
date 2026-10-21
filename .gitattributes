@@ -1,0 +1,8 @@
+# 줄바꿈을 저장소와 작업 폴더 모두 LF 로 고정한다. PC 의 core.autocrlf 설정과 상관없이 같은 내용은 같은 파일로 본다
+* text=auto eol=lf
+
+# 바이너리
+*.parquet binary
+*.zip binary
+*.png binary
+*.pdf binary

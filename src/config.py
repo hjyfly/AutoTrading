@@ -32,6 +32,10 @@ VALID_START = "2025-04-23"
 SIGNAL_CUTOFF_KST = "15:15"
 KST = "Asia/Seoul"
 
+# 시장별 (시간대, 종가 확정 시각). 실시간 조회는 종가가 확정된 날까지만 받는다
+MARKET_CLOSE = {"prices": ("Asia/Seoul", "15:30"), "hstech": ("Asia/Hong_Kong", "16:10")}
+US_MARKET_CLOSE = ("America/New_York", "16:30")
+
 # Google 뉴스 RSS 검색을 신호 구간보다 며칠 앞에서 시작할지. 발행일을 하루 넘게 늦춰 배정하므로 넓게 잡는다
 RSS_LOOKBACK_DAYS = 4
 
@@ -67,6 +71,34 @@ NEWS_DOWNLOAD_WORKERS = 4
 NEWS_KEYWORDS_KO = ["삼성전자", "반도체", "HBM", "파운드리", "유가", "금리", "연준", "관세", "중국 반도체", "엔비디아"]
 NEWS_KEYWORDS_EN = ["Samsung Electronics", "semiconductor", "HBM", "foundry", "oil price", "Federal Reserve", "tariff", "China chip", "Nvidia"]
 
+# 기사 선별 (DAY2_PLAN.md 3절, 기본값). 제목에 들어 있는 단어로 분류하고 분류별로 할당한다
+SELECT_TOTAL = 30
+SELECT_QUOTAS = {"samsung": 12, "semis": 10, "macro": 8}  # 앞에 있는 분류부터 부족분을 채운다
+SELECT_PATTERNS = {
+    "samsung": r"삼성|samsung",
+    # 'AI' 단독은 일반 AI 기사가 너무 많이 걸려 넣지 않는다 (2일차 선별 결과 확인 뒤 제외)
+    "semis": r"반도체|semiconductor|hbm|파운드리|foundry|엔비디아|nvidia|\bchips?\b|메모리|memory|하이닉스|hynix|tsmc|마이크론|micron|d램|dram|낸드|nand",
+    "macro": r"유가|\boil\b|금리|\bfed\b|연준|관세|tariff|중국|china|환율|달러|dollar|inflation|인플레",
+}
+SELECT_MAX_PER_SOURCE = 3
+SELECT_DEDUP_PREFIX = 30  # 제목 앞 N 글자가 같으면 같은 기사로 본다
+TITLE_MAX_CHARS = 200
+
+# 뉴스 채점 (SERVICE.md 섹션 7)
+SCORE_MIN, SCORE_MAX = -5, 5
+SCORING_PERSONAS = {
+    "short_trader": "단기 트레이더. 앞으로 1주일 안의 가격 반응, 모멘텀, 수급과 투자심리에 영향을 주는 뉴스를 중시한다.",
+    "value_investor": "장기 가치투자자. 실적, 산업 구조, 경쟁력 같은 펀더멘털 변화를 중시하고 단기 소음은 할인한다.",
+    "risk_manager": "리스크 관리자. 하방 위험, 거시 충격, 정책·지정학 불확실성을 중시하고 낙관을 경계한다.",
+}
+SCORES_PATH = "data/scores/news_scores.parquet"
+TRACES_DIR = "data/scores/traces"
+
+# 미래 정보 유출 테스트 (DAY2_PLAN.md 3절, 기본값)
+# 채점 모델을 바꾸면 반드시 다시 돌린다. 지식 기준 시점이 2026년 2~4월보다 늦은 모델은 기억으로 결과를 알 수 있다
+LEAK_TEST_DAYS = 20
+LEAK_TEST_ALPHA = 0.05
+
 # 차트 지표 설정값 (사용자 확인, 2026-10-21)
 MA_WINDOWS = [5, 20, 60, 120]
 BOLLINGER_WINDOW = 20
@@ -81,12 +113,45 @@ RETURN_WINDOWS = [1, 5, 20]  # 삼성전자 수익률
 FLOW_WINDOW = 5  # 순매수 합계·보유비율 변화
 FOREIGN_CHANGE_WINDOWS = [1, 5]  # 해외·거시 지표 변화
 
+# 모의 매매 (SERVICE.md 섹션 9)
+FEE_RATE = 0.001  # 매수·매도 각각 거래 금액의 0.1%
+SIGNALS_NUMERIC_PATH = "data/processed/signals_numeric.parquet"
+
+# 숫자 모델 (DAY3_PLAN.md 3절, 기본값). 검증 구간에 맞춰 조정하지 않는다
+RANDOM_SEED = 42
+LGBM_PARAMS = {
+    "n_estimators": 200,
+    "learning_rate": 0.05,
+    "num_leaves": 15,
+    "min_child_samples": 20,
+    "random_state": RANDOM_SEED,
+    "deterministic": True,  # 같은 데이터면 같은 결과
+    "force_row_wise": True,
+    "verbose": -1,
+}
+
+MIN_TRAIN_ROWS = 120  # 재학습에 필요한 최소 학습 행
+
+# 뉴스 보정 규칙 (DAY3_PLAN.md 3절 방법 A, 사용자 결정). 결과를 보기 전에 고정한다
+NEWS_ADJUST_SCORE = 3
+NEWS_ADJUST_MIN_CONF = 0.6
+
 # LLM 비용 한도 (SERVICE.md 섹션 10). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 80.0  # 개발 단계 한도
+COST_LIMIT_MONTHLY_USD = 100.0  # 운영 단계 월 한도 (운영 코드에서 쓴다)
 COST_LOG_PATH = "data/scores/cost_log.csv"
 
 # 100만 토큰당 달러 (입력, 출력). 모델 ID 에 키 문자열이 들어 있으면 그 가격을 쓴다
 LLM_PRICES_PER_MTOK = {
     "claude-sonnet-4-5": (3.0, 15.0),  # Bedrock 표준가 (리전에 따라 더 비쌀 수 있다)
     "claude-sonnet-5-5": (2.0, 10.0),  # Anthropic 공식가. Bedrock 가격을 확인하면 고친다
+    "titan-embed-text-v2": (0.02, 0.0),  # 임베딩. 기억에 의존한 값이라 AWS 가격표 확인 필요. 토큰 대신 글자 수로 넉넉히 기록한다
 }
+
+# RAG 색인 (src/retriever.py)
+INDEX_DIR = "data/index"
+INDEX_COLLECTION = "autotrading"
+RAG_CHUNK_CHARS = 1500
+RAG_TOP_K = 5
+RAG_REPORTS = ["evaluation/reports/day1_data.md", "evaluation/reports/day3_backtest.md",
+               "evaluation/reports/leak_test.md", "evaluation/reports/data_probe_20261021.md"]

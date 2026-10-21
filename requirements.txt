@@ -10,3 +10,15 @@ pykrx
 finance-datareader
 fredapi
 yfinance
+lightgbm
+scikit-learn  # lightgbm.sklearn 이 필요로 한다
+fastapi
+uvicorn
+httpx
+chromadb
+langchain-chroma
+streamlit
+altair
+numpy
+pydantic
+langchain-core

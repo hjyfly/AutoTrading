@@ -1,0 +1,185 @@
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src import config, tools
+
+DAYS = pd.bdate_range("2025-06-02", periods=200)
+
+
+@pytest.fixture
+def stored(monkeypatch, tmp_path):
+    """저장된 원본 대신 가짜 데이터를 돌려주고, 실시간 조회는 막는다."""
+    rng = np.random.default_rng(0)
+    close = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.02, len(DAYS)))), index=DAYS)
+    data = {
+        ("prices", "samsung_ohlcv"): pd.DataFrame({"Open": close, "High": close * 1.01, "Low": close * 0.99, "Close": close,
+                                                   "Volume": rng.integers(1000, 2000, len(DAYS)).astype(float)}, index=DAYS),
+        ("prices", "samsung_investor_flows"): pd.DataFrame({"foreign_net": rng.normal(0, 100, len(DAYS)),
+                                                            "institution_net": rng.normal(0, 100, len(DAYS)),
+                                                            "individual_net": rng.normal(0, 100, len(DAYS)),
+                                                            "foreign_hold_ratio": 50.0}, index=DAYS),
+    }
+    for name in config.YF_TICKERS:
+        data[("macro", name)] = pd.DataFrame({"value": 100 + np.cumsum(rng.normal(0, 1, len(DAYS)))}, index=DAYS)
+    monkeypatch.setattr(tools, "_load_raw", lambda kind, name: data[(kind, name)])
+
+    def no_live(*args):
+        raise RuntimeError("실시간 조회 금지(테스트)")
+    monkeypatch.setattr(tools, "_live", no_live)
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "TRACES_DIR", str(tmp_path / "traces"))
+    return data
+
+
+def test_as_of_해석():
+    assert tools.resolve_as_of("2026-03-11") == pd.Timestamp("2026-03-11")
+    assert tools.resolve_as_of(pd.Timestamp("2026-03-10 16:00", tz="UTC")) == pd.Timestamp("2026-03-11")  # = 3/11 01:00 KST
+
+
+def test_일봉은_as_of_전날까지만(stored):
+    t = DAYS[100]
+    out = tools.price_history(str(t.date()), days=5)
+    assert [r["date"] for r in out["rows"]][-1] == str(DAYS[99].date())
+    assert all(r["date"] < str(t.date()) for r in out["rows"])
+
+
+def test_해외_지표는_같은_날짜를_쓰지_않는다(stored):
+    t = DAYS[100]
+    out = tools.macro_snapshot(str(t.date()), days=3)
+    for s in out["series"].values():
+        assert all(r["date"] < str(t.date()) for r in s["rows"])
+
+
+def test_지표는_학습용_특징과_같은_계산(stored):
+    from src.pipeline import features
+    t = DAYS[150]
+    out = tools.indicators(str(t.date()))
+    raw = {"ohlcv": stored[("prices", "samsung_ohlcv")], "flows": stored[("prices", "samsung_investor_flows")],
+           **{n: stored[("macro", n)] for n in config.YF_TICKERS}}
+    expected = features.build_features(raw=raw).loc[t]
+    assert out["signal_row_date"] == str(t.date())
+    assert out["chart_and_flow"]["ma20_gap"] == pytest.approx(round(float(expected["ma20_gap"]), 4))
+
+
+def test_지표는_미래_데이터가_바뀌어도_같다(stored):
+    t = DAYS[150]
+    before = tools.indicators(str(t.date()))
+    for df in stored.values():
+        df.loc[df.index >= t] = df.loc[df.index >= t] * 3
+    assert tools.indicators(str(t.date())) == before
+
+
+def test_실시간_조회가_실패하면_저장본으로_답하고_밝힌다(stored):
+    out = tools.price_history("2030-01-01", days=3)
+    assert "실패" in out["source"]
+    assert out["rows"][-1]["date"] == str(DAYS[-1].date())
+
+
+def test_공시는_접수_당일을_빼고(stored, tmp_path):
+    pd.DataFrame({"report_nm": ["분기", "사업"], "rcept_dt": pd.to_datetime(["2025-11-14", "2026-03-10"]),
+                  "overview": ["가", "나"]}).to_parquet(tmp_path / "dart_index.parquet")
+    assert tools.company_report("2026-03-10")["report"]["name"] == "분기"
+    assert tools.company_report("2026-03-11")["report"]["name"] == "사업"
+
+
+def test_판단_기록이_없으면_없다고_답한다(stored):
+    assert "하지 않았다" in tools.news_judgement("2026-03-11")["note"]
+
+
+def test_판단_기록_요약(stored, tmp_path):
+    (tmp_path / "traces").mkdir()
+    trace = {"signal_date": "2026-03-11", "as_of": "2026-03-11 15:15 KST", "model": "m", "company": None,
+             "articles": [{"no": 1, "title": "삼성전자 신고가"}],
+             "final": {"score": 2, "confidence": 0.7, "rationale": "r", "disagreement": "없음", "key_articles": [1]},
+             "round2": {"short_trader": {"score": 3, "confidence": 0.7, "rationale": "r", "change_reason": "유지", "key_articles": []}}}
+    (tmp_path / "traces" / "2026-03-11.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+    out = tools.news_judgement("2026-03-11")
+    assert out["final"]["key_articles"] == ["삼성전자 신고가"]
+    assert out["personas"]["short_trader"]["score"] == 3
+
+
+def test_요청_시점보다_늦은_날짜는_상한으로_낮춘다(stored):
+    with tools.request_as_of(str(DAYS[100].date())):
+        out = tools.get_price.invoke({"as_of": str(DAYS[150].date()), "days": 3})
+    assert out["as_of"] == str(DAYS[100].date())
+    assert "이후" in out["as_of_note"]
+    assert all(r["date"] < str(DAYS[100].date()) for r in out["rows"])
+
+
+def test_날짜를_비우면_요청_시점을_쓴다(stored):
+    with tools.request_as_of(str(DAYS[100].date())):
+        assert tools.get_price.invoke({"days": 1})["as_of"] == str(DAYS[100].date())
+
+
+def test_요청_시점보다_뒤의_신호_판단기록_성과는_거부한다(stored):
+    with tools.request_as_of("2026-03-05"):
+        assert "refused" in tools.get_signal.invoke({"date": "2026-03-12"})
+        assert "refused" in tools.get_news_judgement.invoke({"date": "2026-03-12"})
+        assert "refused" in tools.get_backtest_summary.invoke({})
+
+
+def test_뉴스_키워드는_정규식이_아니다(stored, tmp_path, monkeypatch):
+    days = pd.DatetimeIndex(pd.bdate_range("2026-03-02", "2026-03-13"))
+    monkeypatch.setattr(tools.collect_news, "trading_days", lambda: days)
+    pd.DataFrame({"signal_date": [pd.Timestamp("2026-03-11")], "title": ["(속보) 삼성"], "source": ["a"], "url": ["u"],
+                  "published_utc": [pd.Timestamp("2026-03-11 01:00", tz="UTC")]}).to_parquet(tmp_path / "news.parquet")
+    assert len(tools.news_for_signal("2026-03-11", keyword="(")["articles"]) == 1
+
+
+def test_휴장일과_미수집일은_네트워크_없이_답한다(stored, tmp_path, monkeypatch):
+    days = pd.DatetimeIndex(pd.bdate_range("2026-03-02", "2026-03-13"))
+    monkeypatch.setattr(tools.collect_news, "trading_days", lambda: days)
+    monkeypatch.setattr(tools.collect_news, "collect_rss", lambda *a: (_ for _ in ()).throw(RuntimeError("네트워크 금지")))
+    pd.DataFrame({"signal_date": [], "title": [], "published_utc": []}).to_parquet(tmp_path / "news.parquet")
+    assert "휴장" in tools.news_for_signal("2026-03-07")["source"]
+    assert "수집" in tools.news_for_signal("2026-03-05")["source"]
+
+
+def test_실시간_조회_끝날은_종가_확정일을_넘지_않는다(stored, monkeypatch):
+    seen = []
+    monkeypatch.setattr(tools, "_live", lambda kind, name, start, end: seen.append((start, end)) or pd.DataFrame(index=pd.DatetimeIndex([])))
+    tools.series_until("prices", "samsung_ohlcv", pd.Timestamp("2099-01-01"))
+    assert seen and pd.Timestamp(seen[0][1]) <= tools.last_closed_date("prices", "samsung_ohlcv")
+    assert pd.Timestamp(seen[0][0]) == DAYS[-1] + pd.Timedelta(days=1)  # 저장본 다음 날부터만 받는다
+
+
+def test_실시간_값은_저장본_뒤에만_이어_붙인다(stored, monkeypatch):
+    extra_days = pd.bdate_range(DAYS[-1] + pd.Timedelta(days=1), periods=3)
+    live = pd.DataFrame({"value": [1.0, 2.0, 3.0]}, index=extra_days)
+    monkeypatch.setattr(tools, "_live", lambda *a: pd.concat([stored[("macro", "nvda")].iloc[-5:] * 0, live]))
+    out, note = tools.series_until("macro", "nvda", extra_days[-1] + pd.Timedelta(days=3))
+    pd.testing.assert_frame_equal(out.loc[:DAYS[-1]], stored[("macro", "nvda")])  # 저장본은 그대로
+    assert out.index[-3:].equals(extra_days) and "3일 추가" in note
+
+
+@pytest.mark.parametrize("now_utc, kind, name, expected", [
+    ("2026-10-21 16:00", "macro", "nvda", "2026-10-20"),     # 뉴욕 10/21 12:00 → 21일 장중이라 20일까지
+    ("2026-10-21 21:00", "macro", "nvda", "2026-10-21"),     # 뉴욕 10/21 17:00 → 21일 마감
+    ("2026-10-21 05:00", "prices", "samsung_ohlcv", "2026-10-20"),  # 서울 14:00 장중
+    ("2026-10-21 07:00", "prices", "samsung_ohlcv", "2026-10-21"),  # 서울 16:00 마감 후
+    ("2026-10-21 08:00", "macro", "hstech", "2026-10-21"),   # 홍콩 16:00 → 16:10 전이라... 아래에서 확인
+])
+def test_시장별_종가_확정일(now_utc, kind, name, expected):
+    got = tools.last_closed_date(kind, name, pd.Timestamp(now_utc, tz="UTC"))
+    if name == "hstech":
+        assert got == pd.Timestamp("2026-10-20")  # 홍콩 16:00 은 16:10 마감 전
+    else:
+        assert got == pd.Timestamp(expected)
+
+
+def test_주말_신호는_휴장일이라고_알린다(stored, monkeypatch, tmp_path):
+    monkeypatch.setattr(tools.collect_news, "trading_days", lambda: pd.DatetimeIndex(pd.bdate_range("2026-03-02", "2026-03-13")))
+    pd.DataFrame({"signal": ["보합"], "confidence": [0.5], "p_상승": [0.2], "p_보합": [0.5], "p_하락": [0.3],
+                  "retrained_on": [pd.Timestamp("2026-03-02")], "train_last_future_date": [pd.Timestamp("2026-02-27")]},
+                 index=[pd.Timestamp("2026-03-06")]).to_parquet(tmp_path / "signals_numeric.parquet")
+    monkeypatch.setattr(config, "SIGNALS_NUMERIC_PATH", str(tmp_path / "signals_numeric.parquet"))
+    assert "휴장" in tools.signal_for("2026-03-07")["note"]
+
+
+def test_에이전트_도구_목록():
+    names = {t.name for t in tools.TOOLS}
+    assert {"get_price", "get_indicators", "search_news", "get_signal", "get_news_judgement"} <= names
+    assert all(t.description for t in tools.TOOLS)
