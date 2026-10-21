@@ -116,6 +116,9 @@ with data_col:
         c2.metric("숫자 모델", sig["numeric"]["signal"], f"확신도 {sig['numeric']['confidence']:.0%}", delta_color="off")
     if "with_news" in sig:
         c3.metric("뉴스 합의", f"{sig['with_news']['news_consensus']:+d}", "보정됨" if sig["with_news"]["adjusted"] else "보정 없음", delta_color="off")
+    if "candidate" in sig:
+        st.caption(f"비교용 후보 모델(A+B+D 지표 추가): **{sig['candidate']['signal']}** (확신도 {sig['candidate']['confidence']:.0%}) "
+                   "— 최종 신호가 아니며 앞으로의 성과로 기존 모델과 비교 중")
     if "note" in sig:
         st.info(sig["note"])
 

@@ -33,7 +33,8 @@ SIGNAL_CUTOFF_KST = "15:15"
 KST = "Asia/Seoul"
 
 # 시장별 (시간대, 종가 확정 시각). 실시간 조회는 종가가 확정된 날까지만 받는다
-MARKET_CLOSE = {"prices": ("Asia/Seoul", "15:30"), "hstech": ("Asia/Hong_Kong", "16:10")}
+MARKET_CLOSE = {"prices": ("Asia/Seoul", "15:30"), "hstech": ("Asia/Hong_Kong", "16:10"),
+                "dxy": ("America/New_York", "17:15"), "wti_fut": ("America/New_York", "17:15")}  # ICE·NYMEX 선물은 17:00 ET 마감
 US_MARKET_CLOSE = ("America/New_York", "16:30")
 
 # Google 뉴스 RSS 검색을 신호 구간보다 며칠 앞에서 시작할지. 발행일을 하루 넘게 늦춰 배정하므로 넓게 잡는다
@@ -58,6 +59,15 @@ YF_TICKERS = {
     "nvda": "NVDA",
     "hstech": "3033.HK",  # 항셍테크 지수는 yfinance 에 없어 추종 ETF(CSOP 항셍테크)로 대신한다
 }
+# 확장 지표용 해외 시계열 (2026-10-21 사전 등록, 후보 모델 전용)
+YF_TICKERS_EXT = {
+    "mu": "MU",          # 마이크론 (메모리 동종)
+    "tsm": "TSM",        # TSMC (파운드리 경쟁)
+    "dxy": "DX-Y.NYB",   # 달러 인덱스
+}
+# 확장 지표용 국내 시계열. 국내 값이라 t-1 종가까지만 쓴다
+KR_EXTRA = {"kospi": "KS11", "kospi200": "KS200", "hynix": "000660"}
+
 # 수익률 대신 수준과 차이로 특징을 만드는 시계열 (금리·변동성)
 LEVEL_SERIES = {"us10y_yf", "vix_yf"}
 
@@ -107,6 +117,49 @@ ICHIMOKU = {"tenkan": 9, "kijun": 26, "senkou_b": 52}
 PSAR_STEP = 0.02
 PSAR_MAX = 0.2
 VOLUME_MA_WINDOW = 20
+
+# ---- 지표 묶음 (2026-10-21 사전 등록. 후보 모델 결과를 보기 전에 고정한다. 바꾸지 않는다) ----
+# A. 가격 기반 기술 지표
+RSI_WINDOW = 14
+MACD = {"fast": 12, "slow": 26, "signal": 9}
+STOCH = {"k": 14, "d": 3}
+ATR_WINDOW = 14
+VOLATILITY_WINDOW = 20
+OBV_WINDOW = 20
+HIGH_LOW_WINDOW = 120  # 52주 대신 120일 (52주는 첫 학습 데이터가 너무 줄어든다)
+# B. 시장·동종 종목: KR_EXTRA, YF_TICKERS_EXT 의 1·5일 수익률, 코스피 대비 삼성 상대 강도 5·20일
+RELATIVE_STRENGTH_WINDOWS = [5, 20]
+RELATIVE_STRENGTH_BENCHMARK = "kospi"  # KR_EXTRA 의 이름
+# D. 일정: 옵션 만기일(매월 둘째 목요일), 만기까지 남은 거래일 수, 월말, 요일, 잠정실적 발표 시기(분기 첫 달 1~10일)
+EARNINGS_MONTHS = [1, 4, 7, 10]
+OPTION_EXPIRY_WEEKDAY = 3  # 목요일 (월=0)
+OPTION_EXPIRY_NTH = 2  # 둘째 주
+EARNINGS_DAY_MAX = 10
+
+# 기존 모델 특징 45개 (1~3일차 결과와 같은 모델을 다시 만들 수 있게 이름으로 고정한다)
+FEATURE_SET_BASE = [
+    "ret_1d", "ret_5d", "ret_20d", "volume_ratio", "psar_gap", "psar_trend",
+    "ma5_gap", "ma20_gap", "ma60_gap", "ma120_gap", "bb_pctb", "bb_width",
+    "ichi_tenkan_gap", "ichi_kijun_gap", "ichi_tenkan_kijun", "ichi_cloud_top_gap", "ichi_cloud_bottom_gap", "ichi_cloud_thickness",
+    "foreign_net_ratio", "institution_net_ratio", "foreign_net_ratio_5d", "foreign_hold_change_5d",
+    "us10y_yf_level", "us10y_yf_chg_1d", "us10y_yf_chg_5d", "us10y_yf_age_days",
+    "vix_yf_level", "vix_yf_chg_1d", "vix_yf_chg_5d", "vix_yf_age_days",
+    "wti_fut_ret_1d", "wti_fut_ret_5d", "wti_fut_age_days", "usdkrw_yf_ret_1d", "usdkrw_yf_ret_5d", "usdkrw_yf_age_days",
+    "sox_ret_1d", "sox_ret_5d", "sox_age_days", "nvda_ret_1d", "nvda_ret_5d", "nvda_age_days",
+    "hstech_ret_1d", "hstech_ret_5d", "hstech_age_days",
+]
+FEATURE_SET_A = ["rsi14", "macd_line", "macd_hist", "stoch_k", "stoch_d", "atr_ratio", "volatility_20d", "obv_change_20d",
+                 "hl120_position", "gap_open"]
+FEATURE_SET_B = ["kospi_ret_1d", "kospi_ret_5d", "kospi200_ret_1d", "kospi200_ret_5d", "hynix_ret_1d", "hynix_ret_5d",
+                 "rel_strength_5d", "rel_strength_20d",
+                 "mu_ret_1d", "mu_ret_5d", "mu_age_days", "tsm_ret_1d", "tsm_ret_5d", "tsm_age_days",
+                 "dxy_ret_1d", "dxy_ret_5d", "dxy_age_days"]
+FEATURE_SET_D = ["is_option_expiry", "days_to_option_expiry", "is_month_end", "weekday", "is_earnings_season"]
+FEATURE_SETS = {
+    "base": FEATURE_SET_BASE,
+    "candidate": FEATURE_SET_BASE + FEATURE_SET_A + FEATURE_SET_B + FEATURE_SET_D,
+}
+SIGNALS_CANDIDATE_PATH = "data/processed/signals_candidate.parquet"
 
 # 특징 계산 기간(거래일)
 RETURN_WINDOWS = [1, 5, 20]  # 삼성전자 수익률

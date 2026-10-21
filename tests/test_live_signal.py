@@ -25,25 +25,29 @@ def stored(monkeypatch):
                                                             "individual_net": rng.normal(0, 100, len(DAYS)),
                                                             "foreign_hold_ratio": 50 + rng.normal(0, 0.1, len(DAYS))}, index=DAYS),
     }
-    for name in config.YF_TICKERS:
+    for name in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}:
         data[("macro", name)] = pd.DataFrame({"value": 100 + np.cumsum(rng.normal(0, 1, len(DAYS)))}, index=DAYS)
-    monkeypatch.setattr(tools, "_load_raw", lambda kind, name: data[(kind, name)])
+    for name in config.KR_EXTRA:
+        data[("prices", name)] = pd.DataFrame({"Close": 100 * np.exp(np.cumsum(rng.normal(0, 0.01, len(DAYS))))}, index=DAYS)
+    monkeypatch.setattr(tools, "_load_raw", lambda kind, name: data.get((kind, name), pd.DataFrame(index=pd.DatetimeIndex([]))))
     monkeypatch.setattr(tools, "_live", lambda *a: (_ for _ in ()).throw(RuntimeError("실시간 금지")))
     monkeypatch.setattr(config, "LGBM_PARAMS", {**config.LGBM_PARAMS, "n_estimators": 20, "min_child_samples": 5})
     monkeypatch.setattr(config, "MIN_TRAIN_ROWS", 30)
     return data
 
 
-def test_저장된_날짜는_과거_검증_신호와_같다(stored):
-    """실시간 경로와 워크포워드 경로가 같은 데이터·같은 규칙이면 같은 신호·확률이 나와야 한다."""
+@pytest.mark.parametrize("feature_set", ["base", "candidate"])
+def test_저장된_날짜는_과거_검증_신호와_같다(stored, feature_set):
+    """실시간 경로와 워크포워드 경로가 같은 데이터·같은 규칙·같은 지표 묶음이면 같은 신호·확률이 나와야 한다."""
     from src.pipeline import features
     raw = {"ohlcv": stored[("prices", "samsung_ohlcv")], "flows": stored[("prices", "samsung_investor_flows")],
-           **{n: stored[("macro", n)] for n in config.YF_TICKERS}}
+           **{n: stored[("macro", n)] for n in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}},
+           **{n: stored[("prices", n)] for n in config.KR_EXTRA}}
     table = features.build_features(raw=raw)
     labels = make_labels(raw["ohlcv"]["Close"])
-    wf = tr.walk_forward(table, labels, valid_start=str(DAYS[300].date()))
+    wf = tr.walk_forward(table, labels, valid_start=str(DAYS[300].date()), feature_set=feature_set)
     for t in [DAYS[300], DAYS[333], DAYS[400]]:
-        live = ls.numeric_signal(str(t.date()), valid_start=str(DAYS[300].date()))
+        live = ls.numeric_signal(str(t.date()), valid_start=str(DAYS[300].date()), feature_set=feature_set)
         assert live["signal"] == wf.loc[t, "signal"]
         assert live["confidence"] == pytest.approx(wf.loc[t, "confidence"])
         assert live["retrained_on"] == wf.loc[t, "retrained_on"]

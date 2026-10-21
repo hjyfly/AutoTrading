@@ -59,7 +59,7 @@ def main():
     """config 의 FRED·yfinance 지표를 받아 저장한다. 이미 받은 원본은 건너뛴다."""
     start, end = config.DATA_START, config.DATA_END
     jobs = [(name, fetch_fred, sid) for name, sid in config.FRED_SERIES.items()]
-    jobs += [(name, fetch_yf, ticker) for name, ticker in config.YF_TICKERS.items()]
+    jobs += [(name, fetch_yf, ticker) for name, ticker in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}.items()]
     for name, fetch, source_id in jobs:
         if (Path(config.RAW_DIR) / "macro" / f"{name}.parquet").exists():
             print(name, "이미 있음")

@@ -77,8 +77,10 @@ def _live(kind: str, name: str, start: str, end: str) -> pd.DataFrame:
         return collect_prices.fetch_ohlcv(config.SAMSUNG_CODE, start, end)
     if kind == "prices" and name == "samsung_investor_flows":
         return collect_prices.fetch_foreign_net(config.SAMSUNG_CODE, start, end)
+    if kind == "prices" and name in config.KR_EXTRA:
+        return collect_prices.fetch_close(config.KR_EXTRA[name], start, end)
     if kind == "macro":
-        return collect_macro.fetch_yf(config.YF_TICKERS[name], start, end)
+        return collect_macro.fetch_yf({**config.YF_TICKERS, **config.YF_TICKERS_EXT}[name], start, end)
     raise ValueError(f"실시간으로 받을 수 없는 데이터: {kind}/{name}")
 
 
@@ -153,7 +155,8 @@ def macro_snapshot(as_of: str | None = None, days: int = 5) -> dict:
 
 KEY_INDICATORS = ["ret_1d", "ret_5d", "ret_20d", "ma5_gap", "ma20_gap", "ma60_gap", "ma120_gap", "bb_pctb", "bb_width",
                   "ichi_tenkan_kijun", "ichi_cloud_top_gap", "ichi_cloud_bottom_gap", "psar_gap", "psar_trend",
-                  "volume_ratio", "foreign_net_ratio_5d"]
+                  "volume_ratio", "foreign_net_ratio_5d",
+                  *config.FEATURE_SET_A, *[c for c in config.FEATURE_SET_B if not c.endswith("_age_days")], *config.FEATURE_SET_D]
 
 
 def raw_until(cut: pd.Timestamp) -> tuple[dict, dict]:
@@ -163,8 +166,9 @@ def raw_until(cut: pd.Timestamp) -> tuple[dict, dict]:
     """
     loaded = {"ohlcv": series_until("prices", "samsung_ohlcv", cut),
               "flows": series_until("prices", "samsung_investor_flows", cut),
-              **{name: series_until("macro", name, cut) for name in config.YF_TICKERS}}
-    raw = {k: v[0] for k, v in loaded.items()}
+              **{name: series_until("macro", name, cut) for name in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}},
+              **{name: series_until("prices", name, cut) for name in config.KR_EXTRA}}
+    raw = {k: v[0] for k, v in loaded.items() if not v[0].empty}
     sources = {k: {"note": v[1], "last_date": str(v[0].index.max().date()) if len(v[0]) else None} for k, v in loaded.items()}
     ohlcv = raw["ohlcv"][["Open", "High", "Low", "Close", "Volume"]].astype(float)
     raw["ohlcv"] = pd.concat([ohlcv, pd.DataFrame(index=[cut], columns=ohlcv.columns, dtype=float)])
@@ -177,7 +181,7 @@ def indicators(as_of: str | None = None) -> dict:
     raw, sources = raw_until(cut)
     table = features.build_features(as_of=cut, raw=raw)
     row = table.iloc[-1]
-    foreign = {c: round(float(row[c]), 4) for c in table.columns if c.endswith(("_ret_1d", "_chg_1d", "_level"))}
+    foreign = {c: round(float(row[c]), 4) for c in table.columns if c.endswith(("_ret_1d", "_chg_1d", "_level")) and c not in KEY_INDICATORS}
     return {"as_of": str(cut.date()), "signal_row_date": str(table.index[-1].date()),
             "rule": "국내 지표는 전날 종가까지, 해외는 현지 날짜 < as_of",
             "chart_and_flow": {c: round(float(row[c]), 4) for c in KEY_INDICATORS if c in row and pd.notna(row[c])},
@@ -229,6 +233,25 @@ def news_for_signal(as_of: str | None = None, keyword: str | None = None, limit:
                           "source": r.source, "title": r.title, "url": r.url} for r in day.itertuples()]}
 
 
+def _candidate_signal(t: pd.Timestamp, live_path: Path) -> dict | None:
+    """후보 모델 신호: 검증 구간은 signals_candidate.parquet, 그 뒤는 실시간 기록(model='candidate')."""
+    path = Path(config.SIGNALS_CANDIDATE_PATH)
+    row = None
+    if path.exists():
+        stored = pd.read_parquet(path)
+        row = stored.loc[t] if t in stored.index else None
+    if row is None and live_path.exists():
+        live = pd.read_parquet(live_path)
+        if "model" in live.columns:
+            live = live[live["model"] == "candidate"]
+            row = live.loc[t] if t in live.index else None
+    if row is None:
+        return None
+    return {"signal": row["signal"], "confidence": round(float(row["confidence"]), 3),
+            "probabilities": {c: round(float(row[f"p_{c}"]), 3) for c in ("상승", "보합", "하락")},
+            "note": "A(기술 지표)+B(시장·동종)+D(일정) 추가 후보 모델. 기존 모델과 비교 기록 중이며 최종 신호가 아니다"}
+
+
 def signal_for(date: str) -> dict:
     """그날 숫자 모델 신호와 확률, 뉴스 보정 결과."""
     t = resolve_as_of(date)
@@ -243,8 +266,11 @@ def signal_for(date: str) -> dict:
     live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
     if "numeric" not in out and live_path.exists():  # 검증 구간 뒤의 날짜는 실시간으로 만든 신호를 쓴다
         live = pd.read_parquet(live_path)
-        if t in live.index:
-            r = live.loc[t]
+        if "model" not in live.columns:
+            live["model"] = "base"
+        base_live = live[live["model"] == "base"]
+        if t in base_live.index:
+            r = base_live.loc[t]
             out["numeric"] = {"signal": r["numeric_signal_label"], "confidence": round(float(r["confidence"]), 3),
                               "probabilities": {c: round(float(r[f"p_{c}"]), 3) for c in ("상승", "보합", "하락")},
                               "model_block_start": str(pd.Timestamp(r["retrained_on"]).date()),
@@ -260,6 +286,9 @@ def signal_for(date: str) -> dict:
             r = news.loc[t]
             out["with_news"] = {"signal": r["signal"], "adjusted": bool(r["adjusted"]),
                                 "news_consensus": int(r["news_consensus"]), "news_confidence": round(float(r["news_consensus_conf"]), 2)}
+    candidate = _candidate_signal(t, live_path)
+    if candidate and "numeric" in out:  # 비교용 후보 모델(A+B+D 지표 추가). 기존 모델 신호가 있는 날만 함께 보여 준다
+        out["candidate"] = candidate
     if len(out) == 1:
         days = collect_news.trading_days()
         if t.weekday() >= 5 or (days.min() <= t <= days.max() and t not in days):

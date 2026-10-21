@@ -99,18 +99,38 @@ def save_raw(df: pd.DataFrame, name: str) -> Path:
     return path
 
 
+def fetch_close(code: str, start: str, end: str) -> pd.DataFrame:
+    """지수·종목의 일별 종가만 받는다(확장 지표용 코스피·코스피200·SK하이닉스)."""
+    df = fdr.DataReader(code, start, end)[["Close"]].astype(float)
+    df.index = pd.to_datetime(df.index).normalize()
+    df.index.name = "date"
+    return _tag(df, f"FinanceDataReader:{code}")
+
+
+def _exists(name: str) -> bool:
+    """원본이 이미 있는지."""
+    return (Path(config.RAW_DIR) / "prices" / f"{name}.parquet").exists()
+
+
 def main():
-    """삼성전자 일봉, 외국인 순매수, 인버스 ETF 후보 일봉을 받아 저장하고 인버스 ETF 선정표를 출력한다."""
+    """삼성전자 일봉, 외국인 순매수, 인버스 ETF 후보, 확장 지표용 국내 시계열을 받아 저장한다. 이미 받은 원본은 건너뛴다."""
     start, end = config.DATA_START, config.DATA_END
-    samsung = fetch_ohlcv(config.SAMSUNG_CODE, start, end)
-    print("samsung_ohlcv", save_raw(samsung, "samsung_ohlcv"), len(samsung))
-    flows = fetch_foreign_net(config.SAMSUNG_CODE, start, end)
-    print("samsung_investor_flows", save_raw(flows, "samsung_investor_flows"), len(flows))
-    candidates = {}
-    for code in config.INVERSE_ETF_CANDIDATES:
-        candidates[code] = fetch_ohlcv(code, start, end)
-        print(f"inverse_{code}", save_raw(candidates[code], f"inverse_{code}"), len(candidates[code]))
-    print(select_inverse_etf(samsung, candidates).to_string())
+    if not _exists("samsung_ohlcv"):
+        samsung = fetch_ohlcv(config.SAMSUNG_CODE, start, end)
+        print("samsung_ohlcv", save_raw(samsung, "samsung_ohlcv"), len(samsung))
+        flows = fetch_foreign_net(config.SAMSUNG_CODE, start, end)
+        print("samsung_investor_flows", save_raw(flows, "samsung_investor_flows"), len(flows))
+        candidates = {}
+        for code in config.INVERSE_ETF_CANDIDATES:
+            candidates[code] = fetch_ohlcv(code, start, end)
+            print(f"inverse_{code}", save_raw(candidates[code], f"inverse_{code}"), len(candidates[code]))
+        print(select_inverse_etf(samsung, candidates).to_string())
+    for name, code in config.KR_EXTRA.items():
+        if _exists(name):
+            print(name, "이미 있음")
+            continue
+        df = fetch_close(code, start, end)
+        print(name, save_raw(df, name), len(df), df.index.min().date(), df.index.max().date())
 
 
 if __name__ == "__main__":

@@ -76,3 +76,15 @@ def test_정답_열이_특징에_섞이면_멈춘다():
     features, labels = make_data()
     with pytest.raises(AssertionError):
         tr.walk_forward(features.assign(label_leak=1), labels, valid_start="2025-05-01")
+
+
+def test_실제_데이터에서_기존과_후보_모델의_학습_조건이_같다():
+    """후보 지표의 결측 때문에 학습 행이나 재학습 일정이 달라지면 비교가 불공정하다(공정 비교 회귀 방지)."""
+    from pathlib import Path
+    sig_base, sig_cand = Path(config.SIGNALS_NUMERIC_PATH), Path(config.SIGNALS_CANDIDATE_PATH)
+    if not (sig_base.exists() and sig_cand.exists()):
+        pytest.skip("저장된 신호가 없다")
+    base, cand = pd.read_parquet(sig_base), pd.read_parquet(sig_cand)
+    assert base.index.equals(cand.index)
+    for col in ["retrained_on", "train_rows", "train_last_future_date"]:
+        assert base[col].equals(cand[col]), col

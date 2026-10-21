@@ -191,6 +191,16 @@ def main():
     print("확신도 구간별(전체)\n" + r["calibration"].round(3).to_string())
     print("확신도 구간별(상승·하락 신호만)\n" + r["calibration_directional"].round(3).to_string())
     pd.DataFrame({"model": r["equity"], "hold": r["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / "equity_numeric.parquet")
+    cand_path = Path(config.SIGNALS_CANDIDATE_PATH)
+    if cand_path.exists():  # 후보 모델(A+B+D 추가): 검증 구간을 이미 본 뒤의 탐색 결과다
+        c = evaluate(pd.read_parquet(cand_path))
+        ca = c["judge_a"]
+        print("[후보 모델 — 사전 등록 ①안: 검증 구간을 이미 본 뒤 한 번만 실행한 탐색. 기준 A 공식 판정 아님]")
+        print(f"후보  수익 {ca['model']['total_return']:+.1%}  MDD {ca['model']['mdd']:.1%}  칼마 {ca['model']['calmar']:.2f}")
+        print(f"(참고) 기준 A: MDD 조건 {ca['mdd_ok']}, 수익 조건 {ca['return_ok']} → {'통과' if ca['passed'] else '실패'}")
+        print("방향 적중", {k: round(v, 3) for k, v in c["direction"].items()}, "| 3분류 정확도", round(c["accuracy"], 3))
+        print("신호별 적중\n" + c["hit_by_signal"].round(3).to_string())
+        pd.DataFrame({"model": c["equity"], "hold": c["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / "equity_candidate.parquet")
     news_path = Path(config.PROCESSED_DIR) / "signals_news.parquet"
     if news_path.exists():
         b = evaluate_b(signals, pd.read_parquet(news_path))

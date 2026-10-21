@@ -26,8 +26,8 @@ def block_start(t: pd.Timestamp, days: pd.DatetimeIndex, valid_start=None) -> pd
     return same_month[0]
 
 
-def numeric_signal(as_of: str | None = None, valid_start=None) -> dict:
-    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다."""
+def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base") -> dict:
+    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base' 또는 'candidate'."""
     t = tools.resolve_as_of(as_of)
     if t.weekday() >= 5:
         raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
@@ -35,7 +35,7 @@ def numeric_signal(as_of: str | None = None, valid_start=None) -> dict:
     table = features.build_features(as_of=t, raw=raw)
     if table.index[-1] != t:
         raise ValueError(f"{t.date()} 행을 만들지 못했다")
-    cols = feature_columns(table)
+    cols = feature_columns(table, feature_set)
     features.assert_no_lookahead(table[cols])
     labels = make_labels(raw["ohlcv"]["Close"].dropna())  # t 이전 종가만으로 만든 정답(정답 기간이 t 전에 끝난 것만 생긴다)
     start = block_start(t, table.index, valid_start)
@@ -49,7 +49,7 @@ def numeric_signal(as_of: str | None = None, valid_start=None) -> dict:
     if row.isna().any(axis=None):
         raise ValueError(f"{t.date()} 특징에 빈 값이 있다: {list(row.columns[row.isna().iloc[0]])}")
     proba = pd.Series(model.predict_proba(row)[0], index=[CLASSES[i] for i in model.classes_]).reindex(CLASSES, fill_value=0.0)
-    return {"date": t, "signal": proba.idxmax(), "confidence": float(proba.max()),
+    return {"date": t, "model": feature_set, "signal": proba.idxmax(), "confidence": float(proba.max()),
             **{f"p_{c}": float(proba[c]) for c in CLASSES},
             "retrained_on": start, "train_rows": len(train), "train_last_future_date": train["future_date"].max(),
             "data_sources": sources}
@@ -79,7 +79,14 @@ def news_score(t: pd.Timestamp) -> dict:
 
 
 def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
-    """신호를 만들고 signals_live.parquet 에 남긴다. with_news 면 15:15 이후에만 뉴스 보정을 더한다."""
+    """기존 모델(base) 신호를 만들고, 비교용 후보 모델(candidate) 신호도 나란히 남긴다(사전 등록한 ②안).
+
+    with_news 면 15:15 이후에만 기존 모델 신호에 뉴스 보정을 더한다. 후보 모델은 숫자 신호만 기록한다.
+    """
+    candidate = numeric_signal(as_of, feature_set="candidate")
+    candidate.update(numeric_signal_label=candidate["signal"], news_status="후보 모델은 뉴스 보정 안 함",
+                     news_consensus=None, news_consensus_conf=None)
+    save(candidate)
     out = numeric_signal(as_of)
     t = out["date"]
     out.update(numeric_signal_label=out["signal"], news_status="요청 안 함", news_consensus=None, news_consensus_conf=None)
@@ -97,11 +104,15 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
 
 
 def save(result: dict):
-    """신호 결과 한 줄을 signals_live.parquet 에 날짜 기준으로 덮어 쓴다."""
+    """신호 결과 한 줄을 signals_live.parquet 에 (날짜, 모델) 기준으로 덮어 쓴다."""
     row = pd.DataFrame([{k: v for k, v in result.items() if k != "data_sources"}]).set_index("date")
+    row["model"] = result.get("model", "base")
     if LIVE_PATH.exists():
         old = pd.read_parquet(LIVE_PATH)
-        row = pd.concat([old[old.index != row.index[0]], row]).sort_index()
+        if "model" not in old.columns:
+            old["model"] = "base"
+        same = (old.index == row.index[0]) & (old["model"] == row["model"].iloc[0])
+        row = pd.concat([old[~same], row]).sort_index()
     LIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
     row.to_parquet(LIVE_PATH)
 

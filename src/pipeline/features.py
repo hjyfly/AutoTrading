@@ -72,6 +72,81 @@ def parabolic_sar(high: pd.Series, low: pd.Series) -> tuple[pd.Series, pd.Series
     return pd.Series(sar, high.index), pd.Series(trend, high.index)
 
 
+def technical_features(ohlcv: pd.DataFrame) -> pd.DataFrame:
+    """A 묶음: RSI, MACD, 스토캐스틱, ATR, 변동성, OBV, 120일 고저 위치, 시가 갭. 그날 종가까지의 값으로 계산한다."""
+    close, high, low, open_, volume = ohlcv["Close"], ohlcv["High"], ohlcv["Low"], ohlcv["Open"], ohlcv["Volume"]
+    ret = close.pct_change()
+    w = config.RSI_WINDOW
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / w, adjust=False, min_periods=w).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / w, adjust=False, min_periods=w).mean()
+    rsi = 100 - 100 / (1 + gain / loss)
+    m = config.MACD
+    ema = lambda n: close.ewm(span=n, adjust=False, min_periods=n).mean()
+    macd = ema(m["fast"]) - ema(m["slow"])
+    macd_signal = macd.ewm(span=m["signal"], adjust=False, min_periods=m["signal"]).mean()
+    s = config.STOCH
+    low_k, high_k = low.rolling(s["k"]).min(), high.rolling(s["k"]).max()
+    stoch_k = (close - low_k) / (high_k - low_k) * 100
+    prev_close = close.shift(1)
+    true_range = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    obv = (np.sign(ret).fillna(0) * volume).cumsum()
+    hl = config.HIGH_LOW_WINDOW
+    low_hl, high_hl = low.rolling(hl).min(), high.rolling(hl).max()
+    return pd.DataFrame({
+        "rsi14": rsi,
+        "macd_line": macd / close,
+        "macd_hist": (macd - macd_signal) / close,
+        "stoch_k": stoch_k,
+        "stoch_d": stoch_k.rolling(s["d"]).mean(),
+        "atr_ratio": true_range.rolling(config.ATR_WINDOW).mean() / close,
+        "volatility_20d": ret.rolling(config.VOLATILITY_WINDOW).std(),
+        "obv_change_20d": (obv - obv.shift(config.OBV_WINDOW)) / volume.rolling(config.OBV_WINDOW).sum(),
+        "hl120_position": (close - low_hl) / (high_hl - low_hl),
+        "gap_open": open_ / prev_close - 1,
+    })
+
+
+def market_features(close: pd.Series, kr_extra: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """B 묶음(국내): 코스피·코스피200·SK하이닉스 수익률과 코스피 대비 삼성전자 상대 강도. 그날 종가까지의 값."""
+    out = {}
+    for name, df in kr_extra.items():
+        series = df["Close"].astype(float).reindex(close.index)
+        for w in config.FOREIGN_CHANGE_WINDOWS:
+            out[f"{name}_ret_{w}d"] = series.pct_change(w, fill_method=None)  # 빈 날을 앞 값으로 채우지 않는다
+    if config.RELATIVE_STRENGTH_BENCHMARK in kr_extra:
+        kospi = kr_extra[config.RELATIVE_STRENGTH_BENCHMARK]["Close"].astype(float).reindex(close.index)
+        for w in config.RELATIVE_STRENGTH_WINDOWS:
+            out[f"rel_strength_{w}d"] = close.pct_change(w) - kospi.pct_change(w, fill_method=None)
+    return pd.DataFrame(out, index=close.index)
+
+
+def second_thursday(year: int, month: int) -> pd.Timestamp:
+    """그 달 N째 주 지정 요일(국내 주식 옵션 만기일, 기본 둘째 목요일)."""
+    first = pd.Timestamp(year, month, 1)
+    first_day = first + pd.Timedelta(days=(config.OPTION_EXPIRY_WEEKDAY - first.weekday()) % 7)
+    return first_day + pd.Timedelta(weeks=config.OPTION_EXPIRY_NTH - 1)
+
+
+def calendar_features(days: pd.DatetimeIndex) -> pd.DataFrame:
+    """D 묶음: 신호일 t 자체의 일정 정보. 미리 알려진 달력만 쓰므로 하루 늦추지 않는다."""
+    rows = []
+    for t in days:
+        expiry = second_thursday(t.year, t.month)
+        if t > expiry:
+            nxt = t + pd.offsets.MonthBegin(1)
+            expiry = second_thursday(nxt.year, nxt.month)
+        month_last_weekday = (t + pd.offsets.BMonthEnd(0)).normalize()
+        rows.append({
+            "is_option_expiry": float(t == expiry),
+            "days_to_option_expiry": float(np.busday_count(t.date(), expiry.date())),
+            "is_month_end": float(t == month_last_weekday),
+            "weekday": float(t.weekday()),
+            "is_earnings_season": float(t.month in config.EARNINGS_MONTHS and t.day <= config.EARNINGS_DAY_MAX),
+        })
+    return pd.DataFrame(rows, index=days)
+
+
 def domestic_features(ohlcv: pd.DataFrame, flows: pd.DataFrame) -> pd.DataFrame:
     """국내 일봉·순매수로 그날 종가 기준 특징을 만든다. 신호에 쓰기 전에 반드시 하루 늦춘다(build_features)."""
     if ohlcv.index.has_duplicates:
@@ -135,7 +210,8 @@ def build_features(as_of=None, raw: dict | None = None) -> pd.DataFrame:
     raw = raw or {
         "ohlcv": load_raw("prices", "samsung_ohlcv"),
         "flows": load_raw("prices", "samsung_investor_flows"),
-        **{name: load_raw("macro", name) for name in [*config.FRED_SERIES, *config.YF_TICKERS]},
+        **{name: load_raw("macro", name) for name in [*config.FRED_SERIES, *config.YF_TICKERS, *config.YF_TICKERS_EXT]},
+        **{name: load_raw("prices", name) for name in config.KR_EXTRA},
     }
     days = pd.DatetimeIndex(raw["ohlcv"].index).sort_values()
     if as_of is None:
@@ -148,12 +224,19 @@ def build_features(as_of=None, raw: dict | None = None) -> pd.DataFrame:
     days = days[days <= cut]
     before = lambda df: df[df.index < cut]  # as_of 당일 이후 데이터는 읽지 않는다
 
-    domestic = domestic_features(before(raw["ohlcv"]), before(raw["flows"]))
+    ohlcv_before = before(raw["ohlcv"]).sort_index()
+    kr_extra = {name: before(raw[name]) for name in config.KR_EXTRA if name in raw}
+    domestic = pd.concat([
+        domestic_features(ohlcv_before, before(raw["flows"])),
+        technical_features(ohlcv_before),  # A 묶음 (후보 모델용, 기존 45개 계산에는 영향 없음)
+        market_features(ohlcv_before["Close"].astype(float), kr_extra),  # B 묶음 국내
+    ], axis=1)
     domestic = domestic.reindex(days).shift(1)  # t 행에는 t-1 종가까지의 값만 둔다
     domestic["kr_src_date"] = pd.Series(days, index=days).shift(1)
 
-    parts = [domestic]
-    for name in [*config.FRED_SERIES, *config.YF_TICKERS]:
+    parts = [domestic, calendar_features(days)]  # D 묶음은 미리 알려진 달력이라 t 행 그대로
+    foreign_names = [*config.FRED_SERIES, *config.YF_TICKERS, *[n for n in config.YF_TICKERS_EXT if n in raw]]
+    for name in foreign_names:
         feats = foreign_series_features(name, before(raw[name]))
         parts.append(attach_foreign(days, feats, name))
     table = pd.concat(parts, axis=1)

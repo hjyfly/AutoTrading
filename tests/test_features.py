@@ -101,3 +101,48 @@ def test_시간대가_붙은_as_of_는_한국_날짜로_자른다():
     # t-1일 16:00 UTC = t일 01:00 KST → t 행까지 나와야 한다
     utc = (t - pd.Timedelta(days=1) + pd.Timedelta(hours=16)).tz_localize("UTC")
     assert ft.build_features(as_of=utc, raw=raw).index.max() == t
+
+
+def test_옵션_만기일은_둘째_목요일():
+    assert ft.second_thursday(2026, 3) == pd.Timestamp("2026-03-12")
+    assert ft.second_thursday(2026, 10) == pd.Timestamp("2026-10-08")
+
+
+def test_일정_지표는_신호일_자체_기준():
+    days = pd.DatetimeIndex(["2026-03-11", "2026-03-12", "2026-03-31", "2026-04-03"])
+    cal = ft.calendar_features(days)
+    assert cal.loc["2026-03-12", "is_option_expiry"] == 1 and cal.loc["2026-03-11", "days_to_option_expiry"] == 1
+    assert cal.loc["2026-03-31", "is_month_end"] == 1 and cal.loc["2026-03-31", "days_to_option_expiry"] > 0  # 다음 달 만기까지
+    assert cal.loc["2026-04-03", "is_earnings_season"] == 1 and cal.loc["2026-03-11", "is_earnings_season"] == 0
+
+
+def test_RSI_는_계속_오르면_100_계속_내리면_0():
+    up = pd.DataFrame({c: np.arange(1, 40, dtype=float) for c in ["Open", "High", "Low", "Close", "Volume"]})
+    assert ft.technical_features(up)["rsi14"].iloc[-1] == pytest.approx(100)
+    down = up.iloc[::-1].reset_index(drop=True)
+    assert ft.technical_features(down)["rsi14"].iloc[-1] == pytest.approx(0)
+
+
+def test_120일_고저_위치는_0과_1_사이():
+    raw = make_raw()
+    tech = ft.technical_features(raw["ohlcv"])["hl120_position"].dropna()
+    assert ((tech >= 0) & (tech <= 1)).all()
+
+
+def test_시장_지표도_전날_값이고_미래가_바뀌어도_같다():
+    raw = make_raw()
+    days = raw["ohlcv"].index
+    raw["kospi"] = pd.DataFrame({"Close": np.linspace(100, 200, len(days))}, index=days)
+    monkey_extra = {"kospi": "KS11"}
+    original = config.KR_EXTRA
+    config.KR_EXTRA = monkey_extra
+    try:
+        table = ft.build_features(raw=raw)
+        t = days[100]
+        k = raw["kospi"]["Close"]
+        assert table.loc[t, "kospi_ret_1d"] == pytest.approx(k.iloc[99] / k.iloc[98] - 1)  # t-1 종가 기준
+        changed = {key: v.copy() for key, v in raw.items()}
+        changed["kospi"].loc[changed["kospi"].index >= t] *= 3
+        pd.testing.assert_series_equal(ft.build_features(raw=changed).loc[t], table.loc[t])
+    finally:
+        config.KR_EXTRA = original

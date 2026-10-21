@@ -24,7 +24,7 @@ def stored(monkeypatch, tmp_path):
     }
     for name in config.YF_TICKERS:
         data[("macro", name)] = pd.DataFrame({"value": 100 + np.cumsum(rng.normal(0, 1, len(DAYS)))}, index=DAYS)
-    monkeypatch.setattr(tools, "_load_raw", lambda kind, name: data[(kind, name)])
+    monkeypatch.setattr(tools, "_load_raw", lambda kind, name: data.get((kind, name), pd.DataFrame(index=pd.DatetimeIndex([]))))
 
     def no_live(*args):
         raise RuntimeError("실시간 조회 금지(테스트)")

@@ -37,8 +37,8 @@ evaluation/        test_queries.csv 와 평가 리포트
 src/config.py               기간, ±3% 임계값, 수수료 0.1%, 랜덤 시드, 비용 한도 등 모든 설정값
 src/llm.py                  LLM·임베딩 생성, 토큰·비용 기록, 비용 한도 도달 시 중단
 src/server.py               FastAPI, POST /query
-src/pipeline/collect_prices.py   삼성전자·인버스 ETF 일봉 (FinanceDataReader, 예비 pykrx), 순매수 (네이버 증권 모바일 API)
-src/pipeline/collect_macro.py    yfinance 거시·해외 지표 (FRED 는 공개 지연으로 미사용)
+src/pipeline/collect_prices.py   삼성전자·인버스 ETF 일봉 (FinanceDataReader, 예비 pykrx), 순매수 (네이버 증권 모바일 API), 확장 지표용 국내 종가(코스피·코스피200·SK하이닉스)
+src/pipeline/collect_macro.py    yfinance 거시·해외 지표, 확장 지표용 해외 시계열(마이크론·TSMC·달러 인덱스) (FRED 는 공개 지연으로 미사용)
 src/pipeline/collect_news.py     GDELT(한국어 매체 포함) + Google 뉴스 RSS(한국어 보조)
 src/pipeline/collect_dart.py     시점별 DART 공시
 src/pipeline/features.py         차트 지표 계산, 시점 규칙에 맞춘 학습용 표
@@ -94,6 +94,8 @@ evaluation/reports/  PoC 보고서
   - PoC(개발 단계) 누적 $80, 운영 월 $100 에 도달하면 예외를 던지고 멈춘다
 - 더미 데이터를 쓰면 데이터와 보고서에 is_dummy 표시를 붙인다
 - 설정값은 src/config.py 에만 두고 코드 곳곳에 숫자를 적지 않는다
+- 지표 묶음은 config.FEATURE_SETS 로 고른다. base(기존 45개)는 이름으로 고정했고, candidate(A+B+D)는 사전 등록 목록이라 결과를 본 뒤 바꾸지 않는다
+  - 새 지표를 더할 때는 base 계산 결과가 바뀌지 않았는지(features·signals_numeric 이 이전과 같은지) 확인한다
 - 환경: Python 3.11 이상, 의존성은 requirements.txt, 테스트는 pytest
 
 ## 검증 에이전트 (.claude/agents/)
