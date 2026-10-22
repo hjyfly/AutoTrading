@@ -106,3 +106,15 @@ def test_후보_지표_열은_누적된다():
 def test_분야_모델은_주문_모듈과_연결하지_않는다():
     text = Path("src/pipeline/sector_models.py").read_text(encoding="utf-8")
     assert not re.search(r"\bbroker\b|kis_client", text)
+
+
+def test_리포트는_확인_전에는_고르기만_싣는다(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DAY8_REPORT_PATH", str(tmp_path / "r.md"))
+    ev = pd.DataFrame([{"sector": "X", "code": c, "name": c, "candidate": cand, "excess": 0.01, "accuracy": 0.5,
+                        "most_common": 0.49, "balanced": 0.4, "return": 0.1, "mdd": -0.2, "calmar": 0.5,
+                        "hold_return": 0.2, "hold_mdd": -0.3} for c in "AB" for cand in ["S0", "S1"]])
+    sel = sm.select_rule(ev)
+    text = sm.write_report(ev, sel)
+    assert "## 1. 고르기" in text and "## 2. 확인" not in text
+    text = sm.write_report(ev, sel, ev, sm.confirm_rule(ev, {"X": sel["X"]["chosen"]}))
+    assert "## 2. 확인" in text

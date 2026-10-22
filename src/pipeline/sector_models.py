@@ -221,6 +221,58 @@ def confirm_rule(ev: pd.DataFrame, chosen: dict[str, str]) -> dict[str, dict]:
     return out
 
 
+CANDIDATE_NAMES = {"S0": "기준(운영 46개)", "S1": "분야 지수", "S2": "분야 지수 + 동료", "S3": "동료 + 기술",
+                   "S4": "분야 공동 학습", "S5": "변동성 맞춤 정답"}
+
+
+def _table(ev: pd.DataFrame) -> str:
+    """종목·후보별 결과 표(마크다운)."""
+    pct = lambda x: "" if pd.isna(x) else f"{x:+.1%}"
+    view = pd.DataFrame({
+        "분야": ev["sector"], "종목": ev["name"], "후보": ev["candidate"].map(lambda c: f"{c} {CANDIDATE_NAMES[c]}"),
+        "초과 정확도": ev["excess"].map(pct), "정확도": ev["accuracy"].map(lambda x: f"{x:.1%}"),
+        "최다 정답": ev["most_common"].map(lambda x: f"{x:.1%}"), "균형 정확도": ev["balanced"].map(lambda x: f"{x:.1%}"),
+        "수익 / MDD": [f"{r:+.1%} / {m:.1%}" for r, m in zip(ev["return"], ev["mdd"])], "칼마": ev["calmar"].round(2),
+        "들고 있기": [f"{r:+.1%} / {m:.1%}" for r, m in zip(ev["hold_return"], ev["hold_mdd"])]})
+    return view.to_markdown(index=False)
+
+
+def _means(ev: pd.DataFrame) -> str:
+    """분야 × 후보 평균 초과 정확도 표."""
+    piv = ev.pivot_table(index="sector", columns="candidate", values="excess", aggfunc="mean")
+    return piv.map(lambda x: f"{x:+.2%}").to_markdown()
+
+
+def write_report(sel_ev: pd.DataFrame, sel: dict, conf_ev: pd.DataFrame | None = None, conf: dict | None = None) -> str:
+    """8일차 리포트를 쓴다. 확인 전이면 고르기 결과만 싣는다."""
+    lines = ["# 8일차 분야별 알고리즘", "",
+             f"계산 시각 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} (KST) · 계획 [DAY8_PLAN.md](../../DAY8_PLAN.md) · "
+             "정리 [SERVICE2.md](../../SERVICE2.md) · 장부 [preregistration.md](preregistration.md)", "",
+             "- 주 지표 **초과 정확도** = 정확도 − 그 구간 '늘 가장 많은 정답' 비율(그 후보의 정답 기준). S5 는 변동성 맞춤 정답 기준이다",
+             f"- 운영 규칙 그대로: 매주 재학습, 정답 간격, 하락 = 현금, 수수료 {config.FEE_RATE:.1%}. 거래량 0 인 날은 모든 후보에서 뺐다",
+             "- 분석용이며 매매 대상이 아니다. 삼성전자 운영 신호는 바꾸지 않는다", "",
+             f"## 1. 고르기 ({config.SECTOR_SELECT_PERIOD[0]} ~ {config.SECTOR_SELECT_PERIOD[1]})", "",
+             f"규칙: 분야 평균 초과 정확도 최고 후보, S0 보다 {config.SECTOR_SELECT_MIN_GAIN:.0%}p 이상 높고 분야 종목 과반에서 높을 것.", "",
+             _means(sel_ev), ""]
+    for sector, v in sel.items():
+        lines.append(f"- **{sector}:** 최고 {v['best']}({CANDIDATE_NAMES[v['best']]}) S0 대비 {v['gain']:+.2%}p, "
+                     f"{v['wins']}/{v['n']}종목에서 높음 → **{v['chosen']} 고름**")
+    lines += ["", "### 종목별", "", _table(sel_ev), ""]
+    if conf is not None:
+        lines += [f"## 2. 확인 ({config.SECTOR_CONFIRM_START} ~ 데이터 끝, 한 번)", "",
+                  "규칙: 고른 후보가 S0 보다 분야 평균 초과 정확도가 높고 분야 종목 과반에서 높으면 채택. 고른 후보와 S0 만 평가했다.", ""]
+        for sector, v in conf.items():
+            if v["candidate"] == "S0":
+                lines.append(f"- **{sector}:** 고르기에서 S0 유지 → 확인할 후보 없음")
+            else:
+                lines.append(f"- **{sector}:** {v['candidate']} S0 대비 {v['gain']:+.2%}p, {v['wins']}/{v['n']}종목에서 높음 → "
+                             f"**{'채택(참고 신호용)' if v['adopted'] else '확인 실패, S0 유지'}**")
+        lines += ["", _table(conf_ev), ""]
+    text = "\n".join(lines) + "\n"
+    Path(config.DAY8_REPORT_PATH).write_text(text, encoding="utf-8", newline="\n")
+    return text
+
+
 def _dir() -> Path:
     path = Path(config.SECTOR_DIR)
     path.mkdir(parents=True, exist_ok=True)
@@ -247,19 +299,25 @@ def select() -> dict:
     tables = build_sector_tables()
     ev = evaluate(load_signals(), tables, *config.SECTOR_SELECT_PERIOD)
     ev.to_csv(_dir() / "select.csv", index=False, encoding="utf-8-sig")
-    return select_rule(ev)
+    sel = select_rule(ev)
+    write_report(ev, sel)
+    return sel
 
 
 def confirm() -> dict:
     """확인 구간을 한 번 평가한다. 고르기 결과는 select.csv 에서 다시 계산한다."""
     tables = build_sector_tables()
-    chosen = {s: v["chosen"] for s, v in select_rule(pd.read_csv(_dir() / "select.csv", dtype={"code": str})).items()}
+    sel_ev = pd.read_csv(_dir() / "select.csv", dtype={"code": str})
+    sel = select_rule(sel_ev)
+    chosen = {s: v["chosen"] for s, v in sel.items()}
     signals = load_signals()  # 확인 구간은 고른 후보와 S0 만 평가한다(다른 후보 성적을 보고 갈아타지 않게)
     keep = {cand: {c: s for c, s in by_code.items() if cand == "S0" or chosen[sector_of(c)] == cand}
             for cand, by_code in signals.items()}
     ev = evaluate(keep, tables, config.SECTOR_CONFIRM_START, None)
     ev.to_csv(_dir() / "confirm.csv", index=False, encoding="utf-8-sig")
-    return confirm_rule(ev, chosen)
+    conf = confirm_rule(ev, chosen)
+    write_report(sel_ev, sel, ev, conf)
+    return conf
 
 
 if __name__ == "__main__":
