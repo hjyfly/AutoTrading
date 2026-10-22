@@ -1,0 +1,173 @@
+{
+ "data_end": "2026-10-21",
+ "refreshed_at": "2026-10-22 10:08",
+ "series": [
+  {
+   "kind": "prices",
+   "name": "samsung_ohlcv",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "prices",
+   "name": "samsung_investor_flows",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "prices",
+   "name": "inverse_114800",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "prices",
+   "name": "kospi",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "prices",
+   "name": "kospi200",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "prices",
+   "name": "hynix",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "us10y_yf",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "vix_yf",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "wti_fut",
+   "before_end": "2026-10-19",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "usdkrw_yf",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "sox",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "nvda",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-20",
+   "added": 0,
+   "mismatch": 1,
+   "note": "0일 추가, 겹친 날 값 차이 1일(저장값 유지)",
+   "written": false
+  },
+  {
+   "kind": "macro",
+   "name": "hstech",
+   "before_end": "2026-10-16",
+   "after_end": "2026-10-20",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  },
+  {
+   "kind": "macro",
+   "name": "mu",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-20",
+   "added": 0,
+   "mismatch": 1,
+   "note": "0일 추가, 겹친 날 값 차이 1일(저장값 유지)",
+   "written": false
+  },
+  {
+   "kind": "macro",
+   "name": "tsm",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-20",
+   "added": 0,
+   "mismatch": 1,
+   "note": "0일 추가, 겹친 날 값 차이 1일(저장값 유지)",
+   "written": false
+  },
+  {
+   "kind": "macro",
+   "name": "dxy",
+   "before_end": "2026-10-20",
+   "after_end": "2026-10-21",
+   "added": 1,
+   "mismatch": 0,
+   "note": "1일 추가",
+   "written": true
+  }
+ ],
+ "signal_changes": {
+  "signals_numeric": 0,
+  "signals_candidate": 0
+ },
+ "feature_changes": 0,
+ "dart": "공시 0건 추가",
+ "rag_index_stale": false
+}

@@ -1,22 +1,52 @@
 # judge 는 버전 비교의 기준이므로 상수로 고정한다. 바꾸면 이전 평가 결과와 비교할 수 없다
-# 개발 중에는 채점 모델과 같은 Sonnet 4.5 를 쓰고, 최종 검증 때는 다른 모델로 바꾼다 (모델 미정)
-JUDGE_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+# judge 는 Sonnet 4.5 고정(채점·에이전트는 2026-10-22 부터 Sonnet 4.6). 최종 검증 때는 다른 모델로 바꾼다 (모델 미정)
+JUDGE_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # 채점 모델을 4.6 으로 옮겨도 judge 는 고정(2026-10-22 사용자 확인)
 JUDGE_REGION = "us-east-1"  # "us." 교차 리전 프로필은 미국 리전에서 호출한다
 JUDGE_TEMPERATURE = 0
 
 # 뉴스 채점 모델. .env 의 BEDROCK_MODEL_ID 가 없으면 이 값을 쓴다
 # 2026-10-21 마이그레이션: us. 프로필이 요청 제한으로 호출당 2~5분 걸려 같은 Sonnet 4.5 의 global. 교차 리전 프로필로 옮겼다.
 # us. 경로로 채점한 판단 기록은 data/scores/traces_archive/us_sonnet45/ 에 보관했다. judge 는 기존 그대로 둔다(사용자 결정)
-SCORING_MODEL_DEFAULT = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+# 2026-10-22: 채점·에이전트 모델을 Sonnet 4.6(global. 프로필, ID 에 날짜 없음)으로 바꾼다(사용자 결정). 유출 테스트를 다시 돌리고 뉴스 구간 전체를 다시 채점한다
+SCORING_MODEL_DEFAULT = "global.anthropic.claude-sonnet-4-6"
 
 # 데이터 기간 (SERVICE.md 섹션 5)
 DATA_START = "2023-10-23"
-DATA_END = "2026-10-20"
-NEWS_START = "2026-02-01"
-NEWS_END = "2026-04-30"
+DATA_END_INITIAL = "2026-10-20"  # 처음 수집한 끝날
+# 주간 갱신(src/pipeline/refresh_data.py) 결과. 있으면 저장 데이터 끝날(DATA_END)은 이 파일의 data_end 를 따른다
+DATA_STATUS_PATH = "data/processed/data_status.json"
 
-# 데이터 저장 위치. data/raw 는 수집 후 수정하지 않는다
+
+def data_status_file():
+    """갱신 결과 파일의 경로(실행 위치와 상관없이 프로젝트 폴더 기준)."""
+    from pathlib import Path
+    return Path(__file__).resolve().parents[1] / DATA_STATUS_PATH
+
+
+def _refreshed_data_end() -> str | None:
+    """주간 갱신이 남긴 저장 데이터 끝날. 없거나 읽지 못하면 None."""
+    import json
+    try:
+        return json.loads(data_status_file().read_text(encoding="utf-8"))["data_end"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+DATA_END = _refreshed_data_end() or DATA_END_INITIAL
+# 1~3일차 공식 기준 A 판정의 끝날. 데이터가 늘어도 공식 판정은 이 날까지로 계산하고, 늘어난 구간은 참고로 따로 낸다
+OFFICIAL_VALID_END = DATA_END_INITIAL
+# 뉴스 수집·채점 구간 (2026-10-22 사용자 결정으로 2~4월에서 앞뒤 6개월 확장)
+NEWS_START = "2025-11-01"
+NEWS_END = "2026-07-31"
+# 공식 기준 B 판정 구간과 유출 테스트 구간 (1~3일차 그대로 고정. 뉴스 구간을 넓혀도 바꾸지 않는다)
+CRITERION_B_START = "2026-02-01"
+CRITERION_B_END = "2026-04-30"
+
+# 데이터 저장 위치. data/raw 는 이미 저장한 행을 수정하지 않는다(주간 갱신은 새 날짜 행만 덧붙이고, 덮어쓰기 전 원본을 data/backup 에 복사한다)
 RAW_DIR = "data/raw"
+RAW_BACKUP_DIR = "data/backup"
+REFRESH_OVERLAP_DAYS = 10   # 갱신 때 저장 끝날 앞쪽으로 겹쳐 받아 제공처 값 변화를 점검하는 달력 일수
+REFRESH_WEEKDAY = 4         # 평일 자동 실행 중 이 요일(4=금)에 저장 데이터를 갱신한다(모니터링 리포트 직전)
 PROCESSED_DIR = "data/processed"
 
 # 비공식 출처 호출 사이 대기 시간(초)
@@ -29,6 +59,12 @@ LABEL_THRESHOLD = 0.03
 # 워크포워드 구간 (SERVICE.md 섹션 8, 기본값). 처음 18개월은 학습에만 쓴다
 TRAIN_END = "2025-04-22"
 VALID_START = "2025-04-23"
+# 재학습 주기 (기본 매월 = 1~3일차 규칙). 조건 비교 실험에서 W(매주)·Q(분기)로 바꿔 본다
+RETRAIN_FREQ = "M"
+RETRAIN_FREQS = {"W": "매주", "M": "매월", "Q": "분기"}
+# 체결 시점 (기본 t 종가 = 공식 규칙). next_open 은 신호를 낸 다음 거래일 시가에 체결하는 비교용
+EXECUTION = "close"
+EXECUTIONS = {"close": "t 종가", "next_open": "t+1 시가"}
 
 # 신호 시각. 뉴스는 t-1일 이 시각부터 t일 이 시각 전까지를 t일 뉴스로 본다 (SERVICE.md 섹션 6)
 SIGNAL_CUTOFF_KST = "15:15"
@@ -36,7 +72,8 @@ KST = "Asia/Seoul"
 
 # 시장별 (시간대, 종가 확정 시각). 실시간 조회는 종가가 확정된 날까지만 받는다
 MARKET_CLOSE = {"prices": ("Asia/Seoul", "15:30"), "hstech": ("Asia/Hong_Kong", "16:10"),
-                "dxy": ("America/New_York", "17:15"), "wti_fut": ("America/New_York", "17:15")}  # ICE·NYMEX 선물은 17:00 ET 마감
+                "dxy": ("America/New_York", "17:15"), "wti_fut": ("America/New_York", "17:15"),  # ICE·NYMEX 선물은 17:00 ET 마감
+                "usdkrw_yf": ("UTC", "23:59")}  # yfinance 환율 일봉은 UTC 하루 단위로 끝난다
 US_MARKET_CLOSE = ("America/New_York", "16:30")
 KRX_LATE_CLOSE = {"2026-11-19": "16:30"}  # 수능일 등 늦게 마감하는 날(KRX 공지 기준으로 추가한다)
 
@@ -112,6 +149,10 @@ SCORING_PERSONAS = {
     "risk_manager": "리스크 관리자. 하방 위험, 거시 충격, 정책·지정학 불확실성을 중시하고 낙관을 경계한다.",
 }
 SCORES_PATH = "data/scores/news_scores.parquet"
+# 채점 형식 버전. 2 = 분류별 점수(삼성 직접·반도체·거시)와 하락 위험 점수 추가 (2026-10-22 사용자 결정). 버전이 섞이면 점수 표를 만들지 않는다
+SCORING_VERSION = 2
+NEWS_CATEGORIES = {"samsung": "삼성전자 직접 뉴스", "semis": "반도체·AI 업황 뉴스", "macro": "거시(유가·금리·환율·관세·중국) 뉴스"}
+RISK_MIN, RISK_MAX = 0, 5
 THROTTLE_RETRIES = 10  # Bedrock 요청 제한(Throttling) 때 다시 시도하는 횟수
 THROTTLE_WAIT_SEC = 60
 TRACES_DIR = "data/scores/traces"
@@ -211,15 +252,54 @@ DRIFT_WINDOW = 20  # 최근 정답 확정 신호 N 개로 성능 저하를 본�
 # 뉴스 보정 규칙 (DAY3_PLAN.md 3절 방법 A, 사용자 결정). 결과를 보기 전에 고정한다
 NEWS_ADJUST_SCORE = 3
 NEWS_ADJUST_MIN_CONF = 0.6
+# 뉴스 보정에 쓰는 점수 열·평균 기간·하락 위험 거부 기준 (기본값 = 1~3일차 규칙 그대로. 조건 비교 실험에서 바꿔 본다)
+NEWS_SCORE_FIELD = "news_consensus"
+NEWS_SCORE_FIELDS = {"news_consensus": "종합 합의", "news_samsung_score": "삼성 직접", "news_semis_score": "반도체", "news_macro_score": "거시"}
+NEWS_WINDOW_DAYS = 1      # 최근 k개 채점일 평균 (1 = 그날 점수만)
+NEWS_RISK_VETO = None     # 하락 위험이 이 값 이상이면 상승 신호를 보합으로. None = 쓰지 않음
+
+# 조건 비교 실험(src/pipeline/experiment.py)의 기준 조건 = 지금 운영 설정. 결과는 모두 탐색이며 공식 판정을 바꾸지 않는다
+EXPERIMENT_BASE = {
+    "horizon_days": LABEL_HORIZON_DAYS, "threshold": LABEL_THRESHOLD, "feature_set": "base", "retrain_freq": RETRAIN_FREQ,
+    "execution": EXECUTION, "down_action": DOWN_ACTION, "news_mode": "none", "news_field": NEWS_SCORE_FIELD,
+    "news_window": NEWS_WINDOW_DAYS, "news_risk_veto": NEWS_RISK_VETO, "news_min_score": NEWS_ADJUST_SCORE,
+    "news_min_conf": NEWS_ADJUST_MIN_CONF, "start": None, "end": None,
+}
+EXPERIMENT_DIR = "data/experiments"
+EXPERIMENT_REPORT_DIR = "evaluation/reports"   # 조건 비교·모니터링 보고서 폴더
+EXPERIMENT_MAX_COMBOS = 48                     # 화면에서 한 번에 돌릴 수 있는 조합 수 상한
+# 화면 "조건 비교" 탭의 숫자 조건 선택지 (고를 수 있는 값이 정해진 조건은 위 사전에서 가져온다)
+EXPERIMENT_UI_OPTIONS = {
+    "horizon_days": [3, 5, 10, 20], "threshold": [0.02, 0.03, 0.05], "news_window": [1, 3, 5],
+    "news_risk_veto": [None, 3, 4], "news_min_score": [2, 3, 4], "news_min_conf": [0.5, 0.6, 0.7],
+}
+# 조건 모니터링: 기준 조건에서 하나씩만 바꿔 볼 값(사전 등록. 결과를 보고 목록을 바꾸지 않는다). 2026-10-22 사용자 요청
+MONITOR_AXES = {
+    "threshold": [0.02, 0.05], "horizon_days": [3, 10], "retrain_freq": ["W", "Q"],
+    "execution": ["next_open"], "down_action": ["inverse"], "feature_set": ["candidate"],
+}
+MONITOR_NEWS_AXES = {  # 뉴스 묶음의 기준은 news_mode="adjust"(기준 B 규칙). 분류별·하락 위험은 채점 버전 2 에서만 계산된다
+    "news_mode": ["none"], "news_min_score": [2, 4], "news_min_conf": [0.7], "news_window": [3, 5],
+    "news_field": ["news_samsung_score", "news_semis_score", "news_macro_score"], "news_risk_veto": [3, 4],
+}
+MONITOR_RECENT_DAYS = [20, 60, 120]     # 리포트에 따로 보여 줄 최근 구간(거래일)
+MONITOR_TOL = 0.005                     # 기준 대비 수익·MDD 차이가 이 안이면 '거의 같다'(0.5%p)
+MONITOR_MONTH_TOL = 1e-4                # 달별 수익 차이가 이 안이면 같은 달로 본다
+MONITOR_STEADY_RATIO, MONITOR_STEADY_MIN = 2, 3   # 나은(못한) 달이 반대보다 이 배 이상이고 이 개월 이상이면 '꾸준히'
+MONITOR_MDD_MARGIN = 0.05               # 들고 있기보다 MDD 가 이만큼 넘게 얕으면 따로 알려 준다(5%p)
+MONITOR_WEEKDAY = 4                     # 평일 자동 실행 중 이 요일(0=월 … 4=금)에 리포트를 다시 만든다
+MONITOR_REPORT_PATH = "evaluation/reports/experiments_monitor.md"
+MONITOR_HISTORY_PATH = "data/experiments/monitor_history.csv"
 
 # LLM 비용 한도 (SERVICE.md 섹션 10). 채점과 judge 호출을 합산한다
-COST_LIMIT_POC_USD = 80.0  # 개발 단계 한도
+COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)
 COST_LIMIT_MONTHLY_USD = 100.0  # 운영 단계 월 한도 (운영 코드에서 쓴다)
 COST_LOG_PATH = "data/scores/cost_log.csv"
 
 # 100만 토큰당 달러 (입력, 출력). 모델 ID 에 키 문자열이 들어 있으면 그 가격을 쓴다
 LLM_PRICES_PER_MTOK = {
     "claude-sonnet-4-5": (3.0, 15.0),  # Bedrock 표준가 (리전에 따라 더 비쌀 수 있다)
+    "claude-sonnet-4-6": (3.0, 15.0),  # Anthropic 공식가 기준. Bedrock 가격을 확인하면 고친다
     "claude-sonnet-5-5": (2.0, 10.0),  # Anthropic 공식가. Bedrock 가격을 확인하면 고친다
     "titan-embed-text-v2": (0.02, 0.0),  # 임베딩. 기억에 의존한 값이라 AWS 가격표 확인 필요. 토큰 대신 글자 수로 넉넉히 기록한다
 }

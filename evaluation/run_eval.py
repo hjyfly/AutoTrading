@@ -92,8 +92,12 @@ def auto_checks(row: pd.Series, result: dict) -> dict:
     expected_tools = [t for t in str(row["expected_sources"]).split(";") if t and t != "nan"]
     direction = row["expected_direction"] if isinstance(row["expected_direction"], str) and row["expected_direction"] else None
     late = [f"{c['tool']}: {v}" for c in result["contexts"] for v in violations(c["result"], expected_as_of)]
+    if isinstance(row["as_of"], str) and row["as_of"]:
+        as_of_ok = final["as_of"] == expected_as_of
+    else:  # 날짜 없는 질문: 질문에서 날짜를 찾지 않고 실행 시점(그날 오늘)을 썼으면 맞다. 다른 날 다시 채점해도 같게 판정한다
+        as_of_ok = final.get("as_of_from_question") is False
     return {
-        "as_of_ok": final["as_of"] == expected_as_of,
+        "as_of_ok": as_of_ok,
         "sources_ok": set(expected_tools) <= called,
         "direction_ok": None if direction is None else direction in result["answer"],
         "leak_ok": not late,

@@ -41,7 +41,7 @@ def question(date: str, anonymize: bool) -> str:
 
 def pick_dates(labels: pd.DataFrame) -> list[pd.Timestamp]:
     """뉴스 구간에서 정답이 있는 거래일 중 고르게 LEAK_TEST_DAYS 개를 고른다."""
-    days = labels.loc[config.NEWS_START:config.NEWS_END].index
+    days = labels.loc[config.CRITERION_B_START:config.CRITERION_B_END].index
     idx = np.linspace(0, len(days) - 1, config.LEAK_TEST_DAYS).round().astype(int)
     return list(days[np.unique(idx)])
 
@@ -78,7 +78,7 @@ def run(anonymize: bool = False, model=None) -> pd.DataFrame:
 
 def judge(result: pd.DataFrame, labels: pd.DataFrame) -> dict:
     """통과 기준 ① 적중률이 가장 많은 정답 비율보다 통계적으로 높지 않다 ② 이후(당일 포함)이거나 날짜가 불분명한 사건 언급 0건."""
-    share = labels.loc[config.NEWS_START:config.NEWS_END, "label"].value_counts(normalize=True)
+    share = labels.loc[config.CRITERION_B_START:config.CRITERION_B_END, "label"].value_counts(normalize=True)
     n, k = len(result), int((result["answer"] == result["truth"]).sum())
     p_value = binomial_p_at_least(k, n, share.max())
     events = int(result["events_after_dated"].sum() + result.get("events_undated", pd.Series(dtype=int)).sum())

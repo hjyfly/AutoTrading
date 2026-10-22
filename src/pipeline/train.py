@@ -25,17 +25,22 @@ def feature_columns(features: pd.DataFrame, feature_set: str | None = None) -> l
     return list(cols)
 
 
-def prediction_chunks(dates: pd.DatetimeIndex, valid_start) -> list[tuple[pd.Timestamp, pd.DatetimeIndex]]:
-    """검증 구간을 달 단위로 나눈다. 각 덩어리의 첫날이 재학습 시점이다. 첫 덩어리는 검증 시작일부터다."""
+def prediction_chunks(dates: pd.DatetimeIndex, valid_start, freq: str | None = None) -> list[tuple[pd.Timestamp, pd.DatetimeIndex]]:
+    """검증 구간을 재학습 주기(freq, 기본 config.RETRAIN_FREQ: W 매주·M 매월·Q 분기) 단위로 나눈다.
+    각 덩어리의 첫날이 재학습 시점이다. 첫 덩어리는 검증 시작일부터다."""
+    freq = freq or config.RETRAIN_FREQ
+    if freq not in config.RETRAIN_FREQS:
+        raise ValueError(f"알 수 없는 재학습 주기: {freq}")
     valid = dates[dates >= pd.Timestamp(valid_start)]
     chunks = []
-    for _, part in pd.Series(valid, index=valid).groupby(valid.to_period("M")):
+    for _, part in pd.Series(valid, index=valid).groupby(valid.to_period(freq)):
         chunks.append((part.index[0], part.index))
     return chunks
 
 
-def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None, feature_set: str | None = None) -> pd.DataFrame:
-    """매월 첫 예측일에 다시 학습하고 그달 거래일마다 신호와 클래스 확률을 낸다.
+def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None, feature_set: str | None = None,
+                 freq: str | None = None) -> pd.DataFrame:
+    """재학습 주기(기본 매월)의 첫 예측일에 다시 학습하고 그 기간 거래일마다 신호와 클래스 확률을 낸다.
 
     학습 행은 정답 기간이 끝나는 날(future_date)이 그 달 첫 예측일보다 앞선 것만 쓴다(정답이 검증 구간과 겹치지 않게).
     feature_set 은 config.FEATURE_SETS 의 이름('base' = 1~3일차 모델, 'candidate' = A+B+D 추가 후보).
@@ -46,7 +51,7 @@ def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None,
     usable = X_all.dropna()
     train_pool = usable.join(labels[["label", "future_date"]], how="inner")
     rows = []
-    for start, days in prediction_chunks(usable.index, valid_start or config.VALID_START):
+    for start, days in prediction_chunks(usable.index, valid_start or config.VALID_START, freq):
         train = train_pool[train_pool["future_date"] < start]
         if len(train) < config.MIN_TRAIN_ROWS:
             raise ValueError(f"{start.date()} 재학습: 학습 행 {len(train)}개 < 최소 {config.MIN_TRAIN_ROWS}개")

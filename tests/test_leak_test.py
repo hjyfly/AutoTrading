@@ -15,8 +15,8 @@ def make_labels():
 
 
 def test_기준선_수준의_적중과_이후_사건_없음이면_통과(monkeypatch):
-    monkeypatch.setattr(lt.config, "NEWS_START", "2026-02-01")
-    monkeypatch.setattr(lt.config, "NEWS_END", "2026-02-28")
+    monkeypatch.setattr(lt.config, "CRITERION_B_START", "2026-02-01")
+    monkeypatch.setattr(lt.config, "CRITERION_B_END", "2026-02-28")
     labels = make_labels()
     result = pd.DataFrame({"answer": ["상승"] * 10, "truth": labels["label"].tolist(), "events_after_dated": [0] * 10})
     verdict = lt.judge(result, labels)
@@ -24,16 +24,16 @@ def test_기준선_수준의_적중과_이후_사건_없음이면_통과(monkeyp
 
 
 def test_이후_날짜_사건을_말하면_실패(monkeypatch):
-    monkeypatch.setattr(lt.config, "NEWS_START", "2026-02-01")
-    monkeypatch.setattr(lt.config, "NEWS_END", "2026-02-28")
+    monkeypatch.setattr(lt.config, "CRITERION_B_START", "2026-02-01")
+    monkeypatch.setattr(lt.config, "CRITERION_B_END", "2026-02-28")
     labels = make_labels()
     result = pd.DataFrame({"answer": ["상승"] * 10, "truth": labels["label"].tolist(), "events_after_dated": [0] * 9 + [1]})
     assert not lt.judge(result, labels)["passed"]
 
 
 def test_모두_맞히면_실패(monkeypatch):
-    monkeypatch.setattr(lt.config, "NEWS_START", "2026-02-01")
-    monkeypatch.setattr(lt.config, "NEWS_END", "2026-02-28")
+    monkeypatch.setattr(lt.config, "CRITERION_B_START", "2026-02-01")
+    monkeypatch.setattr(lt.config, "CRITERION_B_END", "2026-02-28")
     labels = make_labels()
     result = pd.DataFrame({"answer": labels["label"].tolist() * 2, "truth": labels["label"].tolist() * 2,
                            "events_after_dated": [0] * 20})
@@ -51,8 +51,8 @@ def test_사건_날짜_분류(text, expected):
 
 
 def test_날짜가_불분명한_사건도_실패로_센다(monkeypatch):
-    monkeypatch.setattr(lt.config, "NEWS_START", "2026-02-01")
-    monkeypatch.setattr(lt.config, "NEWS_END", "2026-02-28")
+    monkeypatch.setattr(lt.config, "CRITERION_B_START", "2026-02-01")
+    monkeypatch.setattr(lt.config, "CRITERION_B_END", "2026-02-28")
     labels = make_labels()
     result = pd.DataFrame({"answer": ["상승"] * 10, "truth": labels["label"].tolist(),
                            "events_after_dated": [0] * 10, "events_undated": [0] * 9 + [1]})

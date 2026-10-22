@@ -126,8 +126,8 @@ def test_기준B_는_두_모델을_같은_날_현금으로_시작해_비교한�
     inverse = pd.Series([100.0, 90.0, 100.0], index=days)
     monkeypatch.setattr(bt, "load_prices", lambda: (samsung, inverse))
     monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "NEWS_START", "2026-02-02")
-    monkeypatch.setattr(config, "NEWS_END", "2026-02-04")
+    monkeypatch.setattr(config, "CRITERION_B_START", "2026-02-02")
+    monkeypatch.setattr(config, "CRITERION_B_END", "2026-02-04")
     pd.DataFrame({"label": [UP, DOWN, FLAT]}, index=days).to_parquet(tmp_path / "labels.parquet")
     numeric = pd.DataFrame({"signal": [UP] * 6}, index=pd.bdate_range("2026-01-28", periods=3).append(days))
     news = pd.DataFrame({"signal": [FLAT, DOWN, DOWN], "adjusted": [True, True, True], "news_scored": True}, index=days)
@@ -163,3 +163,29 @@ def test_현금_규칙_첫날_하락은_수수료_없이_현금():
     result = bt.simulate(pd.Series([DOWN, FLAT, UP, DOWN], index=days), samsung, pd.Series(dtype=float), down_action="cash")
     assert result["position"].tolist() == [bt.CASH, bt.CASH, bt.LONG, bt.CASH]  # 인버스 가격 없이도 계산된다
     assert result["equity"].tolist() == pytest.approx([1.0, 1.0, 0.999, 0.999 * 100 / 95 * 0.999])
+
+
+def test_적중률은_구간_뒤에_확정된_정답을_쓰지_않는다(monkeypatch, tmp_path):
+    days = pd.bdate_range("2026-01-05", periods=12)
+    close = pd.Series(range(100, 112), index=days, dtype=float)
+    monkeypatch.setattr(bt, "load_prices", lambda: (close, close))
+    labels = pd.DataFrame({"label": [UP] * 12, "future_date": days.shift(5, freq="B")}, index=days)
+    monkeypatch.setattr(bt.config, "PROCESSED_DIR", str(tmp_path))
+    labels.to_parquet(tmp_path / "labels.parquet")
+    signals = pd.DataFrame({"signal": [UP] * 12, "confidence": 0.5}, index=days)
+    r = bt.evaluate(signals, end=days[9], down_action="cash")
+    assert r["direction"]["n"] == 5  # 정답 기간이 구간 끝(10번째 날) 안에 끝난 신호만
+
+
+def test_공식_구간은_데이터가_늘어도_그대로다(monkeypatch, tmp_path):
+    days = pd.bdate_range("2026-01-05", periods=5)
+    close = pd.Series([100.0, 110, 99, 120, 60], index=days)
+    monkeypatch.setattr(bt, "load_prices", lambda: (close, close))
+    monkeypatch.setattr(bt.config, "PROCESSED_DIR", str(tmp_path))
+    pd.DataFrame({"label": [UP] * 5, "future_date": days.shift(1, freq="B")}, index=days).to_parquet(tmp_path / "labels.parquet")
+    signals = pd.DataFrame({"signal": [UP, FLAT, DOWN, UP, UP], "confidence": 0.5}, index=days)
+    short = bt.evaluate(signals.iloc[:3], end=days[2], down_action="cash")
+    longer = bt.evaluate(signals, end=days[2], down_action="cash")
+    assert short["judge_a"]["model"] == longer["judge_a"]["model"]
+    assert longer["judge_a"]["model"]["mdd"] == pytest.approx(0.9 * 0.999 - 1)  # 110 → 99 하락 뒤 매도 수수료
+    assert longer["direction"]["n"] == short["direction"]["n"] == 1  # 3일째 신호 정답(4일째 종가)은 구간 뒤라 빠진다

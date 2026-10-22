@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from src import agent, config, llm, tools
-from src.pipeline import live_signal, scoreboard
+from src.pipeline import experiment, live_signal, scoreboard
 
 st.set_page_config(page_title=f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
 
@@ -42,6 +42,70 @@ def load_signals() -> pd.DataFrame:
 def load_prices() -> pd.Series:
     """저장된 삼성전자 종가."""
     return pd.read_parquet(Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet")["Close"].astype(float)
+
+
+@st.cache_resource
+def experiment_data() -> experiment.Data:
+    """조건 비교 실험용 원본 표와 학습 결과 보관소(같은 학습 조건은 한 번만 학습한다)."""
+    return experiment.Data()
+
+
+def experiment_tab():
+    """설정값 조합을 골라 지금까지 모은 데이터로 다시 계산해 비교한다. 결과는 모두 탐색이다."""
+    st.subheader("조건 모니터링 리포트")
+    st.caption("사전 등록한 조건을 하나씩 바꿔 본 민감도 분석과 해석. 평일 자동 실행이 매주 금요일에 다시 만든다.")
+    report_path = Path(config.MONITOR_REPORT_PATH)
+    if st.button("모니터링 다시 계산"):
+        with st.spinner("계산 중(조건마다 다시 학습해 몇 분 걸린다)"):
+            st.session_state.monitor = experiment.monitor(experiment_data())
+    if "monitor" in st.session_state:
+        for group, curves in st.session_state.monitor["curves"].items():
+            st.markdown(f"**{group} 자산 곡선**")
+            st.line_chart(pd.DataFrame(curves))
+    if report_path.exists():
+        with st.expander("리포트 전문", expanded=False):
+            st.markdown(report_path.read_text(encoding="utf-8"))
+    else:
+        st.info("아직 리포트가 없다. 위 버튼으로 만든다.")
+    st.divider()
+    st.subheader("직접 조건 고르기")
+    st.caption("선택한 날짜와 상관없이 저장된 전체 데이터로 다시 계산한다. 검증 구간을 본 뒤의 비교라 **탐색 결과**이며 공식 판정(기준 A·B)을 바꾸지 않는다. "
+               "신호 시각(15:15)과 기사 수집 구간은 뉴스를 다시 채점해야 바뀌므로 여기서는 고를 수 없다.")
+    base = config.EXPERIMENT_BASE
+    names = {**config.RETRAIN_FREQS, **config.EXECUTIONS, **config.DOWN_ACTION_LABELS, **config.NEWS_SCORE_FIELDS,
+             "none": "숫자 모델만", "adjust": "뉴스 보정", "base": "기존 지표", "candidate": "후보 지표(A+B+D)", None: "쓰지 않음"}
+    options = {**{k: config.EXPERIMENT_UI_OPTIONS[k] for k in ("horizon_days", "threshold")}, **experiment.CHOICES,
+               **{k: v for k, v in config.EXPERIMENT_UI_OPTIONS.items() if k not in ("horizon_days", "threshold")}}
+    vary = {}
+    cols = st.columns(3)
+    for i, (key, values) in enumerate(options.items()):
+        if base[key] not in values:
+            values = [base[key], *values]
+        vary[key] = cols[i % 3].multiselect(experiment.LABELS[key], values, default=[base[key]], key=f"exp_{key}",
+                                            format_func=lambda v: names.get(v, str(v)))
+    c1, c2 = st.columns(2)
+    start = c1.text_input("시작일(비우면 자동)", "", key="exp_start")
+    end = c2.text_input("끝일(비우면 자동)", "", key="exp_end")
+    vary = {k: v for k, v in vary.items() if v}
+    cfgs = experiment.expand({**base, "start": start or None, "end": end or None}, vary)
+    st.caption(f"조합 {len(cfgs)}개. 정답 정의·지표 묶음·재학습 주기가 다르면 조합마다 다시 학습해 시간이 걸린다.")
+    if st.button("비교 실행", disabled=len(cfgs) > config.EXPERIMENT_MAX_COMBOS):
+        try:
+            with st.spinner("계산 중"):
+                table, curves = experiment.compare(cfgs, experiment_data())
+            st.session_state.experiment = (table, curves)
+        except ValueError as e:
+            st.warning(str(e))
+    if "experiment" in st.session_state:
+        table, curves = st.session_state.experiment
+        st.markdown(experiment.to_markdown(table))
+        st.line_chart(pd.DataFrame(curves))
+        if st.button("보고서로 저장"):
+            stamp = pd.Timestamp.now(tz=config.KST).strftime("%Y%m%d_%H%M")
+            path = Path(config.EXPERIMENT_REPORT_DIR) / f"experiments_{stamp}_ui.md"
+            path.write_text(f"# 조건 비교 실험 {stamp}\n\n" + experiment.to_markdown(table), encoding="utf-8", newline="
+")
+            st.success(f"저장: {path}")
 
 
 @st.cache_data(ttl=600)
@@ -128,7 +192,8 @@ with data_col:
     if "note" in sig:
         st.info(sig["note"])
 
-    tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live = st.tabs(["가격·신호", "지표", "판단 기록", "뉴스", "성과", "실시간 성적"])
+    tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live, tab_exp = st.tabs(
+        ["가격·신호", "지표", "판단 기록", "뉴스", "성과", "실시간 성적", "조건 비교"])
     with tab_chart:
         days = st.slider("기간(거래일)", 20, 250, 120)
         st.altair_chart(price_chart(as_of, days), width="stretch")
@@ -150,6 +215,10 @@ with data_col:
             st.info(j.get("note", "판단 기록 없음"))
         else:
             st.subheader(f"합의 {j['final']['score']:+d} (확신도 {j['final']['confidence']:.2f})")
+            if "downside_risk" in j["final"]:
+                f = j["final"]
+                st.caption(f"분류별: 삼성 직접 {f['samsung_score']:+d} · 반도체 {f['semis_score']:+d} · 거시 {f['macro_score']:+d}"
+                           f" · 하락 위험 {f['downside_risk']}/{config.RISK_MAX}")
             st.write(j["final"]["rationale"])
             st.caption(f"남은 이견: {j['final']['disagreement']}")
             st.markdown("**핵심 기사**\n" + "\n".join(f"- {t}" for t in j["final"]["key_articles"] if t))
@@ -187,6 +256,8 @@ with data_col:
             curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
             if curves:
                 st.line_chart(pd.DataFrame(curves))
+    with tab_exp:
+        experiment_tab()
 
 # ---- 왼쪽: 질의응답 ----
 with chat_col:

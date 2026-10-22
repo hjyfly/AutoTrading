@@ -79,13 +79,17 @@ def test_RSS_서머타임_전환일(pub_utc, expected_kst, signal):
     assert cn.assign_signal_date(effective, days) == pd.Timestamp(signal)
 
 
-def test_샘플_신호일은_매주_수요일():
-    days = pd.DatetimeIndex(pd.bdate_range(config.NEWS_START, config.NEWS_END))
+def test_샘플_신호일은_매주_수요일(monkeypatch):
+    monkeypatch.setattr(config, "NEWS_START", "2026-02-01")
+    monkeypatch.setattr(config, "NEWS_END", "2026-04-30")
+    days = pd.DatetimeIndex(pd.bdate_range("2026-02-01", "2026-04-30"))
     picked = cn.sample_signal_dates(days)
     assert all(d.weekday() == 2 for d in picked)
     assert len(picked) == 13
 
 
-def test_수요일이_휴장이면_다음_거래일():
-    days = pd.DatetimeIndex(pd.bdate_range(config.NEWS_START, config.NEWS_END)).drop(pd.Timestamp("2026-02-18"))
+def test_수요일이_휴장이면_다음_거래일(monkeypatch):
+    monkeypatch.setattr(config, "NEWS_START", "2026-02-01")
+    monkeypatch.setattr(config, "NEWS_END", "2026-04-30")
+    days = pd.DatetimeIndex(pd.bdate_range("2026-02-01", "2026-04-30")).drop(pd.Timestamp("2026-02-18"))
     assert pd.Timestamp("2026-02-19") in cn.sample_signal_dates(days)

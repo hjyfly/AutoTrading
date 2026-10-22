@@ -135,10 +135,19 @@ def load_prices() -> tuple[pd.Series, pd.Series]:
     return samsung, inverse
 
 
-def evaluate(signals: pd.DataFrame, start=None, end=None, down_action: str | None = None) -> dict:
-    """신호 표(signal, confidence)를 구간에서 모의 매매하고 기준 A, 기준선, 보조 지표를 계산한다. down_action 은 하락 신호 때 행동."""
+def evaluate(signals: pd.DataFrame, start=None, end=None, down_action: str | None = None, labels_known_before=None) -> dict:
+    """신호 표(signal, confidence)를 구간에서 모의 매매하고 기준 A, 기준선, 보조 지표를 계산한다. down_action 은 하락 신호 때 행동.
+
+    labels_known_before 를 주면 정답 기간이 그날 전에 끝난(그때 이미 확정된) 정답만으로 적중률을 잰다.
+    주지 않으면 end 다음 날을 쓴다. 그래서 구간 끝 무렵 신호의 정답(구간 뒤 종가로 정해짐)은 적중률에 들어가지 않는다.
+    """
     samsung, inverse = load_prices()
-    labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")["label"]
+    known = pd.Timestamp(labels_known_before) if labels_known_before is not None else (
+        pd.Timestamp(end) + pd.Timedelta(days=1) if end is not None else None)
+    label_table = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")
+    if known is not None:
+        label_table = label_table[label_table["future_date"] < known]
+    labels = label_table["label"]
     sig = signals.loc[start:end]
     dates = sig.index
     model_eq = simulate(sig["signal"], samsung, inverse, down_action)["equity"]
@@ -166,7 +175,8 @@ def evaluate(signals: pd.DataFrame, start=None, end=None, down_action: str | Non
 def evaluate_b(numeric: pd.DataFrame, news: pd.DataFrame, down_action: str | None = None) -> dict:
     """뉴스 구간에서 두 신호를 같은 날 현금으로 시작해 각각 모의 매매하고 기준 B 를 판정한다."""
     samsung, inverse = load_prices()
-    dates = numeric.loc[config.NEWS_START:config.NEWS_END].index
+    dates = numeric.loc[config.CRITERION_B_START:config.CRITERION_B_END].index
+    news = news.loc[dates.min():dates.max()]
     if not news.index.equals(dates):
         raise ValueError("뉴스 포함 신호와 숫자 모델 신호의 날짜가 다르다")
     news_eq = simulate(news["signal"], samsung, inverse, down_action)["equity"]
@@ -188,10 +198,10 @@ def rule_title(rule: str) -> str:
     return f"하락 = {label} ({config.DOWN_ACTION_CHANGED_ON} 변경. 검증 구간을 본 뒤의 재계산이라 탐색 결과)"
 
 
-def print_judge_a(title: str, r: dict):
-    """기준 A 결과 한 묶음을 출력한다. 공식 판정 규칙이 아니면 '(참고)'로 표시한다."""
+def print_judge_a(title: str, r: dict, official: bool = True):
+    """기준 A 결과 한 묶음을 출력한다. 공식 판정 규칙이 아니거나 official=False(후보 모델 등)면 '(참고)'로 표시한다."""
     a = r["judge_a"]
-    label = "기준 A" if r.get("down_action") == config.OFFICIAL_DOWN_ACTION else "(참고) 기준 A"
+    label = "기준 A" if official and r.get("down_action") == config.OFFICIAL_DOWN_ACTION else "(참고) 기준 A"
     print(f"  {title}: 수익 {a['model']['total_return']:+.1%}  MDD {a['model']['mdd']:.1%}  칼마 {a['model']['calmar']:.2f}"
           f"  → {label} {'통과' if a['passed'] else '실패'} (MDD 조건 {a['mdd_ok']}, 수익 조건 {a['return_ok']})")
 
@@ -199,7 +209,8 @@ def print_judge_a(title: str, r: dict):
 def main():
     """하락 행동 규칙(인버스·현금)마다 기준 A·후보 모델·기준 B 를 계산해 출력하고 자산 곡선을 저장한다."""
     signals = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
-    base = evaluate(signals, down_action=config.OFFICIAL_DOWN_ACTION)
+    official_end = config.OFFICIAL_VALID_END  # 공식 판정은 처음 데이터 끝날까지로 고정한다. 주간 갱신으로 늘어난 날은 아래에 참고로 낸다
+    base = evaluate(signals, end=official_end, down_action=config.OFFICIAL_DOWN_ACTION)
     a = base["judge_a"]
     print("구간", base["period"], f"| 들고 있기 수익 {a['hold']['total_return']:+.1%}  MDD {a['hold']['mdd']:.1%}  칼마 {a['hold']['calmar']:.2f}")
     print("방향 적중", {k: round(v, 3) for k, v in base["direction"].items()}, "| 3분류 정확도", round(base["accuracy"], 3))
@@ -210,14 +221,22 @@ def main():
     news_path = Path(config.PROCESSED_DIR) / "signals_news.parquet"
     for rule in config.DOWN_ACTIONS:
         print(f"[{rule_title(rule)}]")
-        r = base if rule == config.OFFICIAL_DOWN_ACTION else evaluate(signals, down_action=rule)
+        r = base if rule == config.OFFICIAL_DOWN_ACTION else evaluate(signals, end=official_end, down_action=rule)
         print_judge_a("숫자 모델", r)
         for name, s in r["baselines"].items():
             print(f"    기준선 {name}: 수익 {s['total_return']:+.1%}  MDD {s['mdd']:.1%}")
+        if signals.index.max() > pd.Timestamp(official_end):  # 늘어난 구간까지(참고, 공식 판정 아님). 화면 자산 곡선은 이 전체 곡선을 쓴다
+            r = evaluate(signals, down_action=rule)
+            a = r["judge_a"]
+            print(f"  (참고) 갱신으로 늘어난 구간 포함 {r['period']}: 수익 {a['model']['total_return']:+.1%}  MDD {a['model']['mdd']:.1%}"
+                  f" | 들고 있기 {a['hold']['total_return']:+.1%}  MDD {a['hold']['mdd']:.1%} — 공식 판정 아님")
         pd.DataFrame({"model": r["equity"], "hold": r["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / f"equity_numeric_{rule}.parquet")
         if cand_path.exists():  # 후보 모델(A+B+D 추가): 사전 등록 ①안, 검증 구간을 본 뒤 한 번만 실행한 탐색
-            c = evaluate(pd.read_parquet(cand_path), down_action=rule)
-            print_judge_a("후보 모델(①안 탐색, 공식 판정 아님)", c)
+            candidate = pd.read_parquet(cand_path)
+            c = evaluate(candidate, end=official_end, down_action=rule)
+            print_judge_a("후보 모델(①안 탐색, 공식 판정 아님)", c, official=False)
+            if candidate.index.max() > pd.Timestamp(official_end):  # 화면 자산 곡선은 기존 모델처럼 늘어난 구간까지 저장한다
+                c = evaluate(candidate, down_action=rule)
             pd.DataFrame({"model": c["equity"], "hold": c["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / f"equity_candidate_{rule}.parquet")
         if news_path.exists():
             b = evaluate_b(signals, pd.read_parquet(news_path), down_action=rule)

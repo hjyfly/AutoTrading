@@ -88,3 +88,17 @@ def test_실제_데이터에서_기존과_후보_모델의_학습_조건이_같�
     assert base.index.equals(cand.index)
     for col in ["retrained_on", "train_rows", "train_last_future_date"]:
         assert base[col].equals(cand[col]), col
+
+
+@pytest.mark.parametrize("freq, expected", [("W", lambda d: d.to_period("W")), ("Q", lambda d: d.to_period("Q"))])
+def test_재학습_주기를_바꿔도_정답_기간_간격을_지킨다(freq, expected):
+    features, labels = make_data(300)
+    out = tr.walk_forward(features, labels, valid_start="2025-05-01", freq=freq)
+    assert (out["train_last_future_date"] < out["retrained_on"]).all()
+    assert out["retrained_on"].nunique() == expected(out.index).nunique()
+
+
+def test_알_수_없는_재학습_주기는_거부한다():
+    features, labels = make_data()
+    with pytest.raises(ValueError):
+        tr.walk_forward(features, labels, valid_start="2025-05-01", freq="D")

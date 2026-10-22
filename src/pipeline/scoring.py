@@ -24,6 +24,10 @@ class Opinion(BaseModel):
     confidence: float = Field(ge=0, le=1, description="이 점수에 대한 확신도 0~1")
     rationale: str = Field(description="판단 근거. 한국어 3문장 이내")
     key_articles: list[int] = Field(description="판단에 가장 큰 영향을 준 기사 번호. 최대 5개")
+    samsung_score: int = Field(ge=config.SCORE_MIN, le=config.SCORE_MAX, description="삼성전자 직접 뉴스만 봤을 때의 점수. 해당 기사가 없으면 0")
+    semis_score: int = Field(ge=config.SCORE_MIN, le=config.SCORE_MAX, description="반도체·AI 업황 뉴스만 봤을 때의 점수. 해당 기사가 없으면 0")
+    macro_score: int = Field(ge=config.SCORE_MIN, le=config.SCORE_MAX, description="거시(유가·금리·환율·관세·중국) 뉴스만 봤을 때의 점수. 해당 기사가 없으면 0")
+    downside_risk: int = Field(ge=config.RISK_MIN, le=config.RISK_MAX, description="방향과 별개로, 앞으로 크게 떨어질 위험이 얼마나 큰가. 0 거의 없음 ~ 5 매우 큼")
 
 
 class DebateOpinion(Opinion):
@@ -40,6 +44,10 @@ class Consensus(BaseModel):
     rationale: str = Field(description="최종 판단 근거. 한국어 3문장 이내")
     key_articles: list[int] = Field(description="핵심 기사 번호. 최대 5개")
     disagreement: str = Field(description="채점자 사이에 남은 이견. 없으면 '없음'")
+    samsung_score: int = Field(ge=config.SCORE_MIN, le=config.SCORE_MAX, description="삼성전자 직접 뉴스 종합 점수")
+    semis_score: int = Field(ge=config.SCORE_MIN, le=config.SCORE_MAX, description="반도체·AI 업황 뉴스 종합 점수")
+    macro_score: int = Field(ge=config.SCORE_MIN, le=config.SCORE_MAX, description="거시 뉴스 종합 점수")
+    downside_risk: int = Field(ge=config.RISK_MIN, le=config.RISK_MAX, description="종합 하락 위험 0~5")
 
 
 class ScoringState(TypedDict):
@@ -74,7 +82,9 @@ def format_company(report: pd.Series | None) -> str:
 
 
 TASK = (f"삼성전자 주가가 앞으로 {config.LABEL_HORIZON_DAYS}거래일 동안 위 뉴스들의 영향을 어떻게 받을지 {config.SCORE_MIN}~{config.SCORE_MAX} 점수로 매겨라. "
-        "기사 제목만 있으니 제목에서 읽을 수 있는 만큼만 판단하고, 삼성전자와 관련이 적은 기사는 무시하라.")
+        "기사 제목만 있으니 제목에서 읽을 수 있는 만큼만 판단하고, 삼성전자와 관련이 적은 기사는 무시하라. "
+        "종합 점수와 함께 분류별 점수(삼성전자 직접, 반도체·AI 업황, 거시)를 따로 매기고, "
+        f"방향과 별개로 크게 떨어질 위험을 {config.RISK_MIN}~{config.RISK_MAX}로 매겨라.")
 
 
 def _persona_messages(persona: str, state: ScoringState) -> list:
@@ -167,6 +177,7 @@ def score_day(signal_date, model=None, articles: pd.DataFrame | None = None, rep
         "signal_date": str(t.date()),
         "as_of": f"{t.date()} {config.SIGNAL_CUTOFF_KST} KST",
         "model": llm.scoring_model_id(),
+        "scoring_version": config.SCORING_VERSION,
         "company": None if report is None else {"report_nm": report["report_nm"], "rcept_dt": str(pd.Timestamp(report["rcept_dt"]).date())},
         "articles": [{"no": i, "title": r.title, "source": r.source, "url": r.url, "category": r.category,
                       "published_kst": pd.Timestamp(r.published_utc).tz_convert(KST).strftime("%Y-%m-%d %H:%M")}
@@ -202,6 +213,11 @@ def trace_to_row(trace: dict) -> dict:
         row[f"news_{p}"] = trace["round2"].get(p, {}).get("score", 0)
     row["news_consensus"] = trace["final"]["score"]
     row["news_consensus_conf"] = trace["final"]["confidence"]
+    row["scoring_version"] = trace.get("scoring_version", 1)
+    for key in [*[f"{c}_score" for c in config.NEWS_CATEGORIES], "downside_risk"]:  # 버전 2 상세 점수(버전 1 기록에는 없음)
+        row[f"news_{key}"] = trace["final"].get(key)
+    risks = [o.get("downside_risk") for o in trace["round2"].values() if o.get("downside_risk") is not None]
+    row["news_downside_risk_max"] = max(risks) if risks else None  # 채점자 중 가장 높은 하락 위험
     row["cost_usd"] = trace["cost_usd"]
     return row
 
@@ -211,6 +227,8 @@ def build_scores_table() -> pd.DataFrame:
     traces = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(Path(config.TRACES_DIR).glob("*.json"))]
     traces = [t for t in traces if config.NEWS_START <= t["signal_date"] <= config.NEWS_END]  # 실시간 채점 기록은 빼고 뉴스 구간만
     table = pd.DataFrame([trace_to_row(t) for t in traces]).sort_values("signal_date").reset_index(drop=True)
+    if table["scoring_version"].nunique() > 1:  # 형식이 다른 채점이 섞이면 상세 점수가 일부만 비게 된다
+        raise ValueError(f"채점 형식 버전이 섞였다: {sorted(table['scoring_version'].unique())}")
     if table["model"].nunique() > 1:  # 모델마다 아는 시점이 달라 섞이면 유출 위험을 구분할 수 없다
         raise ValueError(f"서로 다른 모델의 채점이 섞였다: {sorted(table['model'].unique())}")
     table.to_parquet(config.SCORES_PATH)

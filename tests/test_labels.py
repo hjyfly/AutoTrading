@@ -49,3 +49,9 @@ def test_분포는_구간별_비율을_돌려준다():
     row = dist.iloc[0]
     assert row["일수"] == 10
     assert row[lb.UP] + row[lb.FLAT] + row[lb.DOWN] == pytest.approx(100)
+
+
+def test_정답_기간과_기준을_인자로_바꿀_수_있다():
+    close = pd.Series([100, 101, 101.5, 104], index=pd.bdate_range("2026-01-05", periods=4))
+    out = lb.make_labels(close, horizon=2, threshold=0.02)
+    assert out["label"].tolist() == [lb.FLAT, lb.UP]  # 2거래일 뒤 +1.5% 는 보합, +3.0% 는 상승

@@ -7,20 +7,24 @@ from src import config
 UP, FLAT, DOWN = "상승", "보합", "하락"
 
 
-def make_labels(close: pd.Series) -> pd.DataFrame:
+def make_labels(close: pd.Series, horizon: int | None = None, threshold: float | None = None) -> pd.DataFrame:
     """t일 종가 대비 t+N거래일 종가 수익률로 상승·보합·하락 정답을 만든다. 정답이 없는 마지막 N거래일은 뺀다.
+
+    horizon(N)·threshold 를 주지 않으면 config.LABEL_HORIZON_DAYS·LABEL_THRESHOLD 를 쓴다(조건 비교 실험에서만 바꾼다).
 
     shift(-N) 은 정답을 만들 때만 쓴다. 이 결과는 학습 입력(특징)에 넣지 않는다.
     """
+    horizon = config.LABEL_HORIZON_DAYS if horizon is None else horizon
+    threshold = config.LABEL_THRESHOLD if threshold is None else threshold
     close = close.sort_index()
-    future_close = close.shift(-config.LABEL_HORIZON_DAYS)
+    future_close = close.shift(-horizon)
     ret = future_close / close - 1
     label = pd.Series(FLAT, index=close.index)
-    label[ret >= config.LABEL_THRESHOLD] = UP
-    label[ret <= -config.LABEL_THRESHOLD] = DOWN
+    label[ret >= threshold] = UP
+    label[ret <= -threshold] = DOWN
     df = pd.DataFrame({
         "close": close,
-        "future_date": pd.Series(close.index, index=close.index).shift(-config.LABEL_HORIZON_DAYS),
+        "future_date": pd.Series(close.index, index=close.index).shift(-horizon),
         "future_close": future_close,
         "future_return": ret,
         "label": label,
@@ -50,7 +54,8 @@ def main():
         "전체": (config.DATA_START, config.DATA_END),
         "학습(첫 18개월)": (config.DATA_START, config.TRAIN_END),
         "검증": (config.VALID_START, config.DATA_END),
-        "뉴스 구간(2~4월)": (config.NEWS_START, config.NEWS_END),
+        "기준 B 구간(2~4월)": (config.CRITERION_B_START, config.CRITERION_B_END),
+        "뉴스 구간(확장)": (config.NEWS_START, config.NEWS_END),
     }
     print(out, len(labels))
     print(label_distribution(labels, periods).to_string(index=False))

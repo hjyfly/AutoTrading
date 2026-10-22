@@ -28,3 +28,5 @@ data/processed/signals_live.parquet
 data/processed/scoreboard.json
 data/logs/
 data/scores/traces_archive/
+data/experiments/
+data/backup/

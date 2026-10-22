@@ -188,3 +188,14 @@ def test_에이전트_도구_목록():
 def test_수능일은_16시30분_마감():
     assert tools.last_closed_date("prices", "samsung_ohlcv", pd.Timestamp("2026-11-19 07:00", tz="UTC")) == pd.Timestamp("2026-11-18")  # 16:00 KST
     assert tools.last_closed_date("prices", "samsung_ohlcv", pd.Timestamp("2026-11-19 07:31", tz="UTC")) == pd.Timestamp("2026-11-19")
+
+
+def test_늘어난_신호가_있어도_공식_판정_구간은_고정되고_요청_시점_뒤는_계산하지_않는다(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tools, "signals_last_date", lambda: pd.Timestamp("2026-10-29"))
+    monkeypatch.setattr(tools, "_backtest_summary", lambda until, last: calls.append((until, last)) or {})
+    with tools.request_as_of("2026-10-22"):
+        tools.get_backtest_summary.invoke({})
+    assert calls == [("2026-10-21", "2026-10-29")]  # 요청 시점 전날까지만
+    with tools.request_as_of("2026-10-20"):
+        assert "refused" in tools.get_backtest_summary.invoke({})  # 공식 구간 끝(10-20) 종가 확정 전

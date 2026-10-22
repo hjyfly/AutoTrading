@@ -2,7 +2,7 @@
 
 1. 오늘이 거래일인지 확인한다(주말·공휴일이면 아무것도 하지 않는다).
 2. 오늘 신호를 만든다: 기존 모델 + 뉴스 보정(최종), 후보 모델(비교용).
-3. 실시간 성적표를 다시 계산한다.
+3. 실시간 성적표를 다시 계산한다. 금요일에는 저장 데이터를 갱신(config.REFRESH_WEEKDAY)한 뒤 조건 모니터링 리포트(config.MONITOR_WEEKDAY)를 다시 만든다.
 4. Gmail 로 결과를 보낸다. 실패하면 원인을 담은 메일을 보낸다.
 실행: .venv\\Scripts\\python -m src.daily_run [--no-email] [--no-news] [YYYY-MM-DD]
 """
@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 
 from src import config, llm, notify, tools
-from src.pipeline import live_signal, scoreboard
+from src.pipeline import experiment, live_signal, refresh_data, scoreboard
 
 DISCLAIMER = "투자 권유가 아니라 모델 판단의 설명입니다. 매매는 직접 판단해 주세요."
 
@@ -60,6 +60,18 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
         lines += ["", f"■ 비교용 후보 모델(A+B+D): {c['signal']} (확신도 {c['confidence']:.0%}) — 최종 신호 아님"]
     board = scoreboard.build(board_until)
     lines += ["", "■ 실시간 성적표"] + [f"  {x}" for x in scoreboard.summary_lines(board)]
+    scheduled = board_until is None  # 날짜를 지정한 재실행에서는 갱신·모니터링을 하지 않는다(그 날짜 뒤 정보가 섞이므로)
+    if scheduled and today.weekday() == config.REFRESH_WEEKDAY:
+        try:  # 주 1회 저장 데이터 갱신(새 확정 날짜만 덧붙임). 실패해도 신호 알림은 보낸다
+            lines += ["", "■ 저장 데이터 주간 갱신"] + [f"  {x}" for x in refresh_data.summary_lines(refresh_data.run())]
+        except Exception as e:
+            lines += ["", f"■ 저장 데이터 갱신 실패: {type(e).__name__}: {e}"]
+    if scheduled and (today.weekday() == config.MONITOR_WEEKDAY or not Path(config.MONITOR_REPORT_PATH).exists()):
+        try:  # 주 1회 조건 모니터링. 실패해도 신호 알림은 보낸다
+            summary = experiment.monitor()["summary"]
+            lines += ["", "■ 조건 모니터링 (주간, 탐색 · 자세한 해석은 experiments_monitor.md)"] + [f"  {x}" for x in summary]
+        except Exception as e:
+            lines += ["", f"■ 조건 모니터링 실패: {type(e).__name__}: {e}"]
     warnings = [f"{k}: {v['note']}" for k, v in out.get("data_sources", {}).items() if "실패" in v["note"]]
     if warnings:
         lines += ["", "■ 데이터 경고"] + [f"  {w}" for w in warnings]

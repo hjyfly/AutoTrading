@@ -19,7 +19,7 @@ import pandas as pd
 from langchain_core.tools import tool
 
 from src import config
-from src.pipeline import collect_dart, collect_macro, collect_news, collect_prices, features
+from src.pipeline import collect_dart, collect_news, features, refresh_data
 
 KST = config.KST
 _REQUEST_CAP: contextvars.ContextVar[pd.Timestamp | None] = contextvars.ContextVar("request_as_of", default=None)
@@ -73,33 +73,14 @@ def _load_raw(kind: str, name: str) -> pd.DataFrame:
 @functools.lru_cache(maxsize=64)
 def _live(kind: str, name: str, start: str, end: str) -> pd.DataFrame:
     """저장 범위를 넘는 기간을 실시간으로 받는다. end 는 그 시장 종가가 확정된 날 이하라 장중 값은 들어오지 않는다. 같은 요청은 캐시한다."""
-    if kind == "prices" and name == "samsung_ohlcv":
-        return collect_prices.fetch_ohlcv(config.SAMSUNG_CODE, start, end)
-    if kind == "prices" and name == "samsung_investor_flows":
-        return collect_prices.fetch_foreign_net(config.SAMSUNG_CODE, start, end)
-    if kind == "prices" and name == f"inverse_{config.INVERSE_ETF_CODE}":
-        return collect_prices.fetch_ohlcv(config.INVERSE_ETF_CODE, start, end)
-    if kind == "prices" and name in config.KR_EXTRA:
-        return collect_prices.fetch_close(config.KR_EXTRA[name], start, end)
-    if kind == "macro":
-        return collect_macro.fetch_yf({**config.YF_TICKERS, **config.YF_TICKERS_EXT}[name], start, end)
-    raise ValueError(f"실시간으로 받을 수 없는 데이터: {kind}/{name}")
+    return refresh_data.fetch_series(kind, name, start, end)
 
 
-# 시장별 시간대와 마감 시각. 실시간 조회는 마감이 지난 날까지만 받는다(장중 미확정 값 제외)
-MARKET_CLOSE = config.MARKET_CLOSE
-US_CLOSE = config.US_MARKET_CLOSE
 
 
 def last_closed_date(kind: str, name: str, now: pd.Timestamp | None = None) -> pd.Timestamp:
-    """그 시장에서 종가가 확정된 가장 최근 현지 날짜."""
-    tz, close = MARKET_CLOSE.get(kind if kind == "prices" else name, US_CLOSE)
-    local = (now if now is not None else pd.Timestamp.now(tz="UTC")).tz_convert(tz).tz_localize(None)
-    day = local.normalize()
-    if kind == "prices":  # 수능일 등 늦게 마감하는 날
-        close = config.KRX_LATE_CLOSE.get(str(day.date()), close)
-    hour, minute = map(int, close.split(":"))
-    return day if local - day >= pd.Timedelta(hours=hour, minutes=minute) else day - pd.Timedelta(days=1)
+    """그 시장에서 종가가 확정된 가장 최근 현지 날짜(계산은 refresh_data 에 있다)."""
+    return refresh_data.last_closed_date(kind, name, now)
 
 
 def series_until(kind: str, name: str, cut: pd.Timestamp) -> tuple[pd.DataFrame, str]:
@@ -239,17 +220,17 @@ def news_for_signal(as_of: str | None = None, keyword: str | None = None, limit:
 
 
 def _candidate_signal(t: pd.Timestamp, live_path: Path) -> dict | None:
-    """후보 모델 신호: 검증 구간은 signals_candidate.parquet, 그 뒤는 실시간 기록(model='candidate')."""
+    """후보 모델 신호: 실시간 기록(model='candidate')이 있으면 그것을, 없으면 signals_candidate.parquet 을 쓴다(기존 모델과 같은 순서)."""
     path = Path(config.SIGNALS_CANDIDATE_PATH)
     row = None
-    if path.exists():
-        stored = pd.read_parquet(path)
-        row = stored.loc[t] if t in stored.index else None
-    if row is None and live_path.exists():
+    if live_path.exists():
         live = pd.read_parquet(live_path)
         if "model" in live.columns:
             live = live[live["model"] == "candidate"]
             row = live.loc[t] if t in live.index else None
+    if row is None and path.exists():
+        stored = pd.read_parquet(path)
+        row = stored.loc[t] if t in stored.index else None
     if row is None:
         return None
     return {"signal": row["signal"], "confidence": round(float(row["confidence"]), 3),
@@ -262,14 +243,16 @@ def signal_for(date: str) -> dict:
     t = resolve_as_of(date)
     out = {"date": str(t.date())}
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
-    if t in numeric.index:
+    live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
+    live_all = pd.read_parquet(live_path) if live_path.exists() else pd.DataFrame()
+    live_days = live_all[live_all.get("model", pd.Series("base", index=live_all.index)) == "base"].index if len(live_all) else pd.DatetimeIndex([])
+    if t in numeric.index and t not in live_days:  # 실시간 기록이 있는 날은 화면·메일과 같게 그 기록을 쓴다
         r = numeric.loc[t]
         out["numeric"] = {"signal": r["signal"], "confidence": round(float(r["confidence"]), 3),
                           "probabilities": {c: round(float(r[f"p_{c}"]), 3) for c in ("상승", "보합", "하락")},
                           "model_block_start": str(r["retrained_on"].date()),
                           "train_label_last_date": str(r["train_last_future_date"].date())}
-    live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
-    if "numeric" not in out and live_path.exists():  # 검증 구간 뒤의 날짜는 실시간으로 만든 신호를 쓴다
+    if "numeric" not in out and live_path.exists():  # 실시간으로 만든 신호(검증 구간 뒤, 또는 기록이 있는 날)
         live = pd.read_parquet(live_path)
         if "model" not in live.columns:
             live["model"] = "base"
@@ -306,7 +289,8 @@ def signal_for(date: str) -> dict:
 
 
 def news_judgement(date: str) -> dict:
-    """그날 뉴스 채점의 판단 기록: 채점자 3명의 토론 뒤 의견, 중재자 정리, 핵심 기사 제목."""
+    """그날 뉴스 채점의 판단 기록: 채점자 3명의 토론 뒤 의견, 중재자 정리, 핵심 기사 제목.
+    채점 버전 2 기록이면 분류별 점수(삼성 직접·반도체·거시)와 하락 위험도 함께 돌려준다."""
     t = resolve_as_of(date)
     path = Path(config.TRACES_DIR) / f"{t.date()}.json"
     if not path.exists():
@@ -316,29 +300,56 @@ def news_judgement(date: str) -> dict:
         raise ValueError(f"판단 기록 날짜 {trace['signal_date']} 가 요청 날짜 {t.date()} 와 다르다")
     titles = {a["no"]: a["title"] for a in trace["articles"]}
     final = trace["final"]
+    detail = [f"{c}_score" for c in config.NEWS_CATEGORIES] + ["downside_risk"]  # 버전 1 기록에는 없다
     return {"date": trace["signal_date"], "as_of": trace["as_of"], "model": trace["model"], "company": trace["company"],
+            "scoring_version": trace.get("scoring_version", 1),
             "final": {**{k: final[k] for k in ("score", "confidence", "rationale", "disagreement")},
+                      **{k: final[k] for k in detail if k in final},
                       "key_articles": [titles.get(n) for n in final["key_articles"]]},
-            "personas": {p: {k: o[k] for k in ("score", "confidence", "rationale", "change_reason")} for p, o in trace["round2"].items()}}
+            "personas": {p: {k: o[k] for k in ("score", "confidence", "rationale", "change_reason", *detail) if k in o}
+                         for p, o in trace["round2"].items()}}
 
 
-@functools.lru_cache(maxsize=1)
-def backtest_summary() -> dict:
-    """검증 구간 전체 모의 매매 결과(기준 A)와 보조 지표 요약."""
+def signals_last_date() -> pd.Timestamp:
+    """저장된 숫자 모델 신호의 마지막 날짜(주간 갱신으로 늘어난다). 요청마다 파일에서 읽는다."""
+    return pd.read_parquet(config.SIGNALS_NUMERIC_PATH, columns=["signal"]).index.max()
+
+
+def backtest_summary(until: str | None = None) -> dict:
+    """검증 구간 모의 매매 결과(기준 A)와 보조 지표 요약.
+
+    공식 판정은 config.OFFICIAL_VALID_END 까지로 고정한다. until 이 그보다 뒤면 늘어난 구간까지의 참고 결과(extended)도 낸다.
+    """
+    last = signals_last_date()
+    until_ts = min(pd.Timestamp(until), last) if until else last
+    return _backtest_summary(str(until_ts.date()), str(last.date()))
+
+
+@functools.lru_cache(maxsize=8)
+def _backtest_summary(until: str, data_last: str) -> dict:
+    """계산 결과 캐시(신호 파일이 늘면 data_last 가 달라져 다시 계산한다)."""
     from src.pipeline import backtest  # 무거운 계산이라 필요할 때만 불러온다
     signals = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
     out = {"current_down_action": config.DOWN_ACTION,
-           "note": (f"하락={config.DOWN_ACTION_LABELS[config.OFFICIAL_DOWN_ACTION]} 결과가 1~3일차 공식 판정이다. "
-                    f"다른 규칙({config.DOWN_ACTION_CHANGED_ON} 변경)은 검증 구간을 본 뒤 재계산한 탐색 결과다"),
+           "note": (f"하락={config.DOWN_ACTION_LABELS[config.OFFICIAL_DOWN_ACTION]}, {config.VALID_START}~{config.OFFICIAL_VALID_END} 결과가 1~3일차 공식 판정이다. "
+                    f"다른 규칙({config.DOWN_ACTION_CHANGED_ON} 변경)과 늘어난 구간(extended)은 검증 구간을 본 뒤의 참고 결과다"),
            "report": "evaluation/reports/day3_backtest.md", "by_rule": {}}
-    for rule in config.DOWN_ACTIONS:
-        r = backtest.evaluate(signals, down_action=rule)
-        a = r["judge_a"]
-        out["period"] = r["period"]
-        out["direction"] = {k: round(v, 4) for k, v in r["direction"].items()}
-        out["hold"] = {k: round(v, 4) for k, v in a["hold"].items()}
-        out["by_rule"][rule] = {"criterion_a": {"passed": a["passed"], "mdd_ok": a["mdd_ok"], "return_ok": a["return_ok"]},
-                                "model": {k: round(v, 4) for k, v in a["model"].items()}}
+
+    def block(end):
+        """끝날까지 하락 행동 규칙마다 기준 A 결과를 계산한다."""
+        result = {}
+        for rule in config.DOWN_ACTIONS:
+            r = backtest.evaluate(signals, end=end, down_action=rule)
+            a = r["judge_a"]
+            result.update(period=r["period"], direction={k: round(v, 4) for k, v in r["direction"].items()},
+                          hold={k: round(v, 4) for k, v in a["hold"].items()})
+            result.setdefault("by_rule", {})[rule] = {"criterion_a": {"passed": a["passed"], "mdd_ok": a["mdd_ok"], "return_ok": a["return_ok"]},
+                                                      "model": {k: round(v, 4) for k, v in a["model"].items()}}
+        return result
+
+    out.update(block(config.OFFICIAL_VALID_END))
+    if pd.Timestamp(until) > pd.Timestamp(config.OFFICIAL_VALID_END):
+        out["extended"] = {**block(until), "note": "주간 갱신으로 늘어난 날까지 포함한 참고 결과(공식 판정 아님)"}
     return out
 
 
@@ -411,10 +422,11 @@ def get_backtest_summary() -> dict:
     """검증 구간 전체의 모의 매매 성과(기준 A 판정, 수익률, MDD, 방향 적중률). 사후 평가다.
     모델 성과를 묻는 질문에만 쓰고, 특정 날짜의 판단 근거로 쓰지 않는다. 질문 시점이 검증 구간 끝 이전이면 제공하지 않는다."""
     cap = _REQUEST_CAP.get()
-    available = pd.Timestamp(config.DATA_END) + pd.Timedelta(days=1)
+    available = pd.Timestamp(config.OFFICIAL_VALID_END) + pd.Timedelta(days=1)  # 공식 판정 구간의 마지막 종가가 확정된 다음 날
     if cap is not None and cap < available:
         return {"refused": f"검증 구간 전체 결과는 {available.date()} 이후에 알 수 있어 요청 시점 {cap.date()} 에는 제공하지 않는다"}
-    return backtest_summary()
+    # 늘어난 구간은 요청 시점 전날까지만 계산한다(신호 파일 끝날도 넘지 않는다)
+    return backtest_summary(str((pd.Timestamp(cap) - pd.Timedelta(days=1)).date()) if cap is not None else None)
 
 
 TOOLS = [get_price, get_investor_flows, get_macro, get_indicators, get_company_report,

@@ -24,7 +24,8 @@ class StubLLM:
             def invoke(self, messages):
                 with stub.lock:
                     stub.calls.append((schema.__name__, messages))
-                base = {"score": 2, "confidence": 0.6, "rationale": "근거", "key_articles": [1]}
+                base = {"score": 2, "confidence": 0.6, "rationale": "근거", "key_articles": [1],
+                        "samsung_score": 3, "semis_score": 1, "macro_score": -1, "downside_risk": 2}
                 if schema is sc.DebateOpinion:
                     base["change_reason"] = "유지"
                 if schema is sc.Consensus:
@@ -126,4 +127,21 @@ def test_다른_모델_점수가_섞이면_막는다(monkeypatch):
     monkeypatch.setattr(sc.llm, "scoring_model_id", lambda: "other-model")
     sc.score_day(pd.Timestamp("2026-03-12"), model=StubLLM(), articles=make_articles(0), report=REPORT)
     with pytest.raises(ValueError):
+        sc.build_scores_table()
+
+
+def test_상세_점수와_버전이_점수_표에_들어간다():
+    sc.score_day(T, model=StubLLM(), articles=make_articles(), report=REPORT)
+    table = sc.build_scores_table()
+    row = table.iloc[0]
+    assert row["scoring_version"] == config.SCORING_VERSION
+    assert (row["news_samsung_score"], row["news_semis_score"], row["news_macro_score"], row["news_downside_risk"]) == (3, 1, -1, 2)
+    assert row["news_downside_risk_max"] == 2
+
+
+def test_채점_형식_버전이_섞이면_막는다(monkeypatch):
+    sc.score_day(T, model=StubLLM(), articles=make_articles(), report=REPORT)
+    monkeypatch.setattr(config, "SCORING_VERSION", 99)
+    sc.score_day(pd.Timestamp("2026-03-12"), model=StubLLM(), articles=make_articles(0), report=REPORT)
+    with pytest.raises(ValueError, match="버전"):
         sc.build_scores_table()

@@ -13,8 +13,9 @@
   - Sonnet 5.5 는 temperature·top_p 를 기본값이 아닌 값으로 보내거나 budget_tokens 를 보내면 400 오류가 난다. 이 값들을 설정하지 않는다
   - judge(평가용 LLM)는 src/config.py 의 상수(JUDGE_MODEL·JUDGE_REGION·JUDGE_TEMPERATURE)로 고정하고 바꾸지 않는다. 버전 비교는 항상 같은 judge 로 한다
   - judge 는 .env 의 리전과 별개로 JUDGE_REGION 에서 호출한다
-  - 개발 테스트: judge 와 채점 모델이 같은 Sonnet 4.5 여도 된다. 평가 리포트에 "같은 모델 평가(편향 가능)"라고 적는다
-  - 채점·에이전트는 global. 프로필, judge 는 us. 프로필이다(2026-10-21 요청 제한으로 채점 경로만 마이그레이션). 둘 다 같은 Sonnet 4.5 가중치다
+  - 개발 테스트: judge 와 채점 모델이 같은 계열이어도 된다. 같은 모델이면 평가 리포트에 "같은 모델 평가(편향 가능)"라고 적는다
+  - 채점·에이전트는 global. 프로필의 **Sonnet 4.6**(`global.anthropic.claude-sonnet-4-6`, 2026-10-22 사용자 결정), judge 는 us. 프로필의 **Sonnet 4.5** 고정이다
+  - 2026-10-21 요청 제한으로 채점 경로를 us. → global. 으로 옮겼고(Sonnet 4.5), 2026-10-22 채점 모델을 Sonnet 4.6 으로 바꿨다. Sonnet 4.6 ID 에는 날짜가 붙지 않는다
   - 채점 모델 ID 를 바꾸면 유출 테스트를 다시 돌리고, 뉴스 구간 전체를 다시 채점한다(점수 표에 모델이 섞이면 멈춘다)
   - 최종 검증: judge 를 채점 모델과 다른 모델로 바꾼다. 바꾼 뒤에는 개발 중 평가 점수와 직접 비교하지 않는다
   - judge 호출 비용도 PoC 한도에 포함한다. cost_log.csv 에 역할(scoring | judge | agent | embedding)을 함께 기록한다
@@ -47,10 +48,11 @@ src/pipeline/collect_prices.py   삼성전자·인버스 ETF 일봉 (FinanceData
 src/pipeline/collect_macro.py    yfinance 거시·해외 지표, 확장 지표용 해외 시계열(마이크론·TSMC·달러 인덱스) (FRED 는 공개 지연으로 미사용)
 src/pipeline/collect_news.py     GDELT(한국어 매체 포함) + Google 뉴스 RSS(한국어 보조)
 src/pipeline/collect_dart.py     시점별 DART 공시
+src/pipeline/refresh_data.py     저장 가격·지표 주간 갱신(새 확정 날짜 행만 덧붙임, 하나라도 실패하면 쓰지 않음, 쓰기 전 data/backup 에 복사) → 신호·모의 매매 재계산
 src/pipeline/features.py         차트 지표 계산, 시점 규칙에 맞춘 학습용 표
-src/pipeline/labels.py           5거래일 ±3% 정답 데이터
+src/pipeline/labels.py           5거래일 ±3% 정답 데이터 (기간·기준은 인자로 바꿀 수 있고 기본은 config 값)
 src/pipeline/select_news.py      신호일마다 채점할 기사 30건 선별
-src/pipeline/scoring.py          뉴스 채점 LangGraph
+src/pipeline/scoring.py          뉴스 채점 LangGraph (버전 2: 종합 + 분류별 점수 + 하락 위험. 버전이 섞이면 점수 표를 만들지 않는다)
 src/pipeline/leak_test.py        미래 정보 유출 테스트
 src/pipeline/train.py            LightGBM 워크포워드 학습
 src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙)
@@ -61,17 +63,21 @@ src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를
 src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(기존·후보·뉴스 보정) → 성적표 → Gmail 알림
 src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_PASSWORD·NOTIFY_TO)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
+src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
+                                 조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
 tests/                           위 모듈의 테스트
 .claude/agents/                  개발용 검증 서브에이전트 (아래 "검증 에이전트" 참고)
 .gitignore, .gitattributes, requirements.txt   git 제외 목록, 줄바꿈 규칙(LF 고정), 의존성
 evaluation/run_eval.py, evaluation/__init__.py /query 평가 실행
 *.md                             기획·계획 문서 (SERVICE.md, DAY1_PLAN.md 등)
 
-data/raw/        수집 원본. 수집 후 수정하지 않는다
+data/raw/        수집 원본. 이미 저장한 행은 수정하지 않는다(주간 갱신은 새 날짜 행만 덧붙인다)
+data/backup/     주간 갱신 전 원본 복사본(git 제외)
 data/processed/  지표·학습용 표·정답 데이터
 data/scores/     뉴스 채점 결과(news_scores.parquet)와 판단 기록(traces/<날짜>.json, 기사 제목이 있어 git 제외)
 data/index/      Chroma 색인
-evaluation/reports/  PoC 보고서
+evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*.md)
+data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 git 제외)
 
 ## 주고받는 형식 (제출 규약)
 - POST /query 로 받고 question 필드를 읽는다
@@ -93,7 +99,7 @@ evaluation/reports/  PoC 보고서
 - 비밀 값은 .env 에서 읽고 코드에 적지 않는다
   - 있음: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
   - 있음: DART_API_KEY, FRED_API_KEY(지금은 미사용. 옛 FRED 원본을 다시 만들 때만)
-  - 선택: LLM_PROVIDER(기본 bedrock), BEDROCK_MODEL_ID(기본 config.SCORING_MODEL_DEFAULT = Sonnet 4.5)
+  - 선택: LLM_PROVIDER(기본 bedrock), BEDROCK_MODEL_ID(기본 config.SCORING_MODEL_DEFAULT = Sonnet 4.6)
   - 추가 필요: BEDROCK_EMBEDDING_MODEL_ID (RAG 색인 단계에서)
   - 선택: GMAIL_SENDER, GMAIL_APP_PASSWORD, NOTIFY_TO (Gmail 알림. 값은 코드·로그·문서에 남기지 않는다)
   - 나중에 추가: ANTHROPIC_API_KEY
@@ -101,7 +107,7 @@ evaluation/reports/  PoC 보고서
   - 숫자 데이터는 t-1일 종가까지, 뉴스는 t-1일 15:15 ~ t일 15:15 (KST)
   - 시점 규칙을 지키는지 확인하는 테스트를 tests/ 에 둔다
 - 비용 한도: LLM 호출은 모두 src/llm.py 를 거치고, 호출마다 토큰과 비용을 data/scores/cost_log.csv 에 남긴다
-  - PoC(개발 단계) 누적 $80, 운영 월 $100 에 도달하면 예외를 던지고 멈춘다
+  - PoC(개발 단계) 누적 $150(2026-10-22 $80 에서 상향, 사용자 결정), 운영 월 $100 에 도달하면 예외를 던지고 멈춘다
 - 더미 데이터를 쓰면 데이터와 보고서에 is_dummy 표시를 붙인다
 - 설정값은 src/config.py 에만 두고 코드 곳곳에 숫자를 적지 않는다
 - 지표 묶음은 config.FEATURE_SETS 로 고른다. base(기존 45개)는 이름으로 고정했고, candidate(A+B+D)는 사전 등록 목록이라 결과를 본 뒤 바꾸지 않는다
