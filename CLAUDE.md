@@ -90,8 +90,8 @@ data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 gi
 - 질문에 날짜가 있으면 그 날짜를 as_of 로 쓴다. 날짜가 없으면 오늘(KST)을 쓴다
 - 요청마다 tools.request_as_of(as_of) 안에서 에이전트를 돌린다. 도구는 그 날짜보다 뒤를 조회하지 않는다(늦은 날짜는 낮추거나 거부)
 - 날짜를 콕 집은 질문은 get_signal·get_news_judgement 로, 이유·맥락 질문은 retriever.search(as_of 필터) 로 찾는다
-- evaluation/test_queries.csv 열: question, as_of, expected_direction, expected_sources(;로 구분), note(judge 가 보는 기대 사항)
-- 평가 실행: evaluation/run_eval.py. 자동 검사(시점·도구·방향·시점 이후 자료)와 judge 채점 → evaluation/reports/query_eval.md
+- evaluation/test_queries.csv 열: id, category(positive·negative·edge·guardrail), input, expected_traits(;로 구분), forbidden(;로 구분, 답에 그대로 나오면 자동 실패·judge 는 뜻으로도 봄), expected_tools(;로 구분), note (2026-10-22 사용자 요청으로 형식 변경)
+- 평가 실행: evaluation/run_eval.py. 통과 = 기대 도구를 모두 부름 + forbidden 표현 없음(규칙 채점), 분류별·전체 통과율 → evaluation/reports/query_eval.md. expected_traits 는 답변과 나란히 data/scores/eval/query_review.csv 에 남겨 사람이 본다. judge 채점은 --judge 로 선택
   (질문별 상세 결과는 기사 제목이 들어 있어 data/scores/eval/ 에 두고 git 에 올리지 않는다)
 
 ## 코드 규칙

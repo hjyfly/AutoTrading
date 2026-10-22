@@ -208,3 +208,8 @@ def test_뉴스가_참고용이면_최종_신호는_숫자_모델_신호다(monk
     monkeypatch.setattr(config, "NEWS_ADJUST_IN_SIGNAL", False)
     sig = tools.signal_for("2026-03-05")
     assert sig["with_news"]["signal"] == sig["numeric"]["signal"] and sig["with_news"]["adjusted"] is False
+
+
+def test_데이터가_없는_날짜의_도구_호출은_에이전트를_멈추지_않고_이유를_돌려준다():
+    result = tools.get_indicators.invoke({"as_of": "2019-05-03"})
+    assert "error" in result and "2019-05-03" in result["error"]

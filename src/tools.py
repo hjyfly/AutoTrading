@@ -368,9 +368,14 @@ def _backtest_summary(until: str, data_last: str, stamp: tuple = ()) -> dict:
 # ---- 에이전트에 등록하는 도구 (설명은 모델이 읽는다) ----
 
 def _call(fn, as_of: str, *args) -> dict:
-    """요청 상한 안으로 날짜를 맞춘 뒤 도구 함수를 부른다."""
+    """요청 상한 안으로 날짜를 맞춘 뒤 도구 함수를 부른다. 그 날짜 데이터가 없어 계산이 실패하면 에이전트 전체를 멈추지 않고
+    실패 이유를 돌려준다(에이전트가 없는 정보를 지어내지 않고 안내하게). 시점 위반(AssertionError)은 그대로 멈춘다."""
     t, note = capped(as_of or None)
-    return _with_note(fn(str(t.date()), *args), note)
+    try:
+        return _with_note(fn(str(t.date()), *args), note)
+    except (KeyError, ValueError, IndexError) as e:
+        return _with_note({"as_of": str(t.date()), "error": f"{t.date()} 시점 데이터로 계산하지 못했다({type(e).__name__}: {e}). "
+                           f"신호·검증 구간은 {config.VALID_START} 부터다"}, note)
 
 
 def _refuse_after_cap(date: str) -> dict | None:
