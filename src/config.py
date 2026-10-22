@@ -10,7 +10,7 @@ JUDGE_TEMPERATURE = 0
 # 2026-10-22: 채점·에이전트 모델을 Sonnet 4.6(global. 프로필, ID 에 날짜 없음)으로 바꾼다(사용자 결정). 유출 테스트를 다시 돌리고 뉴스 구간 전체를 다시 채점한다
 SCORING_MODEL_DEFAULT = "global.anthropic.claude-sonnet-4-6"
 
-# 데이터 기간 (SERVICE.md 섹션 5)
+# 데이터 기간 (SERVICE.md 7절)
 DATA_START = "2023-10-23"
 DATA_END_INITIAL = "2026-10-20"  # 처음 수집한 끝날
 # 주간 갱신(src/pipeline/refresh_data.py) 결과. 있으면 저장 데이터 끝날(DATA_END)은 이 파일의 data_end 를 따른다
@@ -52,14 +52,14 @@ PROCESSED_DIR = "data/processed"
 # 비공식 출처 호출 사이 대기 시간(초)
 REQUEST_PAUSE_SEC = 0.5
 
-# 정답 기준 (SERVICE.md 섹션 4)
+# 정답 기준 (SERVICE.md 3절)
 # 2026-10-22 3거래일을 시험했으나 매주 재학습과 함께 쓰면 나빠져 5거래일로 되돌림(사용자 결정)
 LABEL_HORIZON_DAYS = 5
 LABEL_THRESHOLD = 0.03
 OFFICIAL_LABEL_HORIZON_DAYS = 5  # 1~3일차 공식 판정의 정답 기간(공식 숫자 재현용, 바꾸지 않는다)
 LABELS_OFFICIAL_PATH = "data/processed/labels_official.parquet"
 
-# 워크포워드 구간 (SERVICE.md 섹션 8, 기본값). 처음 18개월은 학습에만 쓴다
+# 워크포워드 구간 (SERVICE.md 4절, 기본값). 처음 18개월은 학습에만 쓴다
 TRAIN_END = "2025-04-22"
 VALID_START = "2025-04-23"
 # 재학습 주기. 2026-10-22 사용자 결정: 매월 → 매주. 1~3일차 공식 판정은 매월(OFFICIAL_RETRAIN_FREQ)
@@ -72,7 +72,7 @@ TRAIN_WINDOW_YEARS = None
 EXECUTION = "close"
 EXECUTIONS = {"close": "t 종가", "next_open": "t+1 시가"}
 
-# 신호 시각. 뉴스는 t-1일 이 시각부터 t일 이 시각 전까지를 t일 뉴스로 본다 (SERVICE.md 섹션 6)
+# 신호 시각. 뉴스는 t-1일 이 시각부터 t일 이 시각 전까지를 t일 뉴스로 본다 (SERVICE.md 8절)
 SIGNAL_CUTOFF_KST = "15:15"
 KST = "Asia/Seoul"
 
@@ -129,7 +129,7 @@ KR_EXTRA = {"kospi": "KS11", "kospi200": "KS200", "hynix": "000660"}
 # 수익률 대신 수준과 차이로 특징을 만드는 시계열 (금리·변동성)
 LEVEL_SERIES = {"us10y_yf", "vix_yf"}
 
-# 개발 중 샘플 채점 요일 (SERVICE.md 섹션 7). 0=월 … 2=수. 휴장이면 다음 거래일
+# 개발 중 샘플 채점 요일 (SERVICE.md 10절). 0=월 … 2=수. 휴장이면 다음 거래일
 SAMPLE_WEEKDAY = 2
 
 # 뉴스 수집 동시 다운로드 수 (GDELT GKG 원본 파일)
@@ -152,7 +152,7 @@ SELECT_MAX_PER_SOURCE = 3
 SELECT_DEDUP_PREFIX = 30  # 제목 앞 N 글자가 같으면 같은 기사로 본다
 TITLE_MAX_CHARS = 200
 
-# 뉴스 채점 (SERVICE.md 섹션 7)
+# 뉴스 채점 (SERVICE.md 10절)
 SCORE_MIN, SCORE_MAX = -5, 5
 SCORING_PERSONAS = {
     "short_trader": "단기 트레이더. 앞으로 1주일 안의 가격 반응, 모멘텀, 수급과 투자심리에 영향을 주는 뉴스를 중시한다.",
@@ -268,7 +268,7 @@ RETURN_WINDOWS = [1, 5, 20]  # 삼성전자 수익률
 FLOW_WINDOW = 5  # 순매수 합계·보유비율 변화
 FOREIGN_CHANGE_WINDOWS = [1, 5]  # 해외·거시 지표 변화
 
-# 모의 매매 (SERVICE.md 섹션 9)
+# 모의 매매 (SERVICE.md 4절)
 FEE_RATE = 0.001  # 매수·매도 각각 거래 금액의 0.1%
 SIGNALS_NUMERIC_PATH = "data/processed/signals_numeric.parquet"
 
@@ -378,6 +378,9 @@ CALIBRATION_MIN_BIN = 10       # 표본이 이보다 적은 구간은 단조 확
 UP_MONTH_MIN_RETURN = 0.05     # 반등장 확인: 그달 들고 있기 수익이 이 값 이상인 달
 UP_MONTH_MIN_HOLD = 0.70       # 그런 달에 삼성전자 보유일 비율이 이 값 이상이어야 한다
 LIVE_PROMOTION_MIN_SIGNALS = 40  # 운영 변경 검토에 필요한 실시간 확정 신호 수
+# SERVICE.md 5절 성공 기준(2026-10-22 재정의)을 실시간 성적표가 판정한다. 장부에 등록된 비교 모델만 승격을 검토한다
+LIVE_REGISTERED_MODELS = {"candidate": "C1 후보 지표 A+B+D", "groups:price+chart+flow+macro+peer": "G1 비교 묶음 38개",
+                          "risk_p2": "P2-L 하락 위험 P2"}  # evaluation/reports/preregistration.md 의 실시간 비교 줄
 PREREG_PATH = "evaluation/reports/preregistration.md"
 JUDGED_PATH = "data/processed/day5_judged.json"   # 판정 구간을 이미 쓴 조건 기록(다시 판정하지 않는다)
 DAY5_REPORT_PATH = "evaluation/reports/day5_judgement.md"
@@ -392,7 +395,7 @@ PREREGISTERED = {
     "P3": "합의: P2 위험 높음 표 + 로지스틱 회귀 위험 표 + 120일선 아래 표. 0~1표 100%, 2표 50%, 3표 0%",
 }
 
-# LLM 비용 한도 (SERVICE.md 섹션 10). 채점과 judge 호출을 합산한다
+# LLM 비용 한도 (SERVICE.md 15절). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)
 COST_LIMIT_MONTHLY_USD = 100.0  # 운영 단계 월 한도 (운영 코드에서 쓴다)
 COST_LOG_PATH = "data/scores/cost_log.csv"

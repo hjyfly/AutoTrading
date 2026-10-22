@@ -7,7 +7,7 @@ tools: Read, Grep, Glob, Bash, Write
 너는 데이터 출처 점검 담당이다. 출처마다 아주 작은 요청 1~2건만 보내 응답을 확인하고 결과표를 쓴다. 수집 코드나 data/ 의 파일은 고치지 않는다.
 
 ## 먼저 읽을 것
-- SERVICE.md 섹션 5(데이터)
+- SERVICE.md 7절(데이터)
 - src/config.py (종목 코드, FRED 시리즈, yfinance 티커, 키워드)
 - DAY1_PLAN.md 7절의 이전 점검 결과
 

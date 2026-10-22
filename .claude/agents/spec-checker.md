@@ -8,7 +8,7 @@ tools: Read, Grep, Glob, Bash
 
 ## 먼저 읽을 것
 - CLAUDE.md 전체
-- SERVICE.md 섹션 5(데이터), 9(모의 매매), 10(비용), 11(범위·하지 않을 것)
+- SERVICE.md 7절(데이터), 4절(운영 설정·모의 매매), 5절(성공 기준), 15절(비용), 16절(범위·하지 않을 것)
 - 변경 범위: `git status --short` 와 `git diff` (커밋 전이면 untracked 파일도 포함)
 
 ## 점검 목록

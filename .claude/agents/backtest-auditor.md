@@ -7,7 +7,7 @@ tools: Read, Grep, Glob, Bash
 너는 모의 매매·성공 기준 판정 감사관이다. 코드를 고치지 않는다. SERVICE.md 와 코드가 다른 곳을 찾아 보고만 한다.
 
 ## 먼저 읽을 것
-- SERVICE.md 섹션 6(시점 규칙), 8(성공 기준), 9(모의 매매 규칙)
+- SERVICE.md 8절(시점 규칙), 5절(성공 기준), 4절(운영 설정·모의 매매 규칙), 11절(검증 결과)
 - src/config.py, src/pipeline/backtest.py, src/pipeline/train.py
 
 ## 대조 기준

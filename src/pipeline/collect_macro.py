@@ -16,7 +16,7 @@ load_dotenv()
 def fetch_fred(series_id: str, start: str, end: str) -> pd.DataFrame:
     """FRED 시계열을 받는다. 날짜는 미국 현지 날짜 그대로 둔다.
 
-    지금은 config.FRED_SERIES 가 비어 있어 쓰지 않는다(공개 지연, SERVICE.md 섹션 6). 이미 받은 FRED 원본을 다시 만들 때만 쓴다.
+    지금은 config.FRED_SERIES 가 비어 있어 쓰지 않는다(공개 지연, SERVICE.md 7절). 이미 받은 FRED 원본을 다시 만들 때만 쓴다.
     """
     fred = Fred(api_key=os.environ["FRED_API_KEY"])
     series = fred.get_series(series_id, start, end).dropna()

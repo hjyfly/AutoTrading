@@ -298,7 +298,8 @@ with tab_data:
             st.altair_chart(chart, width="stretch")
     with tab_live:
         st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다(②안). "
-                   "기존 모델과 후보 모델을 비교하고, 장 마감 뒤에 만든 사후 기록은 제외한다.")
+                   "운영·비교 모델을 SERVICE.md 5절 성공 기준(A 위험 대비 수익, B 하락 신호 적중, C 반등 지키기)으로 판정한다. "
+                   f"확정 신호 {config.LIVE_PROMOTION_MIN_SIGNALS}개 전까지는 참고 값이다. 장 마감 뒤에 만든 사후 기록은 제외한다.")
         if st.button("성적표 새로 계산"):
             with st.spinner("계산 중"):
                 scoreboard.build()
@@ -310,6 +311,17 @@ with tab_data:
             st.caption(f"계산 시각 {board['updated_at']} · 가격 마지막 날 {board.get('price_last_date', '-')}")
             for line in scoreboard.summary_lines(board):
                 (st.warning if "경고" in line else st.write)(line)
+            rows = []
+            for s in board.get("models", {}).values():
+                c = s.get("criteria")
+                if not c:
+                    continue
+                mark = lambda v: "-" if v is None else ("통과" if v else "실패")
+                rows.append({"모델": s["title"], "판정 상태": c["status"], "A 위험 대비 수익": mark(c["A"]["passed"]),
+                             "B 하락 신호 적중": mark(c["B"]["passed"]), "C 반등 지키기": mark(c["C"]["passed"]),
+                             "승격": ("검토 대상" if s["promotion"]["eligible"] else "아님") if "promotion" in s else "운영"})
+            if rows:
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
             curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
             if curves:
                 st.line_chart(pd.DataFrame(curves))

@@ -103,7 +103,7 @@ data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 gi
   - 추가 필요: BEDROCK_EMBEDDING_MODEL_ID (RAG 색인 단계에서)
   - 선택: GMAIL_SENDER, GMAIL_APP_PASSWORD, NOTIFY_TO (Gmail 알림. 값은 코드·로그·문서에 남기지 않는다)
   - 나중에 추가: ANTHROPIC_API_KEY
-- 시점 규칙(SERVICE.md 섹션 6): 데이터를 읽는 함수는 모두 as_of 날짜를 받고, 그 시점에 알 수 없던 데이터는 돌려주지 않는다
+- 시점 규칙(SERVICE.md 8절): 데이터를 읽는 함수는 모두 as_of 날짜를 받고, 그 시점에 알 수 없던 데이터는 돌려주지 않는다
   - 숫자 데이터는 t-1일 종가까지, 뉴스는 t-1일 15:15 ~ t일 15:15 (KST)
   - 시점 규칙을 지키는지 확인하는 테스트를 tests/ 에 둔다
 - 비용 한도: LLM 호출은 모두 src/llm.py 를 거치고, 호출마다 토큰과 비용을 data/scores/cost_log.csv 에 남긴다

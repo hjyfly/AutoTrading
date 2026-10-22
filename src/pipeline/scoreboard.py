@@ -11,7 +11,7 @@ import pandas as pd
 
 from src import config, tools
 from src.pipeline import backtest
-from src.pipeline.labels import FLAT, make_labels
+from src.pipeline.labels import DOWN, FLAT, make_labels
 
 LIVE_PATH = Path(config.PROCESSED_DIR) / "signals_live.parquet"
 MODELS = {"base": "운영 모델(최종 신호, 뉴스는 참고용)", "candidate": "후보 모델(A+B+D, 비교용)",
@@ -57,10 +57,11 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series) -> d
     days = samsung.index[(samsung.index >= signals.index.min())] if len(signals) else samsung.index[:0]
     if len(days) >= 2:
         daily = signals.reindex(days).fillna(FLAT)  # 기록이 빠진 날은 포지션 유지
-        by_rule, curves = {}, {}
+        by_rule, curves, sims = {}, {}, {}
         for rule in config.DOWN_ACTIONS:  # 가격이 모자란 규칙(예: 인버스 가격 조회 실패)은 빠지고 나머지는 계산한다
             try:
-                curves[rule] = backtest.simulate(daily, samsung, inverse, rule)["equity"]
+                sims[rule] = backtest.simulate(daily, samsung, inverse, rule)
+                curves[rule] = sims[rule]["equity"]
                 by_rule[rule] = backtest.summary(curves[rule])
             except ValueError:
                 continue
@@ -69,6 +70,12 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series) -> d
         if config.DOWN_ACTION in curves:
             out.update(model=by_rule[config.DOWN_ACTION],
                        equity={str(d.date()): round(float(v), 6) for d, v in curves[config.DOWN_ACTION].items()})
+            known = labels.reindex(matured.index)
+            down = matured == DOWN
+            held = (sims[config.DOWN_ACTION]["position"] == backtest.LONG).astype(float)
+            out["criteria"] = criteria(len(matured), curves[config.DOWN_ACTION], backtest.buy_and_hold(samsung, days), held, samsung,
+                                       hit=float((known[down] == DOWN).mean()) if down.any() else None,
+                                       base=float((known == DOWN).mean()) if len(known) else None, kind="하락 신호 적중")
         else:
             out["model_note"] = "현재 규칙에 필요한 가격이 없어 모의 매매를 계산하지 못했다"
     out["drift"] = drift_check(matured, labels)
@@ -89,12 +96,53 @@ def score_weight_model(rows: pd.DataFrame, samsung: pd.Series) -> dict:
            "drift": {"status": "해당 없음(비중 모델)"}}
     days = samsung.index[samsung.index >= weights.index.min()] if len(weights) else samsung.index[:0]
     if len(days) >= 2:
-        sim = backtest.simulate_target(weights.reindex(days).ffill(), samsung)
+        daily = weights.reindex(days).ffill()
+        sim = backtest.simulate_target(daily, samsung)
         model = backtest.summary(sim["equity"])
+        risk_known = labels["risk"].reindex(matured.index)
+        out["criteria"] = criteria(len(matured), sim["equity"], backtest.buy_and_hold(samsung, days), daily, samsung,
+                                   hit=out["risk_hit"], base=float(risk_known.mean()) if len(risk_known) else None,
+                                   kind="위험 높음(비중 0%) 날의 실제 위험")
         out.update(model=model, by_rule={"cash": model}, down_action="cash", trading_days=int(len(days)),
                    hold=backtest.summary(backtest.buy_and_hold(samsung, days)),
                    equity={str(d.date()): round(float(v), 6) for d, v in sim["equity"].items()})
     return out
+
+
+def criteria(n_matured: int, equity: pd.Series, hold: pd.Series, weights: pd.Series, samsung: pd.Series,
+             hit: float | None, base: float | None, kind: str) -> dict:
+    """SERVICE.md 5.2 성공 기준. 확정 신호가 LIVE_PROMOTION_MIN_SIGNALS 개 미만이면 '참고'로만 계산한다.
+    A: MDD ≤ 들고 있기 MDD 의 절반, 수익 ≥ 들고 있기의 절반(들고 있기 ≤ 0 이면 이상)
+    B: 하락(위험) 신호 적중 > 같은 기간 실제 하락(위험) 비율
+    C: 그달 들고 있기 ≥ UP_MONTH_MIN_RETURN 인 달의 보유일 ≥ UP_MONTH_MIN_HOLD (그런 달이 없으면 판정 없음)"""
+    need = config.LIVE_PROMOTION_MIN_SIGNALS
+    a = backtest.judge_a(equity, hold)
+    share, months = backtest.up_month_hold(weights, samsung)
+    return {"ready": n_matured >= need, "n_matured": n_matured, "needed": need,
+            "status": "판정" if n_matured >= need else f"표본 부족({n_matured}/{need}, 참고)",
+            "A": {"passed": bool(a["passed"]), "mdd_ok": bool(a["mdd_ok"]), "return_ok": bool(a["return_ok"])},
+            "B": {"kind": kind, "hit": hit, "base": base,
+                  "passed": None if hit is None or base is None else bool(hit > base)},
+            "C": {"hold_share": None if pd.isna(share) else share, "up_months": months,
+                  "passed": None if months == 0 else bool(share >= config.UP_MONTH_MIN_HOLD)}}
+
+
+def promotion(entry: dict, base: dict, model: str) -> dict:
+    """SERVICE.md 5.3 비교 모델 승격 기준: 장부 등록, 확정 신호 40개 이상, 같은 기간 운영 모델보다 칼마가 높고 MDD 가 더 깊지 않음.
+    셋을 모두 만족해도 운영 변경은 사용자가 정한다."""
+    registered = model in config.LIVE_REGISTERED_MODELS
+    ready = entry.get("n_matured", 0) >= config.LIVE_PROMOTION_MIN_SIGNALS
+    if "model" not in entry or "model" not in base:
+        return {"registered": registered, "ready": ready, "eligible": False, "note": "모의 매매 결과가 없다"}
+    if entry.get("first_date") != base.get("first_date"):  # 같은 기간이 아니면 비교하지 않는다
+        return {"registered": registered, "ready": ready, "eligible": False,
+                "note": f"시작일이 운영 모델과 달라({entry.get('first_date')} vs {base.get('first_date')}) 판정 보류"}
+    if pd.isna(entry["model"]["calmar"]) or pd.isna(base["model"]["calmar"]):
+        return {"registered": registered, "ready": ready, "eligible": False, "note": "MDD 가 0 이라 칼마를 비교할 수 없다(판정 불가)"}
+    better = entry["model"]["calmar"] > base["model"]["calmar"] and abs(entry["model"]["mdd"]) <= abs(base["model"]["mdd"])
+    return {"registered": registered, "ready": ready, "better_than_operational": bool(better),
+            "eligible": bool(registered and ready and better),
+            "calmar": entry["model"]["calmar"], "operational_calmar": base["model"]["calmar"]}
 
 
 def drift_check(matured: pd.Series, labels: pd.Series) -> dict:
@@ -137,6 +185,10 @@ def build(today: pd.Timestamp | None = None) -> dict:
             else:
                 entry.update(score_model(realtime["signal"], samsung, inverse))
             board["models"][model] = entry
+        base = board["models"].get("base", {})
+        for model, entry in board["models"].items():
+            if model not in ("base", "base_v1"):
+                entry["promotion"] = promotion(entry, base, model)
     path = Path(config.SCOREBOARD_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(board, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -159,6 +211,15 @@ def summary_lines(board: dict) -> list[str]:
             part += "".join(f", 하락={name(r)} 규칙 {v['total_return']:+.1%}" for r, v in other.items()) + ")"
         drift = s["drift"]
         part += f" · {drift['status']}" + (f": {drift['message']}" if "message" in drift else "")
+        if "criteria" in s:
+            c = s["criteria"]
+            mark = lambda v: "-" if v is None else ("통과" if v else "실패")
+            part += f" · 성공 기준[{c['status']}] A {mark(c['A']['passed'])}, B {mark(c['B']['passed'])}, C {mark(c['C']['passed'])}"
+        if "promotion" in s:
+            p = s["promotion"]
+            part += (" · 승격 검토 대상" if p["eligible"] else
+                     " · 승격 조건 " + ("장부 미등록" if not p["registered"] else "미충족(표본 부족)" if not p["ready"]
+                                     else f"보류({p['note']})" if "note" in p else "미충족(운영보다 낫지 않음)"))
         lines.append(part)
     if lines and board.get("price_last_date"):
         lines.append(f"(가격 마지막 날 {board['price_last_date']} 기준)")

@@ -452,7 +452,7 @@ def monitor(data: Data | None = None, save: bool = True) -> dict:
     if data.news_range() is not None:
         news_base = {**config.EXPERIMENT_BASE, "news_mode": "adjust"}
         news, news_curves = sensitivity(news_base, config.MONITOR_NEWS_AXES, data)
-        versions = sorted(data.scores["scoring_version"].unique()) if "scoring_version" in data.scores else [1]
+        versions = sorted(int(v) for v in data.scores["scoring_version"].unique()) if "scoring_version" in data.scores else [1]
         groups.append(("뉴스 조건 (뉴스 채점 구간)", news, news_curves,
                        f"뉴스 보정 방법을 하나씩 바꿨다. 기준은 지금 기준 B 규칙(합의 ±{config.NEWS_ADJUST_SCORE}, 확신도 {config.NEWS_ADJUST_MIN_CONF})이다. "
                        f"채점 버전 {versions}, 채점일 {len(data.scores)}일. 뉴스 유출 테스트는 {config.CRITERION_B_START}~{config.CRITERION_B_END}에서만 했다.", news_base))

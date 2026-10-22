@@ -92,3 +92,44 @@ def test_목표_비중_비교_모델은_비중대로_채점한다():
     assert s["n_signals"] == 2 and s["down_action"] == "cash"
     assert s["model"]["total_return"] == pytest.approx(0.999 * 1.0 * (100 / 100) * 0.999 - 1)
     assert s["risk_hit"] == 1.0  # 4일째(100) 뒤 5거래일 안에 95(-5%)
+
+
+def test_성공_기준은_표본이_모자라면_참고로_표시하고_승격은_장부_등록을_본다(tmp_path, monkeypatch):
+    samsung, inverse = prices(40)
+    live = pd.DataFrame({"model": ["base"] * 30 + ["candidate"] * 30 + ["groups:price"] * 30,
+                         "signal": ([UP] * 15 + [DOWN] * 15) * 3, "confidence": 0.5}, index=list(DAYS[:30]) * 3)
+    live["created_at"] = live.index + pd.Timedelta(hours=15, minutes=20)
+    live.to_parquet(tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "LIVE_PATH", tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "load_prices", lambda until: (samsung, inverse))
+    monkeypatch.setattr(config, "SCOREBOARD_PATH", str(tmp_path / "board.json"))
+    monkeypatch.setattr(config, "LIVE_EXTRA_FEATURE_SETS", ["groups:price"])
+    board = sb.build(DAYS[-1])
+    c = board["models"]["base"]["criteria"]
+    assert not c["ready"] and "참고" in c["status"] and set(c) >= {"A", "B", "C"}
+    assert board["models"]["candidate"]["promotion"]["registered"]
+    assert not board["models"]["groups:price"]["promotion"]["registered"]
+    assert not board["models"]["candidate"]["promotion"]["eligible"]  # 확정 신호 40개 미만
+    assert any("성공 기준[" in line for line in sb.summary_lines(board))
+    monkeypatch.setattr(config, "LIVE_PROMOTION_MIN_SIGNALS", 10)
+    assert sb.build(DAYS[-1])["models"]["base"]["criteria"]["ready"]
+
+
+def test_성공_기준_손계산():
+    days = pd.bdate_range("2026-01-28", periods=12)
+    samsung = pd.Series([100, 110, 99, 104.5, 115, 116, 117, 118, 119, 120, 121, 122.0], index=days)
+    signals = pd.Series([UP, FLAT, DOWN, UP, FLAT, DOWN, FLAT, UP], index=days[:8])
+    s = sb.score_model(signals, samsung, samsung * 0 + 100)
+    c = s["criteria"]
+    assert s["model"]["total_return"] == pytest.approx(0.130530, abs=1e-5)
+    assert s["model"]["mdd"] == pytest.approx(-0.101799, abs=1e-5)
+    assert (c["A"]["mdd_ok"], c["A"]["return_ok"], c["A"]["passed"]) == (False, True, False)
+    assert c["B"]["hit"] == 0 and c["B"]["base"] == 0 and c["B"]["passed"] is False
+    assert c["C"]["hold_share"] == pytest.approx(7 / 9) and c["C"]["up_months"] == 1 and c["C"]["passed"]
+
+
+def test_승격은_시작일이_다르면_보류한다():
+    base = {"first_date": "2026-10-22", "model": {"calmar": 1.0, "mdd": -0.2}}
+    later = {"first_date": "2026-10-23", "n_matured": 50, "model": {"calmar": 2.0, "mdd": -0.1}}
+    p = sb.promotion(later, base, "candidate")
+    assert not p["eligible"] and "보류" in p["note"]
