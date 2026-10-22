@@ -409,7 +409,7 @@ KIS_BASE_URLS = {"real": "https://openapi.koreainvestment.com:9443", "mock": "ht
 KIS_DEFAULT_ENV = "mock"                      # .env 의 KIS_ENV 가 없으면 모의투자
 KIS_DIR = "data/kis"                          # 토큰 저장·계좌 기록·주문 기록(git 제외)
 KIS_TOKEN_MARGIN_MIN = 30                     # 만료 이만큼 전이면 토큰을 새로 받는다
-KIS_MIN_INTERVAL_SEC = {"real": 0.06, "mock": 0.5}  # 호출 사이 최소 간격(초당 제한보다 넉넉히)
+KIS_MIN_INTERVAL_SEC = {"real": 1.1, "mock": 1.1}  # 호출 사이 최소 간격(2026-10-22 실전 0.06·0.5초에서 초당 한도 초과. 하루 호출이 몇 번뿐이라 넉넉히 1.1초)
 KIS_TIMEOUT_SEC = 10
 KIS_PATHS = {
     "token": "/oauth2/tokenP",
