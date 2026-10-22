@@ -1,7 +1,7 @@
 """매일 자동 실행. 작업 스케줄러가 평일 15:20 에 부른다.
 
 1. 오늘이 거래일인지 확인한다(주말·공휴일이면 아무것도 하지 않는다).
-2. 오늘 신호를 만든다: 기존 모델 + 뉴스 보정(최종), 후보 모델(비교용).
+2. 오늘 신호를 만든다: 운영 모델(최종, 뉴스 채점은 참고용), 후보 모델·비교 묶음·하락 위험 비교 조건(비교용).
 3. 실시간 성적표를 다시 계산한다. 금요일에는 저장 데이터를 갱신(config.REFRESH_WEEKDAY)한 뒤 조건 모니터링 리포트(config.MONITOR_WEEKDAY)를 다시 만든다.
 4. Gmail 로 결과를 보낸다. 실패하면 원인을 담은 메일을 보낸다.
 실행: .venv\\Scripts\\python -m src.daily_run [--no-email] [--no-news] [YYYY-MM-DD]
@@ -50,7 +50,8 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
         lines.append(f"  숫자 모델: {numeric['signal']} (상승 {p['상승']:.0%} / 보합 {p['보합']:.0%} / 하락 {p['하락']:.0%})")
     if "with_news" in sig:
         w = sig["with_news"]
-        lines.append(f"  뉴스 합의: {w['news_consensus']:+d} (확신도 {w['news_confidence']:.2f}) → {'보정함' if w['adjusted'] else '보정 없음'}")
+        note = ('보정함' if w['adjusted'] else '보정 없음') if config.NEWS_ADJUST_IN_SIGNAL else '참고용(신호 보정 안 함)'
+        lines.append(f"  뉴스 합의: {w['news_consensus']:+d} (확신도 {w['news_confidence']:.2f}) → {note}")
     lines.append(f"  뉴스 채점: {out.get('news_status', '-')}")
     if "final" in judgement:
         lines += ["", "■ 뉴스 판단 근거", f"  {judgement['final']['rationale']}",

@@ -239,7 +239,7 @@ def _candidate_signal(t: pd.Timestamp, live_path: Path) -> dict | None:
 
 
 def signal_for(date: str) -> dict:
-    """그날 숫자 모델 신호와 확률, 뉴스 보정 결과."""
+    """그날 숫자 모델 신호와 확률, 뉴스 합의(참고용, 운영 신호는 보정하지 않는다)."""
     t = resolve_as_of(date)
     out = {"date": str(t.date())}
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
@@ -274,6 +274,9 @@ def signal_for(date: str) -> dict:
             r = news.loc[t]
             out["with_news"] = {"signal": r["signal"], "adjusted": bool(r["adjusted"]),
                                 "news_consensus": int(r["news_consensus"]), "news_confidence": round(float(r["news_consensus_conf"]), 2)}
+    if "with_news" in out and "numeric" in out and not config.NEWS_ADJUST_IN_SIGNAL:  # 뉴스는 참고용: 최종 신호는 숫자 모델 그대로
+        out["with_news"].update(signal=out["numeric"]["signal"], adjusted=False,
+                                note="뉴스 합의는 참고용이다(2026-10-22 부터 운영 신호를 보정하지 않는다)")
     candidate = _candidate_signal(t, live_path)
     if candidate and "numeric" in out:  # 비교용 후보 모델(A+B+D 지표 추가). 기존 모델 신호가 있는 날만 함께 보여 준다
         out["candidate"] = candidate
@@ -416,7 +419,7 @@ def search_news(as_of: str = "", keyword: str = "", limit: int = 20) -> dict:
 
 @tool
 def get_signal(date: str) -> dict:
-    """그날의 모델 신호(상승·보합·하락), 확률, 뉴스 보정 결과. 질문 시점보다 뒤 날짜는 조회하지 않는다."""
+    """그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다."""
     return _refuse_after_cap(date) or signal_for(date)
 
 

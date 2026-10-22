@@ -2,7 +2,8 @@
 
 - 숫자 모델: 재학습 주기(지금 매주)의 첫 거래일을 재학습 시점으로 보고, 정답 기간이 그날 전에 끝난 행으로 LightGBM 을 학습해 t 행을 예측한다.
   그래서 저장된 날짜에 대해 만들면 signals_numeric.parquet 과 같은 신호가 나온다.
-- 뉴스 보정: t 15:15 이후에만 만든다. 그날 구간 [t-1 15:15, t 15:15) 기사를 받아 선별·채점하고 고정 규칙으로 보정한다.
+- 뉴스 채점: t 15:15 이후에만 만든다. 그날 구간 [t-1 15:15, t 15:15) 기사를 받아 선별·채점한다. 운영 신호 보정은
+  config.NEWS_ADJUST_IN_SIGNAL 일 때만 한다(2026-10-22 부터 꺼짐, 뉴스는 참고용).
   LLM 을 7번 부르므로(약 $0.15) 사용자가 요청할 때만 돌린다.
 - 결과는 data/processed/signals_live.parquet 에 날짜별로 남긴다(저장된 검증 신호 파일은 건드리지 않는다).
 """
@@ -135,7 +136,7 @@ def news_score(t: pd.Timestamp) -> dict:
 def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
     """기존 모델(base) 신호를 만들고, 비교용 후보 모델(candidate) 신호도 나란히 남긴다(사전 등록한 ②안).
 
-    with_news 면 15:15 이후에만 기존 모델 신호에 뉴스 보정을 더한다. 후보 모델은 숫자 신호만 기록한다.
+    with_news 면 15:15 이후에만 뉴스를 채점해 함께 남긴다(신호 보정은 config.NEWS_ADJUST_IN_SIGNAL 일 때만). 비교 모델은 숫자 신호만 기록한다.
     """
     candidate = numeric_signal(as_of, feature_set="candidate")
     candidate.update(numeric_signal_label=candidate["signal"], news_status="후보 모델은 뉴스 보정 안 함",
@@ -160,7 +161,7 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
     previous = _previous_news(t)
     if not with_news and previous is not None:  # 같은 날 다시 실행해도 이미 만든 뉴스 보정은 지우지 않는다
         out.update(news_consensus=previous[0], news_consensus_conf=previous[1],
-                   signal=news_signal.adjust(out["signal"], previous[0], previous[1]),
+                   signal=_adjust(out["signal"], previous[0], previous[1]),
                    news_status="이전에 만든 뉴스 채점을 다시 씀")
     if with_news:
         if not news_ready(t):
@@ -169,10 +170,15 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
             trace = news_score(t)
             final = trace["final"]
             out.update(news_consensus=final["score"], news_consensus_conf=final["confidence"],
-                       signal=news_signal.adjust(out["signal"], final["score"], final["confidence"]),
+                       signal=_adjust(out["signal"], final["score"], final["confidence"]),
                        news_status=f"채점 완료 (기사 {len(trace['articles'])}건, ${trace['cost_usd']:.3f})")
     save(out)
     return out
+
+
+def _adjust(signal: str, consensus: float, confidence: float) -> str:
+    """운영 신호에 뉴스 보정을 쓸 때만 보정한다(config.NEWS_ADJUST_IN_SIGNAL). 끄면 숫자 모델 신호 그대로다."""
+    return news_signal.adjust(signal, consensus, confidence) if config.NEWS_ADJUST_IN_SIGNAL else signal
 
 
 def _previous_news(t: pd.Timestamp) -> tuple[float, float] | None:

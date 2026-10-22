@@ -22,9 +22,9 @@ st.set_page_config(page_title=f"삼성전자 {config.LABEL_HORIZON_DAYS}거래�
 
 @st.cache_data(ttl=600)
 def load_signals() -> pd.DataFrame:
-    """검증 구간 신호(뉴스 보정 반영)와 실시간으로 만든 신호를 합친다."""
+    """검증 구간 신호와 실시간으로 만든 신호를 합친다(뉴스 보정은 config.NEWS_ADJUST_IN_SIGNAL 일 때만 반영)."""
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)[["signal", "confidence"]]
-    news = news_signal.load_matching()  # 지금 숫자 모델을 보정한 날만(지표 묶음을 바꾼 뒤 다시 만들기 전 기록은 뺀다)
+    news = news_signal.load_matching() if config.NEWS_ADJUST_IN_SIGNAL else pd.DataFrame()  # 뉴스 보정을 끄면 숫자 신호 그대로
     if len(news):
         numeric.loc[news.index, "signal"] = news["signal"]
     live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
@@ -50,25 +50,19 @@ def _experiment_data(extended: bool) -> experiment.Data:
 
 
 def experiment_data() -> experiment.Data:
-    """화면에서 고른 비교 구간(기존 검증 / 4일차 확장 검증)의 실험 데이터."""
-    return _experiment_data(st.session_state.get("exp_scope") == "ext")
+    """화면의 조건 비교 실험 데이터. 운영 기준 하나(기존 검증 구간)로만 계산한다(확장 검증은 리포트 파일로만 남긴다)."""
+    return _experiment_data(False)
 
 
 def experiment_tab():
     """모니터링 리포트 보기와 조건 조회를 하위 탭으로 나눠 보여 준다. 결과는 모두 탐색이다."""
-    st.radio("조건 조회·지표 그룹 진단의 비교 구간", ["valid", "ext"], horizontal=True, key="exp_scope",
-             format_func=lambda v: {"valid": f"기존 검증({config.VALID_START} ~, 여러 번 본 구간)",
-                                    "ext": f"4일차 확장 검증(~ {config.EXT_VALID_END}, 처음 보는 구간)"}[v])
-    sub_report, sub_query, sub_features, sub_ext = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단", "확장 검증 리포트"])
+    sub_report, sub_query, sub_features = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단"])
     with sub_report:
         monitor_report_view()
     with sub_query:
         condition_query_view()
     with sub_features:
         feature_study_view()
-    with sub_ext:
-        path = Path(config.EXT_REPORT_PATH)
-        st.markdown(path.read_text(encoding="utf-8") if path.exists() else "아직 확장 검증 리포트가 없다(`python -m src.pipeline.backtest --ext`).")
 
 
 def monitor_report_view():
@@ -137,8 +131,7 @@ def feature_study_view():
     """지표 그룹을 빼고 더해 본 진단·추천 리포트와, 그룹을 직접 골라 기존 지표와 비교하는 폼."""
     st.caption("기존 지표를 그룹 단위로 하나씩 빼고 후보 그룹을 하나씩 더해 다시 학습한 **탐색 결과**다. 추천 묶음도 운영 신호를 바꾸지 않고, "
                "config.LIVE_EXTRA_FEATURE_SETS 에 넣으면 실시간 성적표에서 앞으로의 날로 함께 채점된다.")
-    ext = st.session_state.get("exp_scope") == "ext"
-    report_path = Path(config.FEATURE_STUDY_EXT_REPORT_PATH if ext else config.FEATURE_STUDY_REPORT_PATH)
+    report_path = Path(config.FEATURE_STUDY_REPORT_PATH)
     if st.button("지표 그룹 진단 다시 계산"):
         with st.spinner("계산 중(그룹마다 다시 학습해 몇 분 걸린다)"):
             st.session_state.feature_study = experiment.feature_study(experiment_data())
@@ -215,7 +208,7 @@ with st.sidebar:
                 st.success("완료")
             except Exception as e:
                 st.error(f"실패: {e}")
-    if st.button("뉴스 보정까지 (약 $0.15, 2~3분)"):
+    if st.button("뉴스 채점까지, 참고용 (약 $0.15, 2~3분)"):
         with st.spinner("뉴스 수집·채점 중"):
             try:
                 out = live_signal.make_signal(str(as_of.date()), with_news=True)
@@ -246,7 +239,8 @@ with tab_data:
     if "numeric" in sig:
         c2.metric("숫자 모델", sig["numeric"]["signal"], f"확신도 {sig['numeric']['confidence']:.0%}", delta_color="off")
     if "with_news" in sig:
-        c3.metric("뉴스 합의", f"{sig['with_news']['news_consensus']:+d}", "보정됨" if sig["with_news"]["adjusted"] else "보정 없음", delta_color="off")
+        news_note = ("보정됨" if sig["with_news"]["adjusted"] else "보정 없음") if config.NEWS_ADJUST_IN_SIGNAL else "참고용"
+        c3.metric("뉴스 합의", f"{sig['with_news']['news_consensus']:+d}", news_note, delta_color="off")
     if "candidate" in sig:
         st.caption(f"비교용 후보 모델(A+B+D 지표 추가): **{sig['candidate']['signal']}** (확신도 {sig['candidate']['confidence']:.0%}) "
                    "— 최종 신호가 아니며 앞으로의 성과로 기존 모델과 비교 중")

@@ -89,8 +89,13 @@ def test_뉴스_없이_다시_실행해도_이전_뉴스_보정을_유지한다(
     ls.save({"date": t, "model": "base", "signal": "상승", "numeric_signal_label": "보합", "news_consensus": 4.0, "news_consensus_conf": 0.8})
     monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": k.get("feature_set", "base"), "signal": "보합",
                                                                "confidence": 0.5, "data_sources": {}})
+    monkeypatch.setattr(ls, "risk_signal", lambda *a: (_ for _ in ()).throw(ValueError("시험에서는 건너뛴다")))
+    monkeypatch.setattr(config, "NEWS_ADJUST_IN_SIGNAL", True)
     out = ls.make_signal("2026-10-21", with_news=False)
     assert out["news_consensus"] == 4.0 and out["signal"] == "상승"
+    monkeypatch.setattr(config, "NEWS_ADJUST_IN_SIGNAL", False)  # 2026-10-22 부터: 뉴스는 참고용, 신호는 숫자 모델 그대로
+    out = ls.make_signal("2026-10-21", with_news=False)
+    assert out["news_consensus"] == 4.0 and out["signal"] == "보합"
 
 
 @pytest.mark.parametrize("freq", ["W", "M"])
