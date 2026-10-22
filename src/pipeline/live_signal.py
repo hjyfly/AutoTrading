@@ -35,6 +35,8 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
     if t.weekday() >= 5:
         raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
     raw, sources = tools.raw_until(t)
+    if config.OPERATIONAL_EXTENDED_HISTORY:  # 과거 검증(train.main)과 같은 학습 기간: 확장 원본까지 이어 붙인다
+        raw = prepend_extended(raw)
     table = features.build_features(as_of=t, raw=raw)
     if table.index[-1] != t:
         raise ValueError(f"{t.date()} 행을 만들지 못했다")
@@ -72,8 +74,10 @@ def prepend_extended(raw: dict) -> dict:
         if key not in raw:
             continue
         ext = tools._load_raw(kind, name + config.EXT_SUFFIX)
-        if ext.empty or ext.index.max() >= raw[key].index.min():
+        if ext.empty:
             continue
+        if ext.index.max() >= raw[key].index.min():  # 과거 검증(features.load_raw_extended)과 같게 겹치면 멈춘다
+            raise ValueError(f"{name}: 확장 원본과 실시간 원본의 날짜가 겹친다")
         out[key] = pd.concat([ext[raw[key].columns.intersection(ext.columns)], raw[key]])
     return out
 
@@ -163,16 +167,21 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
         out.update(news_consensus=previous[0], news_consensus_conf=previous[1],
                    signal=_adjust(out["signal"], previous[0], previous[1]),
                    news_status="이전에 만든 뉴스 채점을 다시 씀")
+    made_at = save(out)  # 운영 신호를 먼저 남긴다(뉴스 채점이 실패해도 신호 기록은 빠지지 않게)
     if with_news:
         if not news_ready(t):
-            out["news_status"] = f"{t.date()} {config.SIGNAL_CUTOFF_KST} 이후에 뉴스 보정을 만들 수 있다"
+            out["news_status"] = f"{t.date()} {config.SIGNAL_CUTOFF_KST} 이후에 뉴스를 채점할 수 있다"
         else:
-            trace = news_score(t)
-            final = trace["final"]
-            out.update(news_consensus=final["score"], news_consensus_conf=final["confidence"],
-                       signal=_adjust(out["signal"], final["score"], final["confidence"]),
-                       news_status=f"채점 완료 (기사 {len(trace['articles'])}건, ${trace['cost_usd']:.3f})")
-    save(out)
+            try:
+                trace = news_score(t)
+            except Exception as e:  # LLM 요청 제한·하루 한도 등. 뉴스는 참고용이라 실패를 기록하고 신호는 그대로 둔다
+                out["news_status"] = f"뉴스 채점 실패: {type(e).__name__}: {str(e)[:120]}"
+            else:
+                final = trace["final"]
+                out.update(news_consensus=final["score"], news_consensus_conf=final["confidence"],
+                           signal=_adjust(out["signal"], final["score"], final["confidence"]),
+                           news_status=f"채점 완료 (기사 {len(trace['articles'])}건, ${trace['cost_usd']:.3f})")
+        save(out, created_at=made_at)
     return out
 
 
@@ -194,11 +203,22 @@ def _previous_news(t: pd.Timestamp) -> tuple[float, float] | None:
     return float(rows["news_consensus"].iloc[-1]), float(rows["news_consensus_conf"].iloc[-1])
 
 
-def save(result: dict):
-    """신호 결과 한 줄을 signals_live.parquet 에 (날짜, 모델) 기준으로 덮어 쓴다."""
+def model_config(feature_set: str) -> str:
+    """신호를 만든 모델 설정 요약(나중에 어떤 조건의 신호였는지 추적하려고 기록에 함께 남긴다)."""
+    n = len(feature_columns(pd.DataFrame(columns=config.FEATURE_SETS["candidate"]), feature_set)) if feature_set != config.LIVE_RISK_MODEL else len(config.FEATURE_SET_BASE)
+    return (f"지표 {feature_set}({n}개) · 정답 {config.LABEL_HORIZON_DAYS}거래일 ±{config.LABEL_THRESHOLD:.0%} · 재학습 "
+            f"{config.RETRAIN_FREQS[config.RETRAIN_FREQ]} · 학습 {(config.OPERATIONAL_TRAIN_FROM + '~(확장)') if config.OPERATIONAL_EXTENDED_HISTORY else (config.DATA_START + '~')}{'' if not config.TRAIN_WINDOW_YEARS else f'(최근 {config.TRAIN_WINDOW_YEARS}년)'} · "
+            f"뉴스 {'보정' if config.NEWS_ADJUST_IN_SIGNAL else '참고용'} · 하락 {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}")
+
+
+def save(result: dict, created_at: pd.Timestamp | None = None) -> pd.Timestamp:
+    """신호 결과 한 줄을 signals_live.parquet 에 (날짜, 모델) 기준으로 덮어 쓰고 기록 시각을 돌려준다.
+    created_at 을 주면 그 시각을 그대로 남긴다(같은 실행에서 뉴스 채점 결과를 덧붙일 때 신호를 만든 시각을 지키려고)."""
     row = pd.DataFrame([{k: v for k, v in result.items() if k != "data_sources"}]).set_index("date")
     row["model"] = result.get("model", "base")
-    row["created_at"] = pd.Timestamp.now(tz=config.KST).tz_localize(None)  # 실제로 그 시각에 만든 신호인지 가리기 위해
+    row["model_config"] = model_config(row["model"].iloc[0])
+    stamp = created_at or pd.Timestamp.now(tz=config.KST).tz_localize(None)
+    row["created_at"] = stamp  # 실제로 그 시각에 만든 신호인지 가리기 위해
     if LIVE_PATH.exists():
         old = pd.read_parquet(LIVE_PATH)
         if "model" not in old.columns:
@@ -207,6 +227,7 @@ def save(result: dict):
         row = pd.concat([old[~same], row]).sort_index()
     LIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
     row.to_parquet(LIVE_PATH)
+    return stamp
 
 
 def main(args: list[str]):

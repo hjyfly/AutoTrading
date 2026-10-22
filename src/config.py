@@ -356,6 +356,14 @@ FEATURES_EXT_PATH = "data/processed/features_ext.parquet"
 LABELS_EXT_PATH = "data/processed/labels_ext.parquet"
 SIGNALS_EXT_PATH = "data/processed/signals_ext.parquet"
 EXT_REPORT_PATH = "evaluation/reports/day4_extended.md"
+# 2026-10-22 사용자 결정: 운영 모델(운영·후보·비교 묶음) 학습에 확장 원본(2019-01-02 ~)을 이어 붙여 쓴다.
+# 운영 지표 46개가 모두 있는 첫날은 2020-09-04(항셍테크 ETF 상장 2020-08-27 + 계산 기간)라 학습은 그날부터다.
+# 검증·신호 구간(VALID_START ~)과 1~3일차 공식 판정(base_v1, features.parquet)은 그대로다
+OPERATIONAL_EXTENDED_HISTORY = True
+QUALITY_LOOKBACK_DAYS = 60       # 주간 갱신 품질 점검: 최근 이 거래일 수만 본다
+QUALITY_JUMP = 0.15              # 하루 변화가 이보다 크면(±15%) 튀는 값으로 알린다
+QUALITY_STALE_DAYS = 5           # 끝날이 삼성전자 일봉보다 이 일수 넘게 늦으면 알린다
+OPERATIONAL_TRAIN_FROM = "2020-09-04"  # 기록용(실제 첫 학습 행은 특징 표에서 결측 없는 첫날로 정해진다)
 FEATURE_STUDY_EXT_REPORT_PATH = "evaluation/reports/experiments_features_ext.md"  # 확장 검증 구간의 지표 그룹 진단
 # 장세 구분(결과 보기 전에 고정): 그 구간 들고 있기 수익이 이 값 이상이면 상승장, 이하이면 하락장, 그 사이는 횡보장
 REGIME_UP, REGIME_DOWN = 0.15, -0.15

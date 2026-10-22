@@ -244,6 +244,16 @@ with tab_data:
     if "candidate" in sig:
         st.caption(f"비교용 후보 모델(A+B+D 지표 추가): **{sig['candidate']['signal']}** (확신도 {sig['candidate']['confidence']:.0%}) "
                    "— 최종 신호가 아니며 앞으로의 성과로 기존 모델과 비교 중")
+    live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
+    if live_path.exists():  # 그날 실시간으로 기록한 비교 줄(최종 신호 아님). 그날 기록이라 고른 날짜 시점 규칙을 지킨다
+        live = pd.read_parquet(live_path)
+        today_rows = live[(live.index == as_of.normalize()) & live["model"].isin([*config.LIVE_EXTRA_FEATURE_SETS, config.LIVE_RISK_MODEL])]
+        for model, r in today_rows.set_index("model").iterrows():
+            if model == config.LIVE_RISK_MODEL:
+                st.caption(f"비교용 하락 위험 조건 {config.LIVE_RISK_CONDITION}: 목표 비중 **{float(r['weight']):.0%}** "
+                           f"(위험 확률 {float(r['p_risk']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
+            else:
+                st.caption(f"비교용 지표 묶음 `{model}`: **{r['signal']}** (확신도 {float(r['confidence']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
     if "note" in sig:
         st.info(sig["note"])
 

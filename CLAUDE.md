@@ -49,6 +49,7 @@ src/pipeline/collect_macro.py    yfinance 거시·해외 지표, 확장 지표�
 src/pipeline/collect_news.py     GDELT(한국어 매체 포함) + Google 뉴스 RSS(한국어 보조)
 src/pipeline/collect_dart.py     시점별 DART 공시
 src/pipeline/refresh_data.py     저장 가격·지표 주간 갱신(새 확정 날짜 행만 덧붙임, 하나라도 실패하면 쓰지 않음, 쓰기 전 data/backup 에 복사) → 신호·모의 매매 재계산
+                                 운영 학습 표(확장 원본 이어 붙인 features_ext·labels_ext)도 다시 만들고, 데이터 품질 점검 결과를 남긴다
 src/pipeline/features.py         차트 지표 계산, 시점 규칙에 맞춘 학습용 표
 src/pipeline/labels.py           5거래일 ±3% 정답 데이터 (기간·기준은 인자로 바꿀 수 있고 기본은 config 값)
 src/pipeline/select_news.py      신호일마다 채점할 기사 30건 선별

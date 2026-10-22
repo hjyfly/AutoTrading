@@ -61,7 +61,14 @@ class Data:
             self.period_end = config.EXT_VALID_END
             self.scores = None
         else:
-            self.features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
+            if config.OPERATIONAL_EXTENDED_HISTORY:  # 운영 기준 비교도 운영과 같은 학습 기간(확장 원본 포함)
+                ext = pd.read_parquet(raw / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")
+                self.samsung = pd.concat([ext, self.samsung]).sort_index()
+                if not self.samsung.index.is_unique:
+                    raise ValueError("확장 원본과 기존 원본의 날짜가 겹친다")
+                self.features = pd.read_parquet(config.FEATURES_EXT_PATH)
+            else:
+                self.features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
             self.scores = pd.read_parquet(config.SCORES_PATH) if Path(config.SCORES_PATH).exists() else None
         self._signals = {}
 

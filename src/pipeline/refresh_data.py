@@ -160,7 +160,8 @@ def processed_outputs() -> list[Path]:
     """다시 만드는 산출물. 실패하면 이 파일들을 되돌린다."""
     names = ["features.parquet", "labels.parquet", "dart_index.parquet",
              *[f"equity_{m}_{r}.parquet" for m in ("numeric", "candidate") for r in config.DOWN_ACTIONS]]
-    return [Path(config.PROCESSED_DIR) / n for n in names] + [Path(config.LABELS_OFFICIAL_PATH)] + [Path(p) for p in SIGNAL_PATHS]
+    return ([Path(config.PROCESSED_DIR) / n for n in names] + [Path(config.LABELS_OFFICIAL_PATH)]
+            + [Path(config.FEATURES_EXT_PATH), Path(config.LABELS_EXT_PATH)] + [Path(p) for p in SIGNAL_PATHS])
 
 
 def rebuild() -> dict:
@@ -171,22 +172,52 @@ def rebuild() -> dict:
     before = {p: pd.read_parquet(p) for p in SIGNAL_PATHS if Path(p).exists()}
     feat_path = Path(config.PROCESSED_DIR) / "features.parquet"
     old_features = pd.read_parquet(feat_path) if feat_path.exists() else None
+    ext_path = Path(config.FEATURES_EXT_PATH)
+    old_ext = pd.read_parquet(ext_path) if ext_path.exists() and config.OPERATIONAL_EXTENDED_HISTORY else None
     features.main()
     labels.main()
+    if config.OPERATIONAL_EXTENDED_HISTORY:  # 운영 학습 표(확장 원본 + 기존 원본)도 새 날짜까지 다시 만든다
+        features.main_ext()
+        labels.main_ext()
     train.main()
     changes = {Path(p).stem: signal_changes(df, pd.read_parquet(p)) for p, df in before.items()}
     if any(changes.values()):
         raise RuntimeError(f"이미 있던 날짜의 신호·확률이 바뀌었다 {changes}. 갱신을 되돌린다")
     backtest.main()
     return {"signal_changes": changes,
-            "feature_changes": feature_changes(old_features, pd.read_parquet(feat_path)) if old_features is not None else 0}
+            "feature_changes": (feature_changes(old_features, pd.read_parquet(feat_path)) if old_features is not None else 0)
+                               + (feature_changes(old_ext, pd.read_parquet(ext_path)) if old_ext is not None else 0)}
+
+
+def quality_check() -> list[str]:
+    """저장 원본의 최근 QUALITY_LOOKBACK_DAYS 거래일 품질 점검: 빈 값, 하루 ±QUALITY_JUMP 넘게 튄 값, 끝날이 늦은 시계열.
+    알리기만 하고 원본은 고치지 않는다."""
+    notes = []
+    ohlcv_end = pd.read_parquet(Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet").index.max()
+    for kind, name in series_list():
+        path = Path(config.RAW_DIR) / kind / f"{name}.parquet"
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        col = "Close" if "Close" in df.columns else "value" if "value" in df.columns else None
+        recent = df.iloc[-config.QUALITY_LOOKBACK_DAYS:]
+        if col:
+            if recent[col].isna().any():
+                notes.append(f"{name}: 최근 빈 값 {int(recent[col].isna().sum())}일")
+            jump = recent[col].astype(float).pct_change().abs() > config.QUALITY_JUMP
+            if jump.any():
+                notes.append(f"{name}: 하루 ±{config.QUALITY_JUMP:.0%} 넘게 튄 날 " + ", ".join(str(d.date()) for d in recent.index[jump]))
+        if (ohlcv_end - df.index.max()).days > config.QUALITY_STALE_DAYS:
+            notes.append(f"{name}: 끝날 {df.index.max().date()}(삼성전자 일봉 {ohlcv_end.date()}보다 늦음)")
+    return notes
 
 
 def write_status(data_end: str, table: pd.DataFrame, checks: dict, dart_note: str, rag_stale: bool) -> dict:
     """갱신 결과를 data_status.json 에 남긴다. config.DATA_END 는 이 파일의 data_end 를 따른다."""
     status = {"data_end": data_end, "refreshed_at": pd.Timestamp.now(tz=config.KST).strftime("%Y-%m-%d %H:%M"),
               "series": table.to_dict("records"), "signal_changes": checks.get("signal_changes", {}),
-              "feature_changes": checks.get("feature_changes", 0), "dart": dart_note, "rag_index_stale": rag_stale}
+              "feature_changes": checks.get("feature_changes", 0), "dart": dart_note, "rag_index_stale": rag_stale,
+              "quality": quality_check()}
     path = config.data_status_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -256,6 +287,8 @@ def summary_lines(status: dict) -> list[str]:
         lines.append("제공처 값이 저장값과 다른 날(저장값 유지): " + ", ".join(f"{s['name']} {s['mismatch']}일" for s in mismatch))
     if status.get("rag_index_stale"):
         lines.append(f"DART {status['dart']}")
+    if status.get("quality"):
+        lines.append("데이터 품질 점검: " + " / ".join(status["quality"]))
     return lines
 
 

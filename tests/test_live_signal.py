@@ -118,11 +118,29 @@ def test_하락_위험_비교_신호는_시점_규칙을_지킨다(stored):
     assert (before["weight"], before["p_risk"]) == (after["weight"], pytest.approx(after["p_risk"]))
 
 
-def test_확장_원본은_날짜가_겹치면_붙이지_않는다(monkeypatch):
+def test_확장_원본은_앞에만_붙이고_날짜가_겹치면_멈춘다(monkeypatch):
     days = pd.bdate_range("2026-01-05", periods=4)
     raw = {"ohlcv": pd.DataFrame({"Close": [1.0, 2, 3, 4]}, index=days)}
     before = pd.DataFrame({"Close": [9.0, 9.0]}, index=pd.bdate_range("2026-01-01", periods=2))
     overlap = pd.DataFrame({"Close": [9.0, 9.0]}, index=days[:2])
-    for ext, expected in [(before, 6), (overlap, 4)]:  # 앞 날짜만 있으면 붙이고, 겹치면 붙이지 않는다
+    for ext, expected in [(before, 6), (overlap, None)]:  # 앞 날짜만 있으면 붙이고, 겹치면 멈춘다
         monkeypatch.setattr(tools, "_load_raw", lambda kind, name, ext=ext: ext if name.endswith(config.EXT_SUFFIX) else pd.DataFrame())
-        assert len(ls.prepend_extended(raw)["ohlcv"]) == expected
+        if expected is None:
+            with pytest.raises(ValueError):
+                ls.prepend_extended(raw)
+        else:
+            assert len(ls.prepend_extended(raw)["ohlcv"]) == expected
+
+
+def test_뉴스_채점이_실패해도_운영_신호는_남는다(tmp_path, monkeypatch):
+    monkeypatch.setattr(ls, "LIVE_PATH", tmp_path / "live.parquet")
+    t = pd.Timestamp("2026-10-21")
+    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": k.get("feature_set", "base"), "signal": "상승",
+                                                               "confidence": 0.5, "data_sources": {}})
+    monkeypatch.setattr(ls, "risk_signal", lambda *a: (_ for _ in ()).throw(ValueError("시험에서는 건너뛴다")))
+    monkeypatch.setattr(ls, "news_ready", lambda t: True)
+    monkeypatch.setattr(ls, "news_score", lambda t: (_ for _ in ()).throw(RuntimeError("Too many tokens per day")))
+    out = ls.make_signal("2026-10-21", with_news=True)
+    assert out["signal"] == "상승" and "뉴스 채점 실패" in out["news_status"]
+    saved = pd.read_parquet(tmp_path / "live.parquet")
+    assert "상승" in saved[saved["model"] == "base"]["signal"].tolist()

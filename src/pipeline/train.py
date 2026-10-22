@@ -107,12 +107,16 @@ def main():
     features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
     labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")
     official_labels = pd.read_parquet(config.LABELS_OFFICIAL_PATH)
+    if config.OPERATIONAL_EXTENDED_HISTORY:  # 운영·후보는 확장 원본까지 이어 붙인 표로 학습한다(공식 45개는 기존 표 그대로)
+        op_features, op_labels = pd.read_parquet(config.FEATURES_EXT_PATH), pd.read_parquet(config.LABELS_EXT_PATH)
+    else:
+        op_features, op_labels = features, labels
     for feature_set, path in [("base", config.SIGNALS_NUMERIC_PATH), ("candidate", config.SIGNALS_CANDIDATE_PATH),
                               ("base_v1", config.SIGNALS_BASE_V1_PATH)]:
-        if feature_set == "base_v1":  # 1~3일차 공식 판정 조건(5거래일 정답, 매월 재학습) 그대로
+        if feature_set == "base_v1":  # 1~3일차 공식 판정 조건(5거래일 정답, 매월 재학습, 기존 표) 그대로
             signals = walk_forward(features, official_labels, feature_set=feature_set, freq=config.OFFICIAL_RETRAIN_FREQ)
         else:
-            signals = walk_forward(features, labels, feature_set=feature_set)
+            signals = walk_forward(op_features, op_labels, feature_set=feature_set)
         signals.to_parquet(path)
         label = feature_set + (" (①안 탐색: 운영과 같은 재학습 주기로 비교)" if feature_set == "candidate" else "")
         print(label, path, len(signals), signals.index.min().date(), "~", signals.index.max().date(),
