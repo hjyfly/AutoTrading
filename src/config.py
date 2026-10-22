@@ -53,14 +53,18 @@ PROCESSED_DIR = "data/processed"
 REQUEST_PAUSE_SEC = 0.5
 
 # 정답 기준 (SERVICE.md 섹션 4)
+# 2026-10-22 3거래일을 시험했으나 매주 재학습과 함께 쓰면 나빠져 5거래일로 되돌림(사용자 결정)
 LABEL_HORIZON_DAYS = 5
 LABEL_THRESHOLD = 0.03
+OFFICIAL_LABEL_HORIZON_DAYS = 5  # 1~3일차 공식 판정의 정답 기간(공식 숫자 재현용, 바꾸지 않는다)
+LABELS_OFFICIAL_PATH = "data/processed/labels_official.parquet"
 
 # 워크포워드 구간 (SERVICE.md 섹션 8, 기본값). 처음 18개월은 학습에만 쓴다
 TRAIN_END = "2025-04-22"
 VALID_START = "2025-04-23"
-# 재학습 주기 (기본 매월 = 1~3일차 규칙). 조건 비교 실험에서 W(매주)·Q(분기)로 바꿔 본다
-RETRAIN_FREQ = "M"
+# 재학습 주기. 2026-10-22 사용자 결정: 매월 → 매주. 1~3일차 공식 판정은 매월(OFFICIAL_RETRAIN_FREQ)
+RETRAIN_FREQ = "W"
+OFFICIAL_RETRAIN_FREQ = "M"
 RETRAIN_FREQS = {"W": "매주", "M": "매월", "Q": "분기"}
 # 체결 시점 (기본 t 종가 = 공식 규칙). next_open 은 신호를 낸 다음 거래일 시가에 체결하는 비교용
 EXECUTION = "close"
@@ -194,8 +198,8 @@ OPTION_EXPIRY_WEEKDAY = 3  # 목요일 (월=0)
 OPTION_EXPIRY_NTH = 2  # 둘째 주
 EARNINGS_DAY_MAX = 10
 
-# 기존 모델 특징 45개 (1~3일차 결과와 같은 모델을 다시 만들 수 있게 이름으로 고정한다)
-FEATURE_SET_BASE = [
+# 1~3일차 모델 특징 45개 (1~3일차 결과와 같은 모델을 다시 만들 수 있게 이름으로 고정한다)
+FEATURE_SET_BASE_V1 = [
     "ret_1d", "ret_5d", "ret_20d", "volume_ratio", "psar_gap", "psar_trend",
     "ma5_gap", "ma20_gap", "ma60_gap", "ma120_gap", "bb_pctb", "bb_width",
     "ichi_tenkan_gap", "ichi_kijun_gap", "ichi_tenkan_kijun", "ichi_cloud_top_gap", "ichi_cloud_bottom_gap", "ichi_cloud_thickness",
@@ -213,13 +217,18 @@ FEATURE_SET_B = ["kospi_ret_1d", "kospi_ret_5d", "kospi200_ret_1d", "kospi200_re
                  "mu_ret_1d", "mu_ret_5d", "mu_age_days", "tsm_ret_1d", "tsm_ret_5d", "tsm_age_days",
                  "dxy_ret_1d", "dxy_ret_5d", "dxy_age_days"]
 FEATURE_SET_D = ["is_option_expiry", "days_to_option_expiry", "is_month_end", "weekday", "is_earnings_season"]
+# 운영 모델 특징 46개 = 1~3일차 45개 + RSI(14일) (2026-10-22 사용자 결정. 검증 구간을 본 뒤의 변경이라 그 구간 숫자는 탐색으로 본다)
+FEATURE_SET_BASE = FEATURE_SET_BASE_V1 + ["rsi14"]
+BASE_CHANGED_ON = "2026-10-22"
 FEATURE_SETS = {
     "base": FEATURE_SET_BASE,
-    "candidate": FEATURE_SET_BASE + FEATURE_SET_A + FEATURE_SET_B + FEATURE_SET_D,
+    "base_v1": FEATURE_SET_BASE_V1,
+    "candidate": FEATURE_SET_BASE_V1 + FEATURE_SET_A + FEATURE_SET_B + FEATURE_SET_D,  # 사전 등록 목록 그대로(77개)
 }
 SIGNALS_CANDIDATE_PATH = "data/processed/signals_candidate.parquet"
+SIGNALS_BASE_V1_PATH = "data/processed/signals_base_v1.parquet"  # 1~3일차 45개 모델 신호(공식 판정 재현용)
 
-# 지표 그룹 (2026-10-22 사용자 요청: 그룹 단위로 빼고 더해 보는 진단). 기존 45개와 후보 A·B·D 를 겹치지 않게 나눈다
+# 지표 그룹 (2026-10-22 사용자 요청: 그룹 단위로 빼고 더해 보는 진단). 운영 46개와 후보 A·B·D 를 겹치지 않게 나눈다
 # 그룹 묶음 이름은 "groups:price+chart+flow" 처럼 FEATURE_GROUP_PREFIX 뒤에 그룹을 + 로 잇는다
 FEATURE_GROUPS = {
     "price": ["ret_1d", "ret_5d", "ret_20d", "volume_ratio"],
@@ -231,16 +240,17 @@ FEATURE_GROUPS = {
     "peer": ["sox_ret_1d", "sox_ret_5d", "nvda_ret_1d", "nvda_ret_5d", "hstech_ret_1d", "hstech_ret_5d"],
     "age": ["us10y_yf_age_days", "vix_yf_age_days", "wti_fut_age_days", "usdkrw_yf_age_days", "sox_age_days", "nvda_age_days",
             "hstech_age_days"],
-    "tech_extra": FEATURE_SET_A,
+    "rsi": ["rsi14"],
+    "tech_extra": [c for c in FEATURE_SET_A if c != "rsi14"],
     "market_extra": FEATURE_SET_B,
     "calendar": FEATURE_SET_D,
 }
 FEATURE_GROUP_LABELS = {
     "price": "가격·거래량", "chart": "차트(이동평균·볼린저·일목·PSAR)", "flow": "수급(외국인·기관)",
-    "macro": "거시(금리·VIX·유가·환율)", "peer": "해외 동종(SOX·엔비디아·항셍테크)", "age": "데이터 경과일",
-    "tech_extra": "추가 기술 지표(A)", "market_extra": "시장·동종 추가(B)", "calendar": "일정(D)",
+    "macro": "거시(금리·VIX·유가·환율)", "peer": "해외 동종(SOX·엔비디아·항셍테크)", "age": "데이터 경과일", "rsi": "RSI(14일)",
+    "tech_extra": "추가 기술 지표(A, RSI 제외)", "market_extra": "시장·동종 추가(B)", "calendar": "일정(D)",
 }
-FEATURE_GROUPS_BASE = ["price", "chart", "flow", "macro", "peer", "age"]  # 합치면 FEATURE_SET_BASE
+FEATURE_GROUPS_BASE = ["price", "chart", "flow", "macro", "peer", "age", "rsi"]  # 합치면 FEATURE_SET_BASE
 FEATURE_GROUP_PREFIX = "groups:"
 # 지표 그룹 진단의 추천 규칙(결과를 보기 전에 정한 고정 규칙): 정확도·수익·MDD 중 어느 것도 허용 폭 넘게 나빠지지 않고
 # 하나 이상이 허용 폭 넘게 좋아진 변경만 추천한다. 수익·MDD 허용 폭은 MONITOR_TOL, 정확도 허용 폭은 아래 값
@@ -314,7 +324,7 @@ EXPERIMENT_UI_OPTIONS = {
 }
 # 조건 모니터링: 기준 조건에서 하나씩만 바꿔 볼 값(사전 등록. 결과를 보고 목록을 바꾸지 않는다). 2026-10-22 사용자 요청
 MONITOR_AXES = {
-    "threshold": [0.02, 0.05], "horizon_days": [3, 10], "retrain_freq": ["W", "Q"],
+    "threshold": [0.02, 0.05], "horizon_days": [3, 10], "retrain_freq": ["M", "Q"],  # 2026-10-22 기준 재학습이 매주로 바뀌어 비교 값을 매월·분기로 바꿈
     "execution": ["next_open"], "down_action": ["inverse"], "feature_set": ["candidate"],
 }
 MONITOR_NEWS_AXES = {  # 뉴스 묶음의 기준은 news_mode="adjust"(기준 B 규칙). 분류별·하락 위험은 채점 버전 2 에서만 계산된다

@@ -22,11 +22,12 @@ def prices(n=40, seed=0):
     return samsung, inverse
 
 
-def test_5거래일이_지난_신호만_채점한다():
+def test_정답_기간이_지난_신호만_채점한다():
     samsung, inverse = prices(8)
     signals = pd.Series([UP] * 8, index=DAYS[:8])
     s = sb.score_model(signals, samsung, inverse)
-    assert s["n_signals"] == 8 and s["n_matured"] == 3  # 8거래일 중 앞 3일만 5거래일 뒤 종가가 있다
+    h = config.LABEL_HORIZON_DAYS
+    assert s["n_signals"] == 8 and s["n_matured"] == 8 - h  # 8거래일 중 앞 8-h 일만 h 거래일 뒤 종가가 있다
 
 
 def test_기록이_빠진_날은_포지션을_유지한다():

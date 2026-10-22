@@ -19,11 +19,13 @@ from src.pipeline.train import CLASSES, feature_columns
 LIVE_PATH = Path(config.PROCESSED_DIR) / "signals_live.parquet"
 
 
-def block_start(t: pd.Timestamp, days: pd.DatetimeIndex, valid_start=None) -> pd.Timestamp:
-    """t 의 재학습 시점. 과거 검증(train.prediction_chunks)과 같게, 그 달 첫 거래일이되 검증 시작일보다 앞서지 않는다."""
+def block_start(t: pd.Timestamp, days: pd.DatetimeIndex, valid_start=None, freq: str | None = None) -> pd.Timestamp:
+    """t 의 재학습 시점. 과거 검증(train.prediction_chunks)과 같게, 재학습 주기(기본 config.RETRAIN_FREQ) 안의 첫 거래일이되
+    검증 시작일보다 앞서지 않는다."""
+    freq = freq or config.RETRAIN_FREQ
     valid_start = pd.Timestamp(valid_start or config.VALID_START)
-    same_month = days[(days.to_period("M") == t.to_period("M")) & (days <= t) & (days >= min(valid_start, t))]
-    return same_month[0]
+    same_block = days[(days.to_period(freq) == t.to_period(freq)) & (days <= t) & (days >= min(valid_start, t))]
+    return same_block[0]
 
 
 def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base") -> dict:
@@ -38,7 +40,7 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
     cols = feature_columns(table, feature_set)
     features.assert_no_lookahead(table[cols])
     labels = make_labels(raw["ohlcv"]["Close"].dropna())  # t 이전 종가만으로 만든 정답(정답 기간이 t 전에 끝난 것만 생긴다)
-    start = block_start(t, table.index, valid_start)
+    start = block_start(t, table.index[table[cols].notna().all(axis=1)], valid_start)  # 과거 검증처럼 빈 값 없는 날로 재학습일을 정한다
     train = table[cols].dropna().join(labels[["label", "future_date"]], how="inner")
     train = train[train["future_date"] < start]
     if len(train) < config.MIN_TRAIN_ROWS:

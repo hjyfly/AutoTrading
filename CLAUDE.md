@@ -110,7 +110,9 @@ data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 gi
   - PoC(개발 단계) 누적 $150(2026-10-22 $80 에서 상향, 사용자 결정), 운영 월 $100 에 도달하면 예외를 던지고 멈춘다
 - 더미 데이터를 쓰면 데이터와 보고서에 is_dummy 표시를 붙인다
 - 설정값은 src/config.py 에만 두고 코드 곳곳에 숫자를 적지 않는다
-- 지표 묶음은 config.FEATURE_SETS 로 고른다. base(기존 45개)는 이름으로 고정했고, candidate(A+B+D)는 사전 등록 목록이라 결과를 본 뒤 바꾸지 않는다
+- 지표 묶음은 config.FEATURE_SETS 로 고른다. base_v1(1~3일차 45개)은 이름으로 고정했고, candidate(A+B+D)는 사전 등록 목록이라 결과를 본 뒤 바꾸지 않는다
+  - 운영 base 는 base_v1 + RSI(rsi14) 46개다(2026-10-22 사용자 결정). 운영 base 를 바꾸는 것은 사용자 결정으로만 한다
+  - 탐색·실시간 비교용으로 config.FEATURE_GROUPS 의 그룹을 이은 'groups:' 묶음도 쓸 수 있다
   - 새 지표를 더할 때는 base 계산 결과가 바뀌지 않았는지(features·signals_numeric 이 이전과 같은지) 확인한다
 - 환경: Python 3.11 이상, 의존성은 requirements.txt, 테스트는 pytest
 

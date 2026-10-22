@@ -131,7 +131,7 @@ def test_기준B_는_두_모델을_같은_날_현금으로_시작해_비교한�
     monkeypatch.setattr(config, "CRITERION_B_END", "2026-02-04")
     pd.DataFrame({"label": [UP, DOWN, FLAT]}, index=days).to_parquet(tmp_path / "labels.parquet")
     numeric = pd.DataFrame({"signal": [UP] * 6}, index=pd.bdate_range("2026-01-28", periods=3).append(days))
-    news = pd.DataFrame({"signal": [FLAT, DOWN, DOWN], "adjusted": [True, True, True], "news_scored": True}, index=days)
+    news = pd.DataFrame({"signal": [FLAT, DOWN, DOWN], "numeric_signal": [UP] * 3, "adjusted": [True, True, True], "news_scored": True}, index=days)
     r = bt.evaluate_b(numeric, news)
     numeric_expected = 0.999 * 99 / 100  # 2/2 매수(현금 시작) 후 끝까지 삼성
     news_expected = 1.0 * 0.999 * 100 / 90  # 2/2 보합이라 현금, 2/3 인버스 매수, 2/4 인버스 +11.1%
@@ -232,3 +232,14 @@ def test_분할_단계_0은_거부한다():
     days = pd.bdate_range("2026-01-05", periods=2)
     with pytest.raises(ValueError):
         bt.simulate_split(pd.Series([UP, UP], index=days), pd.Series(100.0, index=days), steps=0)
+
+
+def test_기준_B는_다른_숫자_모델을_보정한_뉴스_신호와_섞지_않는다(monkeypatch, tmp_path):
+    days = pd.bdate_range("2026-02-02", periods=3)
+    monkeypatch.setattr(bt, "load_prices", lambda: (pd.Series(100.0, index=days), pd.Series(100.0, index=days)))
+    monkeypatch.setattr(config, "CRITERION_B_START", "2026-02-02")
+    monkeypatch.setattr(config, "CRITERION_B_END", "2026-02-04")
+    numeric = pd.DataFrame({"signal": [UP, UP, UP]}, index=days)
+    news = pd.DataFrame({"signal": [UP, UP, UP], "numeric_signal": [UP, DOWN, UP], "adjusted": False, "news_scored": True}, index=days)
+    with pytest.raises(ValueError):
+        bt.evaluate_b(numeric, news)

@@ -14,7 +14,8 @@ from src.pipeline import backtest
 from src.pipeline.labels import FLAT, make_labels
 
 LIVE_PATH = Path(config.PROCESSED_DIR) / "signals_live.parquet"
-MODELS = {"base": "기존 모델(최종 신호, 뉴스 보정 포함)", "candidate": "후보 모델(A+B+D, 비교용)"}
+MODELS = {"base": "운영 모델(최종 신호, 뉴스 보정 포함)", "candidate": "후보 모델(A+B+D, 비교용)",
+          "base_v1": "1~3일차 45개 모델(운영 변경 전 기록, 참고)"}
 
 
 def load_live() -> pd.DataFrame:

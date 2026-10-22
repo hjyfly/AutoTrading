@@ -50,6 +50,9 @@ def main():
     out = Path(config.PROCESSED_DIR) / "labels.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     labels.to_parquet(out)
+    official = make_labels(ohlcv["Close"], horizon=config.OFFICIAL_LABEL_HORIZON_DAYS)  # 1~3일차 공식 판정 재현용(5거래일)
+    official["is_dummy"] = labels["is_dummy"].iloc[0] if len(labels) else False
+    official.to_parquet(config.LABELS_OFFICIAL_PATH)
     periods = {
         "전체": (config.DATA_START, config.DATA_END),
         "학습(첫 18개월)": (config.DATA_START, config.TRAIN_END),

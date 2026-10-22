@@ -267,9 +267,9 @@ def signal_for(date: str) -> dict:
             if pd.notna(r.get("news_consensus")):
                 out["with_news"] = {"signal": r["signal"], "adjusted": r["signal"] != r["numeric_signal_label"],
                                     "news_consensus": int(r["news_consensus"]), "news_confidence": round(float(r["news_consensus_conf"]), 2)}
-    news_path = Path(config.PROCESSED_DIR) / "signals_news.parquet"
-    if news_path.exists() and "with_news" not in out:
-        news = pd.read_parquet(news_path)
+    if "with_news" not in out:
+        from src.pipeline import news_signal  # 지금 숫자 모델을 보정한 날만 쓴다(지표 묶음을 바꾼 뒤 다시 만들기 전 기록은 뺀다)
+        news = news_signal.load_matching()
         if t in news.index and news.loc[t, "news_scored"]:
             r = news.loc[t]
             out["with_news"] = {"signal": r["signal"], "adjusted": bool(r["adjusted"]),
@@ -322,24 +322,31 @@ def backtest_summary(until: str | None = None) -> dict:
     """
     last = signals_last_date()
     until_ts = min(pd.Timestamp(until), last) if until else last
-    return _backtest_summary(str(until_ts.date()), str(last.date()))
+    stamp = tuple(Path(f).stat().st_mtime if Path(f).exists() else 0 for f in (config.SIGNALS_NUMERIC_PATH, config.SIGNALS_BASE_V1_PATH))
+    return _backtest_summary(str(until_ts.date()), str(last.date()), stamp)
 
 
 @functools.lru_cache(maxsize=8)
-def _backtest_summary(until: str, data_last: str) -> dict:
-    """계산 결과 캐시(신호 파일이 늘면 data_last 가 달라져 다시 계산한다)."""
+def _backtest_summary(until: str, data_last: str, stamp: tuple = ()) -> dict:
+    """계산 결과 캐시. 신호 파일이 늘거나(data_last) 다시 만들어지면(stamp = 파일 수정 시각) 다시 계산한다."""
     from src.pipeline import backtest  # 무거운 계산이라 필요할 때만 불러온다
     signals = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
+    v1_path = Path(config.SIGNALS_BASE_V1_PATH)
+    if not v1_path.exists():  # 공식 판정을 운영 신호로 대신하지 않는다
+        raise FileNotFoundError(f"{v1_path} 가 없다. train.main 을 먼저 돌린다")
+    official = pd.read_parquet(v1_path)
     out = {"current_down_action": config.DOWN_ACTION,
-           "note": (f"하락={config.DOWN_ACTION_LABELS[config.OFFICIAL_DOWN_ACTION]}, {config.VALID_START}~{config.OFFICIAL_VALID_END} 결과가 1~3일차 공식 판정이다. "
-                    f"다른 규칙({config.DOWN_ACTION_CHANGED_ON} 변경)과 늘어난 구간(extended)은 검증 구간을 본 뒤의 참고 결과다"),
+           "note": (f"1~3일차 {len(config.FEATURE_SET_BASE_V1)}개 지표 모델, 하락={config.DOWN_ACTION_LABELS[config.OFFICIAL_DOWN_ACTION]}, "
+                    f"{config.VALID_START}~{config.OFFICIAL_VALID_END} 결과가 1~3일차 공식 판정이다. "
+                    f"다른 규칙({config.DOWN_ACTION_CHANGED_ON} 변경), 운영 모델(operational, {config.BASE_CHANGED_ON} RSI 추가 {len(config.FEATURE_SET_BASE)}개), "
+                    "늘어난 구간(extended)은 검증 구간을 본 뒤의 참고 결과다"),
            "report": "evaluation/reports/day3_backtest.md", "by_rule": {}}
 
-    def block(end):
+    def block(end, sig, labels_path=None):
         """끝날까지 하락 행동 규칙마다 기준 A 결과를 계산한다."""
         result = {}
         for rule in config.DOWN_ACTIONS:
-            r = backtest.evaluate(signals, end=end, down_action=rule)
+            r = backtest.evaluate(sig, end=end, down_action=rule, labels_path=labels_path)
             a = r["judge_a"]
             result.update(period=r["period"], direction={k: round(v, 4) for k, v in r["direction"].items()},
                           hold={k: round(v, 4) for k, v in a["hold"].items()})
@@ -347,9 +354,11 @@ def _backtest_summary(until: str, data_last: str) -> dict:
                                                       "model": {k: round(v, 4) for k, v in a["model"].items()}}
         return result
 
-    out.update(block(config.OFFICIAL_VALID_END))
+    out.update(block(config.OFFICIAL_VALID_END, official, config.LABELS_OFFICIAL_PATH))
+    out["operational"] = {**block(config.OFFICIAL_VALID_END, signals),
+                          "note": f"지금 운영 모델({len(config.FEATURE_SET_BASE)}개)의 같은 구간 결과(탐색, 공식 판정 아님)"}
     if pd.Timestamp(until) > pd.Timestamp(config.OFFICIAL_VALID_END):
-        out["extended"] = {**block(until), "note": "주간 갱신으로 늘어난 날까지 포함한 참고 결과(공식 판정 아님)"}
+        out["extended"] = {**block(until, signals), "note": f"운영 모델({len(config.FEATURE_SET_BASE)}개·재학습 {config.RETRAIN_FREQS[config.RETRAIN_FREQ]})로 주간 갱신으로 늘어난 날까지 포함한 참고 결과(공식 판정 아님)"}
     return out
 
 

@@ -153,11 +153,14 @@ def feature_changes(before: pd.DataFrame, after: pd.DataFrame) -> int:
     return int(diff.any(axis=1).sum())
 
 
+SIGNAL_PATHS = (config.SIGNALS_NUMERIC_PATH, config.SIGNALS_CANDIDATE_PATH, config.SIGNALS_BASE_V1_PATH)
+
+
 def processed_outputs() -> list[Path]:
     """다시 만드는 산출물. 실패하면 이 파일들을 되돌린다."""
     names = ["features.parquet", "labels.parquet", "dart_index.parquet",
              *[f"equity_{m}_{r}.parquet" for m in ("numeric", "candidate") for r in config.DOWN_ACTIONS]]
-    return [Path(config.PROCESSED_DIR) / n for n in names] + [Path(config.SIGNALS_NUMERIC_PATH), Path(config.SIGNALS_CANDIDATE_PATH)]
+    return [Path(config.PROCESSED_DIR) / n for n in names] + [Path(config.LABELS_OFFICIAL_PATH)] + [Path(p) for p in SIGNAL_PATHS]
 
 
 def rebuild() -> dict:
@@ -165,7 +168,7 @@ def rebuild() -> dict:
 
     이미 있던 날짜의 신호·확률이 바뀌면 모의 매매 전에 멈춘다(예외). 되돌리기는 run() 이 한다.
     """
-    before = {p: pd.read_parquet(p) for p in (config.SIGNALS_NUMERIC_PATH, config.SIGNALS_CANDIDATE_PATH) if Path(p).exists()}
+    before = {p: pd.read_parquet(p) for p in SIGNAL_PATHS if Path(p).exists()}
     feat_path = Path(config.PROCESSED_DIR) / "features.parquet"
     old_features = pd.read_parquet(feat_path) if feat_path.exists() else None
     features.main()

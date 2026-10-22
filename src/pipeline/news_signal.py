@@ -63,6 +63,20 @@ def news_signals(numeric: pd.DataFrame, scores: pd.DataFrame, field: str | None 
     return out
 
 
+def load_matching(numeric: pd.DataFrame | None = None) -> pd.DataFrame:
+    """저장된 뉴스 보정 신호 중 보정 전 숫자 신호가 지금 운영 숫자 신호와 같은 날만 돌려준다.
+
+    운영 지표 묶음을 바꾼 뒤 아직 다시 만들지 않은 보정 신호(옛 숫자 모델 기준)가 화면·도구에 섞이지 않게 한다.
+    """
+    path = Path(config.PROCESSED_DIR) / "signals_news.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    news = pd.read_parquet(path)
+    numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH) if numeric is None else numeric
+    same = numeric["signal"].reindex(news.index) == news["numeric_signal"]
+    return news[same]
+
+
 def main():
     """뉴스 구간의 숫자 모델 신호를 보정해 data/processed/signals_news.parquet 에 저장한다."""
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH).loc[config.NEWS_START:config.NEWS_END]

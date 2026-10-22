@@ -193,7 +193,7 @@ def test_수능일은_16시30분_마감():
 def test_늘어난_신호가_있어도_공식_판정_구간은_고정되고_요청_시점_뒤는_계산하지_않는다(monkeypatch):
     calls = []
     monkeypatch.setattr(tools, "signals_last_date", lambda: pd.Timestamp("2026-10-29"))
-    monkeypatch.setattr(tools, "_backtest_summary", lambda until, last: calls.append((until, last)) or {})
+    monkeypatch.setattr(tools, "_backtest_summary", lambda until, last, *_: calls.append((until, last)) or {})
     with tools.request_as_of("2026-10-22"):
         tools.get_backtest_summary.invoke({})
     assert calls == [("2026-10-21", "2026-10-29")]  # 요청 시점 전날까지만

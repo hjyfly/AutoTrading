@@ -28,7 +28,7 @@ def test_학습_정답은_예측_시작일_전에_끝난다():
     features, labels = make_data()
     out = tr.walk_forward(features, labels, valid_start="2025-05-01")
     assert (out["train_last_future_date"] < out["retrained_on"]).all()
-    assert out["retrained_on"].nunique() == out.index.to_period("M").nunique()
+    assert out["retrained_on"].nunique() == out.index.to_period(config.RETRAIN_FREQ).nunique()
 
 
 def test_미래_데이터를_바꿔도_과거_예측은_같다():

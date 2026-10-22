@@ -99,13 +99,18 @@ def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None,
 
 
 def main():
-    """숫자 모델 신호를 만들어 data/processed/signals_numeric.parquet 에 저장한다."""
+    """숫자 모델 신호를 만든다. 운영(base)·후보(candidate)와, 1~3일차 공식 판정을 다시 만드는 45개 모델(base_v1)."""
     features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
     labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")
-    for feature_set, path in [("base", config.SIGNALS_NUMERIC_PATH), ("candidate", config.SIGNALS_CANDIDATE_PATH)]:
-        signals = walk_forward(features, labels, feature_set=feature_set)
+    official_labels = pd.read_parquet(config.LABELS_OFFICIAL_PATH)
+    for feature_set, path in [("base", config.SIGNALS_NUMERIC_PATH), ("candidate", config.SIGNALS_CANDIDATE_PATH),
+                              ("base_v1", config.SIGNALS_BASE_V1_PATH)]:
+        if feature_set == "base_v1":  # 1~3일차 공식 판정 조건(5거래일 정답, 매월 재학습) 그대로
+            signals = walk_forward(features, official_labels, feature_set=feature_set, freq=config.OFFICIAL_RETRAIN_FREQ)
+        else:
+            signals = walk_forward(features, labels, feature_set=feature_set)
         signals.to_parquet(path)
-        label = feature_set + (" (①안 탐색: 검증 구간을 본 뒤 한 번만)" if feature_set == "candidate" else "")
+        label = feature_set + (" (①안 탐색: 운영과 같은 재학습 주기로 비교)" if feature_set == "candidate" else "")
         print(label, path, len(signals), signals.index.min().date(), "~", signals.index.max().date(),
               f"재학습 {signals['retrained_on'].nunique()}회, 첫 학습 {signals['train_rows'].iloc[0]}행, 특징 {len(config.FEATURE_SETS[feature_set])}개")
         print("  신호 분포", signals["signal"].value_counts(normalize=True).round(3).to_dict())

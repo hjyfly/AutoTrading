@@ -236,7 +236,7 @@ AXIS_NOTES = {  # 조건마다 무엇을 뜻하고 바꾸면 보통 어떤 득�
     "position_steps": "신호 한 번에 비중을 얼마나 바꿀지다. 단계를 늘리면 틀린 신호 하나의 손실이 줄지만 맞는 신호의 수익도 늦게 따라간다.",
     "position_floor": "하락 신호가 이어져도 남겨 두는 삼성전자 비중이다. 높이면 들고 있기에 가까워져 오르는 장에서 유리하고, 하락 신호가 맞을 때 덜 피한다.",
     "down_action": "하락 신호 때 현금으로 나갈지 인버스 ETF 를 살지다. 인버스는 하락이 맞으면 벌지만 틀리면 오르는 장에서 반대로 잃는다.",
-    "feature_set": f"기존 {len(config.FEATURE_SET_BASE)}개 지표와 사전 등록한 후보 {len(config.FEATURE_SETS['candidate'])}개 지표(A+B+D), 또는 지표 그룹을 골라 만든 묶음이다. 지표가 많으면 표현력은 늘지만 과적합 위험도 커진다. "
+    "feature_set": f"운영 {len(config.FEATURE_SET_BASE)}개 지표(1~3일차 지표 + RSI), 1~3일차 {len(config.FEATURE_SET_BASE_V1)}개, 사전 등록한 후보 {len(config.FEATURE_SETS['candidate'])}개 지표(A+B+D), 또는 지표 그룹을 골라 만든 묶음이다. 지표가 많으면 표현력은 늘지만 과적합 위험도 커진다. "
                    "그룹 단위 진단은 experiments_features.md 에 따로 있다.",
     "news_mode": "뉴스 보정을 끄면(숫자 모델만) 뉴스가 실제로 더해 준 몫을 볼 수 있다.",
     "news_min_score": "뉴스 합의가 이 값 이상(이하)일 때만 신호를 한 단계 올린다(내린다). 낮추면 보정이 잦아지고 뉴스 소음도 더 들어온다.",
@@ -251,7 +251,7 @@ TOL = config.MONITOR_TOL  # 수익·MDD 차이를 '거의 같다' 로 보는 폭
 def value_label(key: str, value) -> str:
     """조건 값의 한국어 표시."""
     names = {**config.RETRAIN_FREQS, **config.EXECUTIONS, **config.DOWN_ACTION_LABELS, **config.NEWS_SCORE_FIELDS,
-             "none": "숫자 모델만", "adjust": "뉴스 보정", "base": "기존 지표", "candidate": "후보 지표"}
+             "none": "숫자 모델만", "adjust": "뉴스 보정", "base": f"운영 지표({len(config.FEATURE_SET_BASE)}개)", "base_v1": f"1~3일차 지표({len(config.FEATURE_SET_BASE_V1)}개)", "candidate": "후보 지표"}
     if value is None:
         return "없음"
     if key == "feature_set" and str(value).startswith(config.FEATURE_GROUP_PREFIX):
@@ -544,7 +544,7 @@ def study_verdict(r: pd.Series, b: pd.Series) -> tuple[str, bool]:
 
 
 def feature_study(data: Data | None = None, save: bool = True) -> dict:
-    """지표 그룹 진단. 기준(기존 45개)에서 기존 그룹을 하나씩 빼고, 후보 그룹을 하나씩 더해 같은 구간에서 비교한다.
+    """지표 그룹 진단. 기준(운영 지표 묶음)에서 기존 그룹을 하나씩 빼고, 후보 그룹을 하나씩 더해 같은 구간에서 비교한다.
 
     추천 규칙(study_verdict)을 통과한 변경을 모두 합친 '추천 묶음' 도 계산한다. 결과는 검증 구간을 본 뒤의 탐색이라
     운영 신호를 바꾸지 않는다. 추천 묶음은 config.LIVE_EXTRA_FEATURE_SETS 에 넣어 앞으로의 날로 다시 확인한다.

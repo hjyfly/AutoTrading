@@ -91,3 +91,13 @@ def test_뉴스_없이_다시_실행해도_이전_뉴스_보정을_유지한다(
                                                                "confidence": 0.5, "data_sources": {}})
     out = ls.make_signal("2026-10-21", with_news=False)
     assert out["news_consensus"] == 4.0 and out["signal"] == "상승"
+
+
+@pytest.mark.parametrize("freq", ["W", "M"])
+def test_실시간_재학습일은_과거_검증_덩어리와_같다(freq):
+    days = pd.bdate_range("2025-04-01", "2025-08-29").drop(pd.Timestamp("2025-06-02"))  # 월요일 휴장 포함
+    valid_start = "2025-04-23"  # 수요일
+    chunks = tr.prediction_chunks(days, valid_start, freq)
+    expected = {d: start for start, block in chunks for d in block}
+    for t, start in expected.items():
+        assert ls.block_start(t, days, valid_start, freq) == start

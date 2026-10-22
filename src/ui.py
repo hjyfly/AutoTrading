@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from src import agent, config, llm, tools
-from src.pipeline import experiment, live_signal, scoreboard
+from src.pipeline import experiment, live_signal, news_signal, scoreboard
 
 st.set_page_config(page_title=f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
 
@@ -24,9 +24,8 @@ st.set_page_config(page_title=f"삼성전자 {config.LABEL_HORIZON_DAYS}거래�
 def load_signals() -> pd.DataFrame:
     """검증 구간 신호(뉴스 보정 반영)와 실시간으로 만든 신호를 합친다."""
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)[["signal", "confidence"]]
-    news_path = Path(config.PROCESSED_DIR) / "signals_news.parquet"
-    if news_path.exists():
-        news = pd.read_parquet(news_path)
+    news = news_signal.load_matching()  # 지금 숫자 모델을 보정한 날만(지표 묶음을 바꾼 뒤 다시 만들기 전 기록은 뺀다)
+    if len(news):
         numeric.loc[news.index, "signal"] = news["signal"]
     live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
     if live_path.exists():
@@ -85,7 +84,7 @@ def condition_query_view():
                "신호 시각(15:15)과 기사 수집 구간은 뉴스를 다시 채점해야 바뀌므로 여기서는 고를 수 없다.")
     base = config.EXPERIMENT_BASE
     names = {**config.RETRAIN_FREQS, **config.EXECUTIONS, **config.DOWN_ACTION_LABELS, **config.NEWS_SCORE_FIELDS,
-             "none": "숫자 모델만", "adjust": "뉴스 보정", "base": "기존 지표", "candidate": "후보 지표(A+B+D)", None: "쓰지 않음"}
+             "none": "숫자 모델만", "adjust": "뉴스 보정", "base": f"운영 지표({len(config.FEATURE_SET_BASE)}개)", "base_v1": f"1~3일차 지표({len(config.FEATURE_SET_BASE_V1)}개)", "candidate": "후보 지표(A+B+D)", None: "쓰지 않음"}
     options = {**{k: config.EXPERIMENT_UI_OPTIONS[k] for k in ("horizon_days", "threshold")}, **experiment.CHOICES,
                **{k: v for k, v in config.EXPERIMENT_UI_OPTIONS.items() if k not in ("horizon_days", "threshold")}}
     # 폼 안의 선택은 '조회' 를 누를 때만 반영된다(조건을 바꿀 때마다 화면 전체를 다시 계산하지 않게)
@@ -288,8 +287,10 @@ with tab_data:
         if chart is None:
             st.info(f"검증 구간({config.VALID_START}~) 이전 날짜다.")
         else:
-            st.caption(f"선택한 날짜 전까지의 모의 매매 자산 곡선(하락={config.DOWN_ACTION_LABELS[config.DOWN_ACTION]} 규칙). "
-                       "하락=현금 규칙의 과거 구간은 검증 구간을 본 뒤 재계산한 탐색 결과이고, 공식 판정은 하락=인버스 규칙이다(day3_backtest.md).")
+            st.caption(f"선택한 날짜 전까지의 모의 매매 자산 곡선(운영 모델 {len(config.FEATURE_SET_BASE)}개 지표·재학습 "
+                       f"{config.RETRAIN_FREQS[config.RETRAIN_FREQ]}, 하락={config.DOWN_ACTION_LABELS[config.DOWN_ACTION]} 규칙). "
+                       "과거 구간은 검증 구간을 본 뒤 재계산한 탐색 결과다. "
+                       f"공식 판정은 1~3일차 {len(config.FEATURE_SET_BASE_V1)}개 지표·매월 재학습·하락=인버스 모델이다(day3_backtest.md).")
             st.altair_chart(chart, width="stretch")
     with tab_live:
         st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다(②안). "

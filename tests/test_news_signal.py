@@ -60,3 +60,13 @@ def test_버전_1_점수표로_분류별_보정을_하면_막는다():
     scores = pd.DataFrame({"signal_date": days, "news_consensus": [4], "news_consensus_conf": [0.8], "no_news": [False]})
     with pytest.raises(ValueError):
         ns.news_signals(numeric, scores, field="news_macro_score")
+
+
+def test_지금_숫자_모델을_보정한_날만_읽는다(monkeypatch, tmp_path):
+    from src import config
+    from src.pipeline import news_signal
+    days = pd.bdate_range("2026-02-02", periods=3)
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    pd.DataFrame({"signal": ["상승"] * 3, "numeric_signal": ["상승", "하락", "보합"], "news_scored": True}, index=days).to_parquet(tmp_path / "signals_news.parquet")
+    numeric = pd.DataFrame({"signal": ["상승", "보합", "보합"]}, index=days)
+    assert list(news_signal.load_matching(numeric).index) == [days[0], days[2]]
