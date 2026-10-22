@@ -12,8 +12,9 @@ INVERSE = pd.Series([100.0, 95.0, 100.0], index=DAYS)
 
 @pytest.fixture(autouse=True)
 def fee(monkeypatch):
-    """테스트는 수수료 0.1% 로 고정한다."""
+    """테스트는 수수료 0.1% 로, 하락 행동은 손계산을 만든 인버스 규칙으로 고정한다(현금 규칙은 따로 지정해 시험)."""
     monkeypatch.setattr(config, "FEE_RATE", 0.001)
+    monkeypatch.setattr(config, "DOWN_ACTION", "inverse")
 
 
 def test_손계산_상승_하락_보합():
@@ -136,3 +137,29 @@ def test_기준B_는_두_모델을_같은_날_현금으로_시작해_비교한�
     assert r["judge_b"]["numeric"]["total_return"] == pytest.approx(numeric_expected - 1)
     assert r["judge_b"]["news"]["total_return"] == pytest.approx(news_expected - 1)
     assert r["period"] == ("2026-02-02", "2026-02-04", 3)
+
+
+def test_하락_현금_규칙은_삼성을_팔고_현금으로_있는다():
+    result = bt.simulate(pd.Series([UP, DOWN, FLAT], index=DAYS), SAMSUNG, INVERSE, down_action="cash")
+    e0 = 0.999  # 현금 → 삼성 매수
+    e1 = e0 * 110 / 100 * 0.999  # 삼성 +10% 뒤 매도만(0.1%), 인버스는 사지 않는다
+    assert result["position"].tolist() == [bt.LONG, bt.CASH, bt.CASH]
+    assert result["equity"].tolist() == pytest.approx([e0, e1, e1])  # 현금이라 2/4 하락 영향 없음
+
+
+def test_하락_인버스_규칙은_기존과_같다():
+    a = bt.simulate(pd.Series([UP, DOWN, FLAT], index=DAYS), SAMSUNG, INVERSE, down_action="inverse")
+    assert a["position"].tolist() == [bt.LONG, bt.INVERSE, bt.INVERSE]
+
+
+def test_알_수_없는_하락_행동은_거부한다():
+    with pytest.raises(ValueError):
+        bt.simulate(pd.Series([UP], index=DAYS[:1]), SAMSUNG, INVERSE, down_action="short")
+
+
+def test_현금_규칙_첫날_하락은_수수료_없이_현금():
+    days = pd.bdate_range("2026-03-02", periods=4)
+    samsung = pd.Series([100.0, 90.0, 95.0, 100.0], index=days)
+    result = bt.simulate(pd.Series([DOWN, FLAT, UP, DOWN], index=days), samsung, pd.Series(dtype=float), down_action="cash")
+    assert result["position"].tolist() == [bt.CASH, bt.CASH, bt.LONG, bt.CASH]  # 인버스 가격 없이도 계산된다
+    assert result["equity"].tolist() == pytest.approx([1.0, 1.0, 0.999, 0.999 * 100 / 95 * 0.999])

@@ -74,3 +74,10 @@ def test_장_마감_뒤에_만든_신호는_실시간_성적에서_뺀다():
     rows = pd.DataFrame({"created_at": pd.to_datetime(["2026-10-21 16:35", "2026-10-22 15:21"])}, index=days)
     assert sb.realtime_mask(rows).tolist() == [False, True]
     assert not sb.realtime_mask(pd.DataFrame(index=days)).any()  # 생성 시각이 없으면 사후 기록으로 본다
+
+
+def test_성적표는_현재_규칙을_기본으로_두_규칙을_함께_계산한다():
+    samsung, inverse = prices(12)
+    s = sb.score_model(pd.Series([UP, DOWN] * 6, index=DAYS[:12]), samsung, inverse)
+    assert set(s["by_rule"]) == set(config.DOWN_ACTIONS)
+    assert s["model"] == s["by_rule"][config.DOWN_ACTION]

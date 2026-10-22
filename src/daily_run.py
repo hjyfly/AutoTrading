@@ -41,7 +41,9 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
     final = sig.get("with_news", {}).get("signal") or sig.get("numeric", {}).get("signal", "없음")
     numeric = sig.get("numeric", {})
     subject = f"[AutoTrading] {today.date()} {final} (확신도 {numeric.get('confidence', 0):.0%})"
-    lines = [f"{today.date()} {config.SIGNAL_CUTOFF_KST} 기준 삼성전자 {config.LABEL_HORIZON_DAYS}거래일 방향 신호", "",
+    action = config.DOWN_ACTION_LABELS[config.DOWN_ACTION]
+    lines = [f"{today.date()} {config.SIGNAL_CUTOFF_KST} 기준 삼성전자 {config.LABEL_HORIZON_DAYS}거래일 방향 신호",
+             f"(모의 매매 규칙: 상승 = 삼성전자, 보합 = 유지, 하락 = {action})", "",
              f"■ 최종 신호: {final}"]
     if numeric:
         p = numeric["probabilities"]

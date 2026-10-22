@@ -54,13 +54,22 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series) -> d
            "accuracy": float(correct.mean()) if len(matured) else None,
            "direction": backtest.direction_hit_rate(matured, labels)}
     days = samsung.index[(samsung.index >= signals.index.min())] if len(signals) else samsung.index[:0]
-    days = days[days.isin(inverse.index)]
     if len(days) >= 2:
         daily = signals.reindex(days).fillna(FLAT)  # 기록이 빠진 날은 포지션 유지
-        model_eq = backtest.simulate(daily, samsung, inverse)["equity"]
-        hold_eq = backtest.buy_and_hold(samsung, days)
-        out.update(model=backtest.summary(model_eq), hold=backtest.summary(hold_eq), trading_days=int(len(days)),
-                   equity={str(d.date()): round(float(v), 6) for d, v in model_eq.items()})
+        by_rule, curves = {}, {}
+        for rule in config.DOWN_ACTIONS:  # 가격이 모자란 규칙(예: 인버스 가격 조회 실패)은 빠지고 나머지는 계산한다
+            try:
+                curves[rule] = backtest.simulate(daily, samsung, inverse, rule)["equity"]
+                by_rule[rule] = backtest.summary(curves[rule])
+            except ValueError:
+                continue
+        out.update(by_rule=by_rule, down_action=config.DOWN_ACTION,
+                   hold=backtest.summary(backtest.buy_and_hold(samsung, days)), trading_days=int(len(days)))
+        if config.DOWN_ACTION in curves:
+            out.update(model=by_rule[config.DOWN_ACTION],
+                       equity={str(d.date()): round(float(v), 6) for d, v in curves[config.DOWN_ACTION].items()})
+        else:
+            out["model_note"] = "현재 규칙에 필요한 가격이 없어 모의 매매를 계산하지 못했다"
     out["drift"] = drift_check(matured, labels)
     return out
 
@@ -117,7 +126,10 @@ def summary_lines(board: dict) -> list[str]:
         if s["accuracy"] is not None:
             part += f", 정확도 {s['accuracy']:.0%}"
         if "model" in s:
-            part += f", 모의 수익 {s['model']['total_return']:+.1%} (들고 있기 {s['hold']['total_return']:+.1%})"
+            other = {r: v for r, v in s.get("by_rule", {}).items() if r != s.get("down_action")}
+            name = config.DOWN_ACTION_LABELS.get
+            part += f", 모의 수익 {s['model']['total_return']:+.1%} (하락={name(s['down_action'])} 규칙, 들고 있기 {s['hold']['total_return']:+.1%}"
+            part += "".join(f", 하락={name(r)} 규칙 {v['total_return']:+.1%}" for r, v in other.items()) + ")"
         drift = s["drift"]
         part += f" · {drift['status']}" + (f": {drift['message']}" if "message" in drift else "")
         lines.append(part)

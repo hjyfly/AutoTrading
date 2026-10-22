@@ -47,6 +47,13 @@ RSS_LOOKBACK_DAYS = 4
 SAMSUNG_CODE = "005930"
 INVERSE_ETF_CANDIDATES = {"114800": "KODEX 인버스", "123310": "TIGER 인버스"}
 INVERSE_ETF_CODE = "114800"  # D1-03: 삼성전자 수익률과 상관 -0.908 (TIGER 인버스 -0.901)
+# 하락 신호 때 행동 (사용자 결정 2026-10-22): "cash" = 삼성전자 매도 후 현금, "inverse" = 인버스 ETF 로 전환(1~3일차 규칙)
+# 이미 검증 구간을 본 뒤의 변경이라 과거 재계산은 탐색 결과로만 보고, 확정은 실시간 성적표(앞으로의 성과)로 한다
+DOWN_ACTION = "cash"
+DOWN_ACTIONS = ["cash", "inverse"]  # 성적표·보고서에서 비교로 함께 계산하는 규칙
+DOWN_ACTION_LABELS = {"cash": "현금", "inverse": "인버스"}
+OFFICIAL_DOWN_ACTION = "inverse"  # 1~3일차 공식 판정에 쓴 규칙
+DOWN_ACTION_CHANGED_ON = "2026-10-22"
 DART_CORP_CODE = "00126380"  # 삼성전자
 
 # 거시·해외 지표 출처 ID

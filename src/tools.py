@@ -326,12 +326,20 @@ def news_judgement(date: str) -> dict:
 def backtest_summary() -> dict:
     """검증 구간 전체 모의 매매 결과(기준 A)와 보조 지표 요약."""
     from src.pipeline import backtest  # 무거운 계산이라 필요할 때만 불러온다
-    r = backtest.evaluate(pd.read_parquet(config.SIGNALS_NUMERIC_PATH))
-    a = r["judge_a"]
-    return {"period": r["period"], "criterion_a": {"passed": a["passed"], "mdd_ok": a["mdd_ok"], "return_ok": a["return_ok"]},
-            "model": {k: round(v, 4) for k, v in a["model"].items()}, "hold": {k: round(v, 4) for k, v in a["hold"].items()},
-            "direction": {k: round(v, 4) for k, v in r["direction"].items()},
-            "report": "evaluation/reports/day3_backtest.md"}
+    signals = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
+    out = {"current_down_action": config.DOWN_ACTION,
+           "note": (f"하락={config.DOWN_ACTION_LABELS[config.OFFICIAL_DOWN_ACTION]} 결과가 1~3일차 공식 판정이다. "
+                    f"다른 규칙({config.DOWN_ACTION_CHANGED_ON} 변경)은 검증 구간을 본 뒤 재계산한 탐색 결과다"),
+           "report": "evaluation/reports/day3_backtest.md", "by_rule": {}}
+    for rule in config.DOWN_ACTIONS:
+        r = backtest.evaluate(signals, down_action=rule)
+        a = r["judge_a"]
+        out["period"] = r["period"]
+        out["direction"] = {k: round(v, 4) for k, v in r["direction"].items()}
+        out["hold"] = {k: round(v, 4) for k, v in a["hold"].items()}
+        out["by_rule"][rule] = {"criterion_a": {"passed": a["passed"], "mdd_ok": a["mdd_ok"], "return_ok": a["return_ok"]},
+                                "model": {k: round(v, 4) for k, v in a["model"].items()}}
+    return out
 
 
 # ---- 에이전트에 등록하는 도구 (설명은 모델이 읽는다) ----

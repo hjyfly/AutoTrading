@@ -47,7 +47,7 @@ def load_prices() -> pd.Series:
 @st.cache_data(ttl=600)
 def load_equity() -> pd.DataFrame:
     """검증 구간 모의 매매 자산 곡선(모델 vs 들고 있기)."""
-    return pd.read_parquet(Path(config.PROCESSED_DIR) / "equity_numeric.parquet")
+    return pd.read_parquet(Path(config.PROCESSED_DIR) / f"equity_numeric_{config.DOWN_ACTION}.parquet")
 
 
 def price_chart(as_of: pd.Timestamp, days: int) -> alt.Chart:
@@ -106,6 +106,7 @@ with st.sidebar:
     spent = llm.total_cost()
     st.metric("LLM 누적 비용", f"${spent:.2f}", help=f"한도 ${config.COST_LIMIT_POC_USD:.0f}")
     st.progress(min(spent / config.COST_LIMIT_POC_USD, 1.0))
+    st.caption(f"모의 매매 규칙: 하락 신호 = {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}")
     st.caption("투자 권유가 아니라 모델 판단의 설명이다.")
 
 st.title(f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 방향 신호 · {as_of.date()} {config.SIGNAL_CUTOFF_KST} 기준")
@@ -166,7 +167,8 @@ with data_col:
         if chart is None:
             st.info(f"검증 구간({config.VALID_START}~) 이전 날짜다.")
         else:
-            st.caption("선택한 날짜 전까지의 모의 매매 자산 곡선. 전체 성과 판정은 evaluation/reports/day3_backtest.md")
+            st.caption(f"선택한 날짜 전까지의 모의 매매 자산 곡선(하락={config.DOWN_ACTION_LABELS[config.DOWN_ACTION]} 규칙). "
+                       "하락=현금 규칙의 과거 구간은 검증 구간을 본 뒤 재계산한 탐색 결과이고, 공식 판정은 하락=인버스 규칙이다(day3_backtest.md).")
             st.altair_chart(chart, width="stretch")
     with tab_live:
         st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다(②안). "

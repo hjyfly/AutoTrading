@@ -11,22 +11,28 @@ TRADING_DAYS_PER_YEAR = 252
 EPS = 1e-12  # 판정 경계값 비교의 부동소수점 오차 허용
 
 
-def simulate(signals: pd.Series, samsung_close: pd.Series, inverse_close: pd.Series) -> pd.DataFrame:
+def simulate(signals: pd.Series, samsung_close: pd.Series, inverse_close: pd.Series, down_action: str | None = None) -> pd.DataFrame:
     """t일 신호대로 t일 종가에 체결하는 모의 매매. 현금으로 시작한다.
 
-    상승 → 삼성전자 100%, 하락 → 인버스 ETF 100%, 보합 → 기존 포지션 유지.
+    상승 → 삼성전자 100%, 보합 → 기존 포지션 유지, 하락 → down_action(기본 config.DOWN_ACTION):
+    "cash" 면 삼성전자를 팔고 현금, "inverse" 면 인버스 ETF 100%.
     포지션을 바꾸면 파는 쪽·사는 쪽마다 거래 금액의 FEE_RATE 를 뗀다. 수익은 t일 종가 → t+1일 종가로 계산한다.
     돌려주는 equity 는 각 날짜 종가 시점(그날 체결 뒤)의 자산이다.
     """
     dates = signals.index.sort_values()
+    down_action = down_action or config.DOWN_ACTION
+    if down_action not in config.DOWN_ACTIONS:
+        raise ValueError(f"알 수 없는 하락 행동: {down_action}")
     closes = pd.DataFrame({LONG: samsung_close, INVERSE: inverse_close}).reindex(dates)
-    if closes.isna().any().any():
+    needed = [LONG, INVERSE] if down_action == "inverse" else [LONG]  # 현금 규칙에는 인버스 가격이 필요 없다
+    if closes[needed].isna().any().any():
         raise ValueError("신호 날짜에 가격이 없다")
+    down_target = CASH if down_action == "cash" else INVERSE
     position, equity, rows = CASH, 1.0, []
     for i, t in enumerate(dates):
         if i > 0 and position != CASH:  # 전날 종가 → 오늘 종가 수익
             equity *= closes.loc[t, position] / closes.loc[dates[i - 1], position]
-        target = {UP: LONG, DOWN: INVERSE}.get(signals[t], position)
+        target = {UP: LONG, DOWN: down_target}.get(signals[t], position)
         fee = 0.0
         if target != position:
             sides = (position != CASH) + (target != CASH)
@@ -129,15 +135,15 @@ def load_prices() -> tuple[pd.Series, pd.Series]:
     return samsung, inverse
 
 
-def evaluate(signals: pd.DataFrame, start=None, end=None) -> dict:
-    """신호 표(signal, confidence)를 구간에서 모의 매매하고 기준 A, 기준선, 보조 지표를 계산한다."""
+def evaluate(signals: pd.DataFrame, start=None, end=None, down_action: str | None = None) -> dict:
+    """신호 표(signal, confidence)를 구간에서 모의 매매하고 기준 A, 기준선, 보조 지표를 계산한다. down_action 은 하락 신호 때 행동."""
     samsung, inverse = load_prices()
     labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")["label"]
     sig = signals.loc[start:end]
     dates = sig.index
-    model_eq = simulate(sig["signal"], samsung, inverse)["equity"]
+    model_eq = simulate(sig["signal"], samsung, inverse, down_action)["equity"]
     hold_eq = buy_and_hold(samsung, dates)
-    baselines = {name: summary(simulate(constant_signals(dates, label), samsung, inverse)["equity"])
+    baselines = {name: summary(simulate(constant_signals(dates, label), samsung, inverse, down_action)["equity"])
                  for name, label in [("항상 상승", UP), ("항상 보합(현금)", FLAT), ("항상 하락", DOWN)]}
     correct = (sig["signal"] == labels.reindex(dates))
     has_label = labels.reindex(dates).notna()
@@ -153,18 +159,18 @@ def evaluate(signals: pd.DataFrame, start=None, end=None) -> dict:
         "calibration": calibration(sig["confidence"][has_label], correct[has_label]),
         "calibration_directional": calibration(sig["confidence"][directional], correct[directional]),
         "hit_by_signal": correct[has_label].groupby(sig["signal"][has_label]).agg(["count", "mean"]),
-        "equity": model_eq, "hold_equity": hold_eq,
+        "equity": model_eq, "hold_equity": hold_eq, "down_action": down_action or config.DOWN_ACTION,
     }
 
 
-def evaluate_b(numeric: pd.DataFrame, news: pd.DataFrame) -> dict:
+def evaluate_b(numeric: pd.DataFrame, news: pd.DataFrame, down_action: str | None = None) -> dict:
     """뉴스 구간에서 두 신호를 같은 날 현금으로 시작해 각각 모의 매매하고 기준 B 를 판정한다."""
     samsung, inverse = load_prices()
     dates = numeric.loc[config.NEWS_START:config.NEWS_END].index
     if not news.index.equals(dates):
         raise ValueError("뉴스 포함 신호와 숫자 모델 신호의 날짜가 다르다")
-    news_eq = simulate(news["signal"], samsung, inverse)["equity"]
-    numeric_eq = simulate(numeric.loc[dates, "signal"], samsung, inverse)["equity"]
+    news_eq = simulate(news["signal"], samsung, inverse, down_action)["equity"]
+    numeric_eq = simulate(numeric.loc[dates, "signal"], samsung, inverse, down_action)["equity"]
     labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")["label"]
     return {"period": (str(dates.min().date()), str(dates.max().date()), len(dates)),
             "judge_b": judge_b(news_eq, numeric_eq),
@@ -174,42 +180,51 @@ def evaluate_b(numeric: pd.DataFrame, news: pd.DataFrame) -> dict:
             "adjusted_days": int(news["adjusted"].sum()), "scored_days": int(news["news_scored"].sum())}
 
 
-def main():
-    """숫자 모델 신호로 검증 구간 전체의 기준 A 를 판정해 출력하고 자산 곡선을 저장한다."""
-    signals = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
-    r = evaluate(signals)
+def rule_title(rule: str) -> str:
+    """하락 행동 규칙의 출력용 제목. 공식 판정 규칙이 아니면 탐색 결과라고 밝힌다."""
+    label = config.DOWN_ACTION_LABELS[rule]
+    if rule == config.OFFICIAL_DOWN_ACTION:
+        return f"하락 = {label} (1~3일차 공식 판정 규칙)"
+    return f"하락 = {label} ({config.DOWN_ACTION_CHANGED_ON} 변경. 검증 구간을 본 뒤의 재계산이라 탐색 결과)"
+
+
+def print_judge_a(title: str, r: dict):
+    """기준 A 결과 한 묶음을 출력한다. 공식 판정 규칙이 아니면 '(참고)'로 표시한다."""
     a = r["judge_a"]
-    print("구간", r["period"])
-    print(f"모델  수익 {a['model']['total_return']:+.1%}  MDD {a['model']['mdd']:.1%}  칼마 {a['model']['calmar']:.2f}")
-    print(f"보유  수익 {a['hold']['total_return']:+.1%}  MDD {a['hold']['mdd']:.1%}  칼마 {a['hold']['calmar']:.2f}")
-    print(f"기준 A: MDD 조건 {a['mdd_ok']}, 수익 조건 {a['return_ok']} ({a['return_rule']}) → {'통과' if a['passed'] else '실패'}")
-    for name, s in r["baselines"].items():
-        print(f"{name}  수익 {s['total_return']:+.1%}  MDD {s['mdd']:.1%}")
-    print("방향 적중", {k: round(v, 3) for k, v in r["direction"].items()}, "| 3분류 정확도", round(r["accuracy"], 3))
-    print("신호 분포", {k: round(v, 3) for k, v in r["signal_share"].items()}, "| 정답 분포", {k: round(v, 3) for k, v in r["label_share"].items()})
-    print("신호별 적중\n" + r["hit_by_signal"].round(3).to_string())
-    print("확신도 구간별(전체)\n" + r["calibration"].round(3).to_string())
-    print("확신도 구간별(상승·하락 신호만)\n" + r["calibration_directional"].round(3).to_string())
-    pd.DataFrame({"model": r["equity"], "hold": r["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / "equity_numeric.parquet")
+    label = "기준 A" if r.get("down_action") == config.OFFICIAL_DOWN_ACTION else "(참고) 기준 A"
+    print(f"  {title}: 수익 {a['model']['total_return']:+.1%}  MDD {a['model']['mdd']:.1%}  칼마 {a['model']['calmar']:.2f}"
+          f"  → {label} {'통과' if a['passed'] else '실패'} (MDD 조건 {a['mdd_ok']}, 수익 조건 {a['return_ok']})")
+
+
+def main():
+    """하락 행동 규칙(인버스·현금)마다 기준 A·후보 모델·기준 B 를 계산해 출력하고 자산 곡선을 저장한다."""
+    signals = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
+    base = evaluate(signals, down_action=config.OFFICIAL_DOWN_ACTION)
+    a = base["judge_a"]
+    print("구간", base["period"], f"| 들고 있기 수익 {a['hold']['total_return']:+.1%}  MDD {a['hold']['mdd']:.1%}  칼마 {a['hold']['calmar']:.2f}")
+    print("방향 적중", {k: round(v, 3) for k, v in base["direction"].items()}, "| 3분류 정확도", round(base["accuracy"], 3))
+    print("신호 분포", {k: round(v, 3) for k, v in base["signal_share"].items()}, "| 정답 분포", {k: round(v, 3) for k, v in base["label_share"].items()})
+    print("신호별 적중\n" + base["hit_by_signal"].round(3).to_string())
+    print("확신도 구간별(상승·하락 신호만)\n" + base["calibration_directional"].round(3).to_string())
     cand_path = Path(config.SIGNALS_CANDIDATE_PATH)
-    if cand_path.exists():  # 후보 모델(A+B+D 추가): 검증 구간을 이미 본 뒤의 탐색 결과다
-        c = evaluate(pd.read_parquet(cand_path))
-        ca = c["judge_a"]
-        print("[후보 모델 — 사전 등록 ①안: 검증 구간을 이미 본 뒤 한 번만 실행한 탐색. 기준 A 공식 판정 아님]")
-        print(f"후보  수익 {ca['model']['total_return']:+.1%}  MDD {ca['model']['mdd']:.1%}  칼마 {ca['model']['calmar']:.2f}")
-        print(f"(참고) 기준 A: MDD 조건 {ca['mdd_ok']}, 수익 조건 {ca['return_ok']} → {'통과' if ca['passed'] else '실패'}")
-        print("방향 적중", {k: round(v, 3) for k, v in c["direction"].items()}, "| 3분류 정확도", round(c["accuracy"], 3))
-        print("신호별 적중\n" + c["hit_by_signal"].round(3).to_string())
-        pd.DataFrame({"model": c["equity"], "hold": c["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / "equity_candidate.parquet")
     news_path = Path(config.PROCESSED_DIR) / "signals_news.parquet"
-    if news_path.exists():
-        b = evaluate_b(signals, pd.read_parquet(news_path))
-        j = b["judge_b"]
-        print("기준 B 구간", b["period"], f"채점된 날 {b['scored_days']}, 보정된 날 {b['adjusted_days']}")
-        print(f"뉴스 포함 수익 {j['news']['total_return']:+.1%} MDD {j['news']['mdd']:.1%} | "
-              f"숫자 모델 수익 {j['numeric']['total_return']:+.1%} MDD {j['numeric']['mdd']:.1%} | "
-              f"들고 있기 수익 {b['hold']['total_return']:+.1%} MDD {b['hold']['mdd']:.1%}")
-        print(f"기준 B: MDD 조건 {j['mdd_ok']}, 수익 조건 {j['return_ok']} → {'통과' if j['passed'] else '실패'}")
+    for rule in config.DOWN_ACTIONS:
+        print(f"[{rule_title(rule)}]")
+        r = base if rule == config.OFFICIAL_DOWN_ACTION else evaluate(signals, down_action=rule)
+        print_judge_a("숫자 모델", r)
+        for name, s in r["baselines"].items():
+            print(f"    기준선 {name}: 수익 {s['total_return']:+.1%}  MDD {s['mdd']:.1%}")
+        pd.DataFrame({"model": r["equity"], "hold": r["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / f"equity_numeric_{rule}.parquet")
+        if cand_path.exists():  # 후보 모델(A+B+D 추가): 사전 등록 ①안, 검증 구간을 본 뒤 한 번만 실행한 탐색
+            c = evaluate(pd.read_parquet(cand_path), down_action=rule)
+            print_judge_a("후보 모델(①안 탐색, 공식 판정 아님)", c)
+            pd.DataFrame({"model": c["equity"], "hold": c["hold_equity"]}).to_parquet(Path(config.PROCESSED_DIR) / f"equity_candidate_{rule}.parquet")
+        if news_path.exists():
+            b = evaluate_b(signals, pd.read_parquet(news_path), down_action=rule)
+            j = b["judge_b"]
+            print(f"  기준 B {b['period']}: 뉴스 보정 {j['news']['total_return']:+.1%} MDD {j['news']['mdd']:.1%} | "
+                  f"숫자 모델 {j['numeric']['total_return']:+.1%} MDD {j['numeric']['mdd']:.1%} | "
+                  f"들고 있기 {b['hold']['total_return']:+.1%} MDD {b['hold']['mdd']:.1%} → {'통과' if j['passed'] else '실패'}")
 
 
 if __name__ == "__main__":
