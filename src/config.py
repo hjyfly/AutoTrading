@@ -438,13 +438,37 @@ MULTI_TICKERS = {  # 코드: (이름, 분야, 분야 ETF 이름 또는 None)
     "012450": ("한화에어로스페이스", "우주항공·방산", "ita"),
     "277810": ("레인보우로보틱스", "로봇", "botz"),
 }
-SECTOR_ETFS = {"ita": "ITA", "botz": "BOTZ"}   # yfinance 티커(미국 항공우주·방산 ETF, 글로벌 로봇·AI ETF)
+SECTOR_ETFS = {"ita": "ITA", "botz": "BOTZ",   # yfinance 티커(미국 항공우주·방산 ETF, 글로벌 로봇·AI ETF)
+               "lmt": "LMT", "rtx": "RTX", "ixic": "^IXIC", "tsla": "TSLA"}  # 8일차 분야 지수(록히드마틴·RTX·나스닥·테슬라)
 MULTI_DATA_START = "2019-01-02"               # 확장 원본과 같은 시작일(상장이 늦은 종목은 상장일부터)
 TICKER_RAW_DIR = "data/raw/tickers"           # 종목별 일봉·수급·분야 ETF 원본(기존 원본과 따로)
 MULTI_SIGNALS_DIR = "data/processed/tickers"  # 종목별 특징·정답·신호
 DAY7_REPORT_PATH = "evaluation/reports/day7_multi_ticker.md"
 MULTI_LIVE_PATH = "data/processed/tickers/signals_live_tickers.parquet"  # 다른 종목 실시간 참고 신호(git 제외)
 MULTI_POOLED_MIN_BETTER = 3   # Q2 사전 등록: 공동 학습이 단독보다 나은 종목이 이 수 이상이면 채택 후보
+
+# 8일차 분야별 알고리즘 (DAY8_PLAN.md, 2026-10-22 사전 등록. 결과를 본 뒤 바꾸지 않는다)
+SECTOR_UNIVERSE = {"반도체": ["005930", "000660", "042700"],
+                   "우주항공": ["012450", "047810", "079550"],
+                   "로봇": ["277810", "108490", "090360"]}
+SECTOR_TICKER_NAMES = {"005930": "삼성전자", "000660": "SK하이닉스", "042700": "한미반도체",
+                       "012450": "한화에어로스페이스", "047810": "한국항공우주", "079550": "LIG넥스원",
+                       "277810": "레인보우로보틱스", "108490": "로보티즈", "090360": "로보스타"}
+SECTOR_KR_INDEX = {"kosdaq": "KQ11"}      # 공통 원본에 없는 국내 지수(FinanceDataReader). 코스피는 공통 원본 kospi
+# 분야 지수 지표: 해외 시계열(공통 원본 이름 또는 SECTOR_ETFS 이름)과 상대 강도 기준 국내 지수
+SECTOR_INDEX = {"반도체": {"foreign": ["mu", "tsm"], "kr": "kospi"},
+                "우주항공": {"foreign": ["ita", "lmt", "rtx"], "kr": "kospi"},
+                "로봇": {"foreign": ["botz", "ixic", "tsla"], "kr": "kosdaq"}}
+SECTOR_PEER_WINDOWS = [1, 5, 20]          # 동료 평균 수익률·초과 수익 기간(거래일)
+SECTOR_TECH_FEATURES = ["macd_line", "macd_hist", "stoch_k", "stoch_d", "atr_ratio", "volatility_20d", "hl120_position"]  # S3(rsi14 는 base 에 있음)
+SECTOR_VOL_LABEL_K = 0.8                  # S5 정답 기준 = K × 지난 SECTOR_VOL_WINDOW 거래일 일간 변동성 × √기간
+SECTOR_VOL_WINDOW = 60
+SECTOR_CANDIDATES = ["S0", "S1", "S2", "S3", "S4", "S5"]
+SECTOR_SELECT_MIN_GAIN = 0.01             # 고르기: 분야 평균 초과 정확도가 S0 보다 이만큼 이상 높아야 한다
+SECTOR_SELECT_PERIOD = (DEV_START, EXT_VALID_END)     # 고르는 구간 2022-03-04 ~ 2025-04-22
+SECTOR_CONFIRM_START = VALID_START                    # 확인 구간 2025-04-23 ~ 데이터 끝
+SECTOR_DIR = "data/processed/sectors"                 # 후보 신호·결과 표(재생성 가능, git 제외)
+DAY8_REPORT_PATH = "evaluation/reports/day8_sector_models.md"
 
 # LLM 비용 한도 (SERVICE.md 15절). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)

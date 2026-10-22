@@ -55,6 +55,11 @@ def collect(end: str | None = None, tickers=None) -> pd.DataFrame:
                 continue
             df = fetch(code, start, end)
             rows.append({"name": path.stem, "added": append_only(path, df.loc[:end])})
+    for name, code in config.SECTOR_KR_INDEX.items():  # 8일차 국내 지수(코스닥). 종목과 같은 끝날까지
+        path = raw_path(f"kr_{name}")
+        start = config.MULTI_DATA_START if not path.exists() else str((pd.read_parquet(path).index.max() + pd.Timedelta(days=1)).date())
+        if pd.Timestamp(start) <= pd.Timestamp(end):
+            rows.append({"name": path.stem, "added": append_only(path, collect_prices.fetch_close(code, start, end).loc[:end])})
     from src.pipeline.refresh_data import last_closed_date
     for name, ticker in config.SECTOR_ETFS.items():
         path = raw_path(f"sector_{name}")

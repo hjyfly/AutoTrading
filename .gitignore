@@ -36,3 +36,4 @@ data/kis/
 
 # 7일차 다종목 신호·실시간 참고 기록(다시 만들 수 있음, 원본은 data/raw/tickers)
 data/processed/tickers/
+data/processed/sectors/
