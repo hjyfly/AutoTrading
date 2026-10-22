@@ -76,26 +76,32 @@ def experiment_tab():
              "none": "숫자 모델만", "adjust": "뉴스 보정", "base": "기존 지표", "candidate": "후보 지표(A+B+D)", None: "쓰지 않음"}
     options = {**{k: config.EXPERIMENT_UI_OPTIONS[k] for k in ("horizon_days", "threshold")}, **experiment.CHOICES,
                **{k: v for k, v in config.EXPERIMENT_UI_OPTIONS.items() if k not in ("horizon_days", "threshold")}}
-    vary = {}
-    cols = st.columns(3)
-    for i, (key, values) in enumerate(options.items()):
-        if base[key] not in values:
-            values = [base[key], *values]
-        vary[key] = cols[i % 3].multiselect(experiment.LABELS[key], values, default=[base[key]], key=f"exp_{key}",
-                                            format_func=lambda v: names.get(v, str(v)))
-    c1, c2 = st.columns(2)
-    start = c1.text_input("시작일(비우면 자동)", "", key="exp_start")
-    end = c2.text_input("끝일(비우면 자동)", "", key="exp_end")
-    vary = {k: v for k, v in vary.items() if v}
-    cfgs = experiment.expand({**base, "start": start or None, "end": end or None}, vary)
-    st.caption(f"조합 {len(cfgs)}개. 정답 정의·지표 묶음·재학습 주기가 다르면 조합마다 다시 학습해 시간이 걸린다.")
-    if st.button("비교 실행", disabled=len(cfgs) > config.EXPERIMENT_MAX_COMBOS):
-        try:
-            with st.spinner("계산 중"):
-                table, curves = experiment.compare(cfgs, experiment_data())
-            st.session_state.experiment = (table, curves)
-        except ValueError as e:
-            st.warning(str(e))
+    # 폼 안의 선택은 '조회' 를 누를 때만 반영된다(조건을 바꿀 때마다 화면 전체를 다시 계산하지 않게)
+    with st.form("experiment_form"):
+        vary = {}
+        cols = st.columns(3)
+        for i, (key, values) in enumerate(options.items()):
+            if base[key] not in values:
+                values = [base[key], *values]
+            vary[key] = cols[i % 3].multiselect(experiment.LABELS[key], values, default=[base[key]], key=f"exp_{key}",
+                                                format_func=lambda v: names.get(v, str(v)))
+        c1, c2 = st.columns(2)
+        start = c1.text_input("시작일(비우면 자동)", "", key="exp_start")
+        end = c2.text_input("끝일(비우면 자동)", "", key="exp_end")
+        st.caption(f"조합은 최대 {config.EXPERIMENT_MAX_COMBOS}개. 정답 정의·지표 묶음·재학습 주기가 다르면 조합마다 다시 학습해 시간이 걸린다.")
+        submitted = st.form_submit_button("조회")
+    if submitted:
+        vary = {k: v for k, v in vary.items() if v}
+        cfgs = experiment.expand({**base, "start": start or None, "end": end or None}, vary)
+        if len(cfgs) > config.EXPERIMENT_MAX_COMBOS:
+            st.warning(f"조합 {len(cfgs)}개는 너무 많다(최대 {config.EXPERIMENT_MAX_COMBOS}개). 값을 줄여 다시 조회한다.")
+        else:
+            try:
+                with st.spinner(f"조합 {len(cfgs)}개 계산 중"):
+                    table, curves = experiment.compare(cfgs, experiment_data())
+                st.session_state.experiment = (table, curves)
+            except ValueError as e:
+                st.warning(str(e))
     if "experiment" in st.session_state:
         table, curves = st.session_state.experiment
         st.markdown(experiment.to_markdown(table))
