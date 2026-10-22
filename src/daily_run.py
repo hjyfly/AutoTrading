@@ -73,6 +73,8 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
             lines += ["", "■ 조건 모니터링 (주간, 탐색 · 자세한 해석은 experiments_monitor.md)"] + [f"  {x}" for x in summary]
         except Exception as e:
             lines += ["", f"■ 조건 모니터링 실패: {type(e).__name__}: {e}"]
+    if scheduled:
+        lines += ["", "■ 실제 계좌(한국투자증권, 읽기 전용)"] + [f"  {x}" for x in account_lines()]
     warnings = [f"{k}: {v['note']}" for k, v in out.get("data_sources", {}).items() if "실패" in v["note"]]
     if warnings:
         lines += ["", "■ 데이터 경고"] + [f"  {w}" for w in warnings]
@@ -90,6 +92,20 @@ def setup_log(today: pd.Timestamp) -> logging.Logger:
     logger.addHandler(handler)
     logger.addHandler(logging.StreamHandler(sys.stdout))
     return logger
+
+
+def account_lines() -> list[str]:
+    """계좌 잔고를 읽어 기록하고 메일용 요약을 돌려준다(DAY6 D-4). 키가 없거나 실패해도 알림은 보낸다. 주문은 하지 않는다."""
+    from src.pipeline import kis_client
+    try:
+        kis_client.settings()
+    except kis_client.KisError:
+        return ["키가 없어 읽지 않았다(.env 의 KIS_APP_KEY·KIS_APP_SECRET·KIS_ACCOUNT_NO)"]
+    try:
+        r = kis_client.record_account()
+        return [f"{r['env']} 계좌 · 삼성전자 {r['samsung_qty']}주 · 보유 비중 {r['samsung_weight']:.0%}"]
+    except Exception as e:  # 계좌 조회 실패가 신호 알림을 막지 않게 한다. 메시지에 계좌번호가 섞일 수 있어 종류만 남긴다
+        return [f"계좌 조회 실패: {type(e).__name__}"]
 
 
 def run(as_of: str | None = None, with_news: bool = True, email: bool = True) -> dict:

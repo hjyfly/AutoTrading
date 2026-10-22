@@ -63,6 +63,8 @@ src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡�
 src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고
 src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점은 참고용) → 성적표 → Gmail 알림
 src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_PASSWORD·NOTIFY_TO)
+src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시세·수급·계좌 잔고). 시세·수급은 연결 확인과 예비 출처용이고 운영 수집은 지금 출처 그대로(2026-10-22 사용자 결정)
+src/broker.py                    한국투자증권 주문. 사람이 직접 실행할 때만 쓰고 신호로 자동 주문하지 않는다. 기본 모의투자·주문 꺼짐(2026-10-22 사용자 결정)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
                                  조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
@@ -79,6 +81,7 @@ data/scores/     뉴스 채점 결과(news_scores.parquet)와 판단 기록(trac
 data/index/      Chroma 색인
 evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*.md)
 data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 git 제외)
+data/kis/            한국투자증권 토큰·계좌 잔고 기록·주문 기록(git 제외)
 
 ## 주고받는 형식 (제출 규약)
 - POST /query 로 받고 question 필드를 읽는다
@@ -103,6 +106,7 @@ data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 gi
   - 선택: LLM_PROVIDER(기본 bedrock), BEDROCK_MODEL_ID(기본 config.SCORING_MODEL_DEFAULT = Sonnet 4.6)
   - 추가 필요: BEDROCK_EMBEDDING_MODEL_ID (RAG 색인 단계에서)
   - 선택: GMAIL_SENDER, GMAIL_APP_PASSWORD, NOTIFY_TO (Gmail 알림. 값은 코드·로그·문서에 남기지 않는다)
+  - 선택: KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO(계좌 8자리-상품 2자리), KIS_ENV(mock | real, 기본 mock), KIS_TRADING_ENABLED(기본 false) (한국투자증권. 값은 코드·로그·문서에 남기지 않는다)
   - 나중에 추가: ANTHROPIC_API_KEY
 - 시점 규칙(SERVICE.md 8절): 데이터를 읽는 함수는 모두 as_of 날짜를 받고, 그 시점에 알 수 없던 데이터는 돌려주지 않는다
   - 숫자 데이터는 t-1일 종가까지, 뉴스는 t-1일 15:15 ~ t일 15:15 (KST)
@@ -128,7 +132,8 @@ data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 gi
 ## 하지 말 것
 - 요청하지 않은 파일을 새로 만들지 않는다
 - 기존 파일을 통째로 다시 쓰지 않는다. 바뀐 부분만 고친다 (코드와 문서 모두)
-- 증권사 주문 API나 자동 주문 코드를 만들지 않는다
+- 신호에 따라 자동으로 주문하는 코드를 만들지 않는다. 주문은 src/broker.py 를 사람이 직접 실행할 때만 나간다(2026-10-22 사용자 결정: 주문 가능한 API 까지 개발, 신호로는 사지 않음)
+  - daily_run·live_signal·agent·ui 는 broker 를 부르지 않는다. 기본은 모의투자(KIS_ENV=mock), 주문 스위치 꺼짐(KIS_TRADING_ENABLED=false)
 - 유료 데이터 출처를 추가하지 않는다
 - 학습·검증·채점에서 as_of 이후 데이터를 쓰지 않는다
 - .env 와 data/raw 의 기사 원문, 기사 제목·URL 을 모은 data/processed/news.parquet·selected_news.parquet 는 git 에 올리지 않는다

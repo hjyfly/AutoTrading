@@ -18,8 +18,8 @@ tools: Read, Grep, Glob, Bash
 3. **LLM 생성 위치**: src/llm.py 밖에서 ChatBedrockConverse·ChatAnthropic·boto3 bedrock 클라이언트를 직접 만드는가.
 4. **Sonnet 5.5 금지 파라미터**: 채점 모델에 temperature·top_p·budget_tokens 를 설정했는가(judge 는 Sonnet 4.5 고정이라 temperature 허용).
 5. **비용 기록**: LLM 호출이 CostTracker 를 거치지 않는 경로가 있는가.
-6. **데이터 출처**: 유료 출처나 증권사 주문 API(KIS, 키움 등)를 쓰는가. 빅카인즈는 유료화되어 금지.
-7. **하지 않을 것**: 삼성전자 외 종목 매매, 분봉·실시간 데이터, 2배 이상 레버리지, DATA_START 이전 데이터, 자동 주문.
+6. **데이터 출처**: 유료 출처를 쓰는가. 빅카인즈는 유료화되어 금지. 한국투자증권 Open API 는 2026-10-22 사용자 결정으로 허용(조회·사람이 실행하는 주문).
+7. **하지 않을 것**: 삼성전자 외 종목 매매, 분봉·실시간 데이터, 2배 이상 레버리지, 공식 판정에 DATA_START 이전 데이터(운영 학습은 2020-09 부터 허용), 신호에 따른 자동 주문(운영 경로 daily_run·live_signal·agent·ui·tools·server 의 broker 호출).
 8. **원본 보존**: data/raw 의 파일을 덮어쓰거나 수정하는 코드가 있는가.
 9. **비밀 값**: 키·토큰이 코드나 문서에 적혀 있는가. .env 가 git 에 올라갈 상태인가(`git check-ignore .env`).
 10. **코드 규칙**: 파일 하나에 한 역할, 함수·도구에 한국어 docstring.

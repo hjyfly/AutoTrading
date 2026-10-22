@@ -403,6 +403,34 @@ PREREGISTERED = {
     "P3": "합의: P2 위험 높음 표 + 로지스틱 회귀 위험 표 + 120일선 아래 표. 0~1표 100%, 2표 50%, 3표 0%",
 }
 
+# ---- 6일차: 한국투자증권 Open API (DAY6_PLAN.md, 2026-10-22 사용자 결정) ----
+# 엔드포인트·거래 ID 는 KIS Developers 문서 기준이며 키를 받은 뒤 모의 서버 시험(--probe)으로 다시 확인한다
+KIS_BASE_URLS = {"real": "https://openapi.koreainvestment.com:9443", "mock": "https://openapivts.koreainvestment.com:29443"}
+KIS_DEFAULT_ENV = "mock"                      # .env 의 KIS_ENV 가 없으면 모의투자
+KIS_DIR = "data/kis"                          # 토큰 저장·계좌 기록·주문 기록(git 제외)
+KIS_TOKEN_MARGIN_MIN = 30                     # 만료 이만큼 전이면 토큰을 새로 받는다
+KIS_MIN_INTERVAL_SEC = {"real": 0.06, "mock": 0.5}  # 호출 사이 최소 간격(초당 제한보다 넉넉히)
+KIS_TIMEOUT_SEC = 10
+KIS_PATHS = {
+    "token": "/oauth2/tokenP",
+    "daily_price": "/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+    "investor": "/uapi/domestic-stock/v1/quotations/inquire-investor",
+    "balance": "/uapi/domestic-stock/v1/trading/inquire-balance",
+    "order": "/uapi/domestic-stock/v1/trading/order-cash",
+}
+KIS_TR_IDS = {  # (실전, 모의)
+    "daily_price": ("FHKST01010400", "FHKST01010400"),
+    "investor": ("FHKST01010900", "FHKST01010900"),
+    "balance": ("TTTC8434R", "VTTC8434R"),
+    "buy": ("TTTC0012U", "VTTC0012U"),
+    "sell": ("TTTC0011U", "VTTC0011U"),
+}
+# 주문 안전장치: 사람이 broker 를 직접 실행할 때만, 삼성전자만, 지정가만, 하루 횟수·금액 상한
+KIS_ORDER_CODES = [SAMSUNG_CODE]
+KIS_MAX_ORDERS_PER_DAY = 1
+KIS_MAX_ORDER_KRW = 1_000_000                 # 한 번 주문 금액 상한(기본값)
+ACCOUNT_LIVE_PATH = "data/kis/account_live.parquet"  # 매일 읽은 계좌 잔고 기록(git 제외)
+
 # LLM 비용 한도 (SERVICE.md 15절). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)
 COST_LIMIT_MONTHLY_USD = 100.0  # 운영 단계 월 한도 (운영 코드에서 쓴다)

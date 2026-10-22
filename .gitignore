@@ -30,3 +30,6 @@ data/logs/
 data/scores/traces_archive/
 data/experiments/
 data/backup/
+
+# 한국투자증권 토큰·계좌 기록 (DAY6)
+data/kis/
