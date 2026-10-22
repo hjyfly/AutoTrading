@@ -51,9 +51,18 @@ def experiment_data() -> experiment.Data:
 
 
 def experiment_tab():
-    """설정값 조합을 골라 지금까지 모은 데이터로 다시 계산해 비교한다. 결과는 모두 탐색이다."""
-    st.subheader("조건 모니터링 리포트")
-    st.caption("사전 등록한 조건을 하나씩 바꿔 본 민감도 분석과 해석. 평일 자동 실행이 매주 금요일에 다시 만든다.")
+    """모니터링 리포트 보기와 조건 조회를 하위 탭으로 나눠 보여 준다. 결과는 모두 탐색이다."""
+    sub_report, sub_query = st.tabs(["모니터링 리포트", "조건 조회"])
+    with sub_report:
+        monitor_report_view()
+    with sub_query:
+        condition_query_view()
+
+
+def monitor_report_view():
+    """사전 등록한 조건을 하나씩 바꿔 본 민감도 분석 리포트를 보여 주고, 버튼으로 다시 계산한다."""
+    st.caption("사전 등록한 조건을 하나씩 바꿔 본 민감도 분석과 해석. 평일 자동 실행이 매주 금요일에 다시 만든다. "
+               "고른 날짜와 상관없이 저장된 전체 데이터로 계산한 **탐색 결과**다.")
     report_path = Path(config.MONITOR_REPORT_PATH)
     if st.button("모니터링 다시 계산"):
         with st.spinner("계산 중(조건마다 다시 학습해 몇 분 걸린다)"):
@@ -63,12 +72,13 @@ def experiment_tab():
             st.markdown(f"**{group} 자산 곡선**")
             st.line_chart(pd.DataFrame(curves))
     if report_path.exists():
-        with st.expander("리포트 전문", expanded=False):
-            st.markdown(report_path.read_text(encoding="utf-8"))
+        st.markdown(report_path.read_text(encoding="utf-8"))
     else:
         st.info("아직 리포트가 없다. 위 버튼으로 만든다.")
-    st.divider()
-    st.subheader("직접 조건 고르기")
+
+
+def condition_query_view():
+    """조건 조합을 골라 '조회' 를 누르면 다시 계산해 비교 표와 자산 곡선을 보여 준다."""
     st.caption("선택한 날짜와 상관없이 저장된 전체 데이터로 다시 계산한다. 검증 구간을 본 뒤의 비교라 **탐색 결과**이며 공식 판정(기준 A·B)을 바꾸지 않는다. "
                "신호 시각(15:15)과 기사 수집 구간은 뉴스를 다시 채점해야 바뀌므로 여기서는 고를 수 없다.")
     base = config.EXPERIMENT_BASE
@@ -179,10 +189,14 @@ with st.sidebar:
     st.caption("투자 권유가 아니라 모델 판단의 설명이다.")
 
 st.title(f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 방향 신호 · {as_of.date()} {config.SIGNAL_CUTOFF_KST} 기준")
-chat_col, data_col = st.columns([5, 7])
+tab_ask, tab_data, tab_report = st.tabs(["질의응답", "신호·데이터", "리포트·조건 비교"])
 
-# ---- 오른쪽: 데이터 ----
-with data_col:
+# ---- 리포트·조건 비교 (고른 날짜와 상관없는 탐색) ----
+with tab_report:
+    experiment_tab()
+
+# ---- 신호·데이터 (고른 날짜 시점) ----
+with tab_data:
     sig = tools.signal_for(str(as_of.date()))
     c1, c2, c3 = st.columns(3)
     final = sig.get("with_news", {}).get("signal") or sig.get("numeric", {}).get("signal")
@@ -197,8 +211,8 @@ with data_col:
     if "note" in sig:
         st.info(sig["note"])
 
-    tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live, tab_exp = st.tabs(
-        ["가격·신호", "지표", "판단 기록", "뉴스", "성과", "실시간 성적", "조건 비교"])
+    tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live = st.tabs(
+        ["가격·신호", "지표", "판단 기록", "뉴스", "성과", "실시간 성적"])
     with tab_chart:
         days = st.slider("기간(거래일)", 20, 250, 120)
         st.altair_chart(price_chart(as_of, days), width="stretch")
@@ -261,11 +275,9 @@ with data_col:
             curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
             if curves:
                 st.line_chart(pd.DataFrame(curves))
-    with tab_exp:
-        experiment_tab()
 
-# ---- 왼쪽: 질의응답 ----
-with chat_col:
+# ---- 질의응답 ----
+with tab_ask:
     st.subheader("질의응답")
     if "history" not in st.session_state:
         st.session_state.history = []
