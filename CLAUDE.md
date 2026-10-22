@@ -66,6 +66,7 @@ src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_
 src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시세·수급·계좌 잔고). 시세·수급은 연결 확인과 예비 출처용이고 운영 수집은 지금 출처 그대로(2026-10-22 사용자 결정)
 src/broker.py                    한국투자증권 주문. 사람이 직접 실행할 때만 쓰고 신호로 자동 주문하지 않는다. 기본 모의투자·주문 꺼짐(2026-10-22 사용자 결정)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
+src/pipeline/multi_ticker.py     7일차 다종목 분석(SK하이닉스·한화에어로스페이스·레인보우로보틱스, 2026-10-22 사용자 요청). 분석·참고 신호만, 매매·주문과 연결하지 않음. 정리 SERVICE2.md
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
                                  조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
 tests/                           위 모듈의 테스트
@@ -82,6 +83,8 @@ data/index/      Chroma 색인
 evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*.md)
 data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 git 제외)
 data/kis/            한국투자증권 토큰·계좌 잔고 기록·주문 기록(git 제외)
+data/raw/tickers/    7일차 다른 종목 일봉·수급·분야 ETF 원본(새 날짜만 덧붙임)
+data/processed/tickers/  7일차 다른 종목 신호·실시간 참고 기록(재생성 가능해 git 제외)
 
 ## 주고받는 형식 (제출 규약)
 - POST /query 로 받고 question 필드를 읽는다

@@ -431,6 +431,21 @@ KIS_MAX_ORDERS_PER_DAY = 1
 KIS_MAX_ORDER_KRW = 1_000_000                 # 한 번 주문 금액 상한(기본값)
 ACCOUNT_LIVE_PATH = "data/kis/account_live.parquet"  # 매일 읽은 계좌 잔고 기록(git 제외)
 
+# ---- 7일차: 다종목 분석 (DAY7_PLAN.md, 브랜치 day7-multi-ticker). 분석용 신호만, 매매 대상은 삼성전자뿐 ----
+MULTI_TICKERS = {  # 코드: (이름, 분야, 분야 ETF 이름 또는 None)
+    "005930": ("삼성전자", "반도체", None),
+    "000660": ("SK하이닉스", "반도체", None),
+    "012450": ("한화에어로스페이스", "우주항공·방산", "ita"),
+    "277810": ("레인보우로보틱스", "로봇", "botz"),
+}
+SECTOR_ETFS = {"ita": "ITA", "botz": "BOTZ"}   # yfinance 티커(미국 항공우주·방산 ETF, 글로벌 로봇·AI ETF)
+MULTI_DATA_START = "2019-01-02"               # 확장 원본과 같은 시작일(상장이 늦은 종목은 상장일부터)
+TICKER_RAW_DIR = "data/raw/tickers"           # 종목별 일봉·수급·분야 ETF 원본(기존 원본과 따로)
+MULTI_SIGNALS_DIR = "data/processed/tickers"  # 종목별 특징·정답·신호
+DAY7_REPORT_PATH = "evaluation/reports/day7_multi_ticker.md"
+MULTI_LIVE_PATH = "data/processed/tickers/signals_live_tickers.parquet"  # 다른 종목 실시간 참고 신호(git 제외)
+MULTI_POOLED_MIN_BETTER = 3   # Q2 사전 등록: 공동 학습이 단독보다 나은 종목이 이 수 이상이면 채택 후보
+
 # LLM 비용 한도 (SERVICE.md 15절). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)
 COST_LIMIT_MONTHLY_USD = 100.0  # 운영 단계 월 한도 (운영 코드에서 쓴다)

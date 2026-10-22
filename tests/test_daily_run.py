@@ -48,3 +48,14 @@ def test_알림_설정이_없으면_보내지_않고_알린다(monkeypatch):
     assert not notify.is_configured()
     with pytest.raises(RuntimeError, match="GMAIL_SENDER"):
         notify.send_email("제목", "본문")
+
+
+def test_다른_종목_참고_신호는_실패해도_줄로_남긴다(monkeypatch):
+    from src.pipeline import multi_ticker
+    monkeypatch.setattr(multi_ticker, "refresh", lambda today: (_ for _ in ()).throw(ConnectionError("x")))
+    monkeypatch.setattr(multi_ticker, "live_signals", lambda as_of: [
+        {"code": "000660", "name": "SK하이닉스", "signal": "상승", "confidence": 0.5},
+        {"code": "277810", "name": "레인보우로보틱스", "error": "ValueError: 빈 값"}])
+    lines = daily_run.other_ticker_lines(pd.Timestamp("2026-10-21"))
+    assert lines[0] == "수집 실패: ConnectionError"
+    assert "SK하이닉스(000660): 상승" in lines[1] and "실패" in lines[2]
