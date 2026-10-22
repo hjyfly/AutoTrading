@@ -243,3 +243,21 @@ def test_기준_B는_다른_숫자_모델을_보정한_뉴스_신호와_섞지_�
     news = pd.DataFrame({"signal": [UP, UP, UP], "numeric_signal": [UP, DOWN, UP], "adjusted": False, "news_scored": True}, index=days)
     with pytest.raises(ValueError):
         bt.evaluate_b(numeric, news)
+
+
+def test_장세_구분_경계():
+    assert bt.regime(0.15) == "상승장" and bt.regime(-0.15) == "하락장" and bt.regime(0.149) == "횡보장"
+
+
+def test_구간_성적_손계산과_구간_뒤_정답_제외():
+    days = pd.bdate_range("2026-01-05", periods=4)
+    close = pd.Series([100.0, 110.0, 99.0, 104.5], index=days)
+    signals = pd.Series([UP, FLAT, DOWN, FLAT], index=days)
+    labels = pd.DataFrame({"label": [UP, FLAT, DOWN, FLAT],
+                           "future_date": [days[1], days[2], days[3], days[3] + pd.Timedelta(days=1)]}, index=days)
+    r = bt.period_stats(signals, close, labels, days[0], days[-1])
+    assert r["model"]["total_return"] == pytest.approx(0.98901 * 0.999 - 1)
+    assert r["model"]["mdd"] == pytest.approx(0.98901 * 0.999 / 1.0989 - 1)
+    assert r["hold"]["total_return"] == pytest.approx(0.999 * 1.045 - 1)
+    assert r["accuracy"] == 1.0  # 마지막 날 정답은 구간 끝 뒤에 확정돼 빠진다(앞 3일은 모두 맞음)
+    assert r["hold_share"] == pytest.approx(0.5)  # 1·2일 보유, 3일 하락으로 현금, 4일 보합 유지

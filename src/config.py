@@ -340,6 +340,20 @@ MONITOR_WEEKDAY = 4                     # 평일 자동 실행 중 이 요일(0=
 MONITOR_REPORT_PATH = "evaluation/reports/experiments_monitor.md"
 MONITOR_HISTORY_PATH = "data/experiments/monitor_history.csv"
 
+# ---- 4일차: 숫자 지표 과거 확장 검증 (DAY4_PLAN.md, 2026-10-22 사용자 결정: 기본값) ----
+# 확장 원본은 기존 원본과 겹치지 않게 DATA_START 전날까지만 받아 data/raw 안 '<이름>_ext' 파일에 따로 둔다(기존 원본 불변)
+EXT_DATA_START = "2019-01-02"
+EXT_DATA_END = "2023-10-20"
+EXT_SUFFIX = "_ext"
+EXT_FIRST_TRAIN_MONTHS = 18          # 확장 특징 표에서 운영 지표가 모두 있는 첫날부터 이 기간은 학습에만 쓴다
+EXT_VALID_END = "2025-04-22"         # 확장 검증 끝(기존 검증 시작 전날). 그 뒤는 이미 여러 번 본 구간이라 참고로만 싣는다
+FEATURES_EXT_PATH = "data/processed/features_ext.parquet"
+LABELS_EXT_PATH = "data/processed/labels_ext.parquet"
+SIGNALS_EXT_PATH = "data/processed/signals_ext.parquet"
+EXT_REPORT_PATH = "evaluation/reports/day4_extended.md"
+# 장세 구분(결과 보기 전에 고정): 그 구간 들고 있기 수익이 이 값 이상이면 상승장, 이하이면 하락장, 그 사이는 횡보장
+REGIME_UP, REGIME_DOWN = 0.15, -0.15
+
 # LLM 비용 한도 (SERVICE.md 섹션 10). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)
 COST_LIMIT_MONTHLY_USD = 100.0  # 운영 단계 월 한도 (운영 코드에서 쓴다)

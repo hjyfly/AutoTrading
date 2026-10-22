@@ -225,6 +225,116 @@ def evaluate_b(numeric: pd.DataFrame, news: pd.DataFrame, down_action: str | Non
             "adjusted_days": int(news["adjusted"].sum()), "scored_days": int(news["news_scored"].sum())}
 
 
+def regime(hold_return: float) -> str:
+    """구간 들고 있기 수익으로 장세를 나눈다(config.REGIME_UP·REGIME_DOWN, 결과 보기 전에 고정)."""
+    if hold_return >= config.REGIME_UP:
+        return "상승장"
+    if hold_return <= config.REGIME_DOWN:
+        return "하락장"
+    return "횡보장"
+
+
+def period_stats(signals: pd.Series, close: pd.Series, labels: pd.DataFrame, start, end) -> dict:
+    """한 구간을 현금에서 다시 시작해 모의 매매(하락=현금)하고, 들고 있기와 비교한 숫자를 돌려준다.
+    적중률은 구간 끝 다음 날 전에 확정된 정답만 쓴다."""
+    sig = signals.loc[start:end]
+    dates = sig.index
+    sim = simulate(sig, close, pd.Series(dtype=float), "cash")
+    model = sim["equity"]
+    hold = buy_and_hold(close, dates)
+    known = labels[labels["future_date"] < pd.Timestamp(dates.max()) + pd.Timedelta(days=1)]["label"].reindex(dates)
+    has = known.notna()
+    m, h = summary(model), summary(hold)
+    down_days = sig[has] == DOWN
+    return {"start": str(dates.min().date()), "end": str(dates.max().date()), "days": len(dates),
+            "model": m, "hold": h, "regime": regime(h["total_return"]), "judge_a": judge_a(model, hold)["passed"],
+            "accuracy": float((sig[has] == known[has]).mean()) if has.any() else float("nan"),
+            "always_up_accuracy": float((known[has] == UP).mean()) if has.any() else float("nan"),
+            "always_flat_accuracy": float((known[has] == FLAT).mean()) if has.any() else float("nan"),
+            "hold_share": float((sim["position"] == LONG).mean()),  # 실제로 삼성전자를 들고 있던 날 비율
+            "down_precision": float((known[has][down_days] == DOWN).mean()) if down_days.any() else float("nan"),
+            "actual_down_share": float((known[has] == DOWN).mean()) if has.any() else float("nan"),
+            "cash_share": float((sig != UP).mean())}  # 보합(유지)·하락(현금) 신호 비율
+
+
+def extended_report(save: bool = True) -> dict:
+    """4일차 확장 검증 리포트: 확장 검증 구간(처음 보는 구간)·연도별·기존 검증 구간(참고)을 나눠 들고 있기와 비교한다."""
+    from src.pipeline.train import ext_valid_start
+    raw = Path(config.RAW_DIR) / "prices"
+    close = pd.concat([pd.read_parquet(raw / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")["Close"],
+                       pd.read_parquet(raw / "samsung_ohlcv.parquet")["Close"]]).sort_index().astype(float)
+    signals = pd.read_parquet(config.SIGNALS_EXT_PATH)["signal"]
+    labels = pd.read_parquet(config.LABELS_EXT_PATH)
+    start = ext_valid_start(pd.read_parquet(config.FEATURES_EXT_PATH))
+    ext_end, last = pd.Timestamp(config.EXT_VALID_END), signals.index.max()
+
+    def years(lo, hi, tag):
+        """lo~hi 를 해마다 자른 구간. 해의 일부만 들어가면 '부분' 으로 표시한다."""
+        out = []
+        for y in range(lo.year, hi.year + 1):
+            s, e = max(lo, pd.Timestamp(f"{y}-01-01")), min(hi, pd.Timestamp(f"{y}-12-31"))
+            partial = s > pd.Timestamp(f"{y}-01-10") or e < pd.Timestamp(f"{y}-12-20")
+            out.append((f"{y}년{' (부분)' if partial else ''}{tag}", s, e))
+        return out
+
+    periods = [("확장 검증(처음 보는 구간)", start, ext_end), *years(start, ext_end, "")]
+    periods += [("기존 검증(참고, 이미 본 구간)", pd.Timestamp(config.VALID_START), last),
+                *years(pd.Timestamp(config.VALID_START), last, " · 참고"), ("전체(참고)", start, last)]
+    rows = [{"name": n, "judged": i <= len(years(start, ext_end, "")), **period_stats(signals, close, labels, s, e)}
+            for i, (n, s, e) in enumerate(periods)]
+    report = extended_markdown(rows, start)
+    if save:
+        Path(config.EXT_REPORT_PATH).write_text(report, encoding="utf-8", newline="\n")
+    return {"rows": rows, "report": report}
+
+
+def extended_markdown(rows: list[dict], start: pd.Timestamp) -> str:
+    """확장 검증 결과를 마크다운 리포트로 만든다. 성공 기준은 DAY4_PLAN.md 8절(결과 보기 전에 고정)."""
+    pct = lambda v: "" if pd.isna(v) else f"{v:.1%}"
+    table = pd.DataFrame([{
+        "구간": r["name"], "기간": f"{r['start']} ~ {r['end']}", "일수": r["days"], "장세": r["regime"],
+        "모델 수익 / MDD": f"{r['model']['total_return']:+.1%} / {r['model']['mdd']:.1%}", "모델 칼마": f"{r['model']['calmar']:.2f}",
+        "들고 있기 수익 / MDD": f"{r['hold']['total_return']:+.1%} / {r['hold']['mdd']:.1%}",
+        "기준 A": "통과" if r["judge_a"] else "실패", "3분류 정확도": pct(r["accuracy"]), "항상 상승 정확도": pct(r["always_up_accuracy"]),
+        "항상 보합 정확도": pct(r["always_flat_accuracy"]),
+        "하락 신호 적중": pct(r["down_precision"]), "실제 하락 비율": pct(r["actual_down_share"]), "상승 아닌 신호 비율": pct(r["cash_share"]), "삼성전자 보유일": pct(r["hold_share"]),
+    } for r in rows])
+    main = rows[0]
+    years = [r for r in rows[1:] if r["judged"]]  # 판정은 확장 검증 구간 안의 해만(이미 본 구간은 참고)
+    checks = []
+    for r in years:
+        if r["regime"] == "하락장":
+            ok = abs(r["model"]["mdd"]) < abs(r["hold"]["mdd"])
+            checks.append(f"- {r['name']}(하락장): 모델 MDD {r['model']['mdd']:.1%} vs 들고 있기 {r['hold']['mdd']:.1%} → {'얕다(통과)' if ok else '얕지 않다(실패)'}")
+        elif r["regime"] == "상승장":
+            ok = r["model"]["total_return"] >= 0.5 * r["hold"]["total_return"]
+            checks.append(f"- {r['name']}(상승장): 모델 수익 {r['model']['total_return']:+.1%} vs 들고 있기의 절반 "
+                          f"{0.5 * r['hold']['total_return']:+.1%} → {'이상(통과)' if ok else '미만(실패)'}")
+    down_ok = pd.notna(main["down_precision"]) and main["down_precision"] > main["actual_down_share"]
+    lines = ["# 4일차 확장 검증 (숫자 지표 과거 확장)", "",
+             f"계산 시각 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} (KST) · 계획 [DAY4_PLAN.md](../../DAY4_PLAN.md)", "",
+             f"- 사전 등록 조건(결과를 보고 바꾸지 않는다): 지표 {len(config.FEATURE_SET_BASE)}개, 정답 {config.LABEL_HORIZON_DAYS}거래일 "
+             f"±{config.LABEL_THRESHOLD:.0%}, 재학습 {config.RETRAIN_FREQS[config.RETRAIN_FREQ]}, 하락=현금, t 종가 체결, 수수료 {config.FEE_RATE:.1%}",
+             f"- 확장 원본 {config.EXT_DATA_START} ~, 운영 지표가 모두 있는 첫날부터 {config.EXT_FIRST_TRAIN_MONTHS}개월은 학습만 하고 "
+             f"{start.date()} 부터 검증한다. 구간마다 현금에서 다시 시작한다",
+             f"- 장세: 그 구간 들고 있기 수익 ≥ {config.REGIME_UP:+.0%} 상승장, ≤ {config.REGIME_DOWN:+.0%} 하락장, 그 사이 횡보장",
+             "- 공식 판정(1~3일차)과 운영 신호는 이 결과로 바뀌지 않는다",
+             "- 확장 검증 구간의 데이터는 처음 보지만, 조건(지표 묶음·재학습 주기·모델 설정)은 그 뒤 구간을 보고 정했다. 완전한 사전 등록은 아니다",
+             "- 기존 검증(참고) 줄은 확장 특징 표로 계산해 RSI·파라볼릭 SAR 값이 운영 표와 조금 다르다(원본 시작점 차이). 운영·공식 숫자와 직접 비교하지 않는다", "",
+             "## 성공 기준 판정 (확장 검증 구간)", "",
+             f"- 기준 A: 모델 {main['model']['total_return']:+.1%} / MDD {main['model']['mdd']:.1%}, 들고 있기 "
+             f"{main['hold']['total_return']:+.1%} / MDD {main['hold']['mdd']:.1%} → **{'통과' if main['judge_a'] else '실패'}**",
+             f"- 하락 신호 적중 {pct(main['down_precision'])} vs 실제 하락 비율 {pct(main['actual_down_share'])} → "
+             f"**{'높다(통과)' if down_ok else '높지 않다(실패)'}**",
+             *checks, "", "## 구간별 결과", "",
+             "- 위 판정은 확장 검증 구간 안의 해만 쓴다. '· 참고' 줄은 이미 본 구간이다. '(부분)' 은 해의 일부만 들어간 구간이다",
+             "- 3분류 정확도는 '항상 보합'·'항상 상승' 정확도와 함께 본다(보합이 많은 해는 보합만 내도 정확도가 높다)",
+             "- '상승 아닌 신호 비율' 은 보합(포지션 유지)·하락(현금) 신호의 비율이고, 실제 보유는 '삼성전자 보유일' 이다. "
+             "하락=현금 규칙이라 '항상 상승' 의 수익·MDD 는 들고 있기와 같다", "",
+             table.to_markdown(index=False), ""]
+    return "\n".join(lines) + "\n"
+
+
 def rule_title(rule: str) -> str:
     """하락 행동 규칙의 출력용 제목. 공식 판정 규칙이 아니면 탐색 결과라고 밝힌다."""
     label = config.DOWN_ACTION_LABELS[rule]
@@ -300,4 +410,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--ext" in sys.argv[1:]:
+        print(extended_report()["report"])
+    else:
+        main()

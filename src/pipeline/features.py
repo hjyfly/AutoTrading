@@ -257,6 +257,47 @@ def assert_no_lookahead(table: pd.DataFrame):
         raise AssertionError(f"정답 관련 열이 특징에 있다: {sorted(leaked)}")
 
 
+def load_raw_extended() -> dict:
+    """확장 원본('<이름>_ext', EXT_DATA_START ~ EXT_DATA_END)과 기존 원본을 이어 붙인 원본 묶음. 날짜가 겹치면 멈춘다.
+    확장 원본이 없는 시계열(그 기간에 상장 전)은 기존 원본만 쓴다."""
+    names = [("prices", "samsung_ohlcv", "ohlcv"), ("prices", "samsung_investor_flows", "flows"),
+             *[("macro", n, n) for n in [*config.FRED_SERIES, *config.YF_TICKERS, *config.YF_TICKERS_EXT]],
+             *[("prices", n, n) for n in config.KR_EXTRA]]
+    raw = {}
+    for kind, name, key in names:
+        current = load_raw(kind, name)
+        ext_path = Path(config.RAW_DIR) / kind / f"{name}{config.EXT_SUFFIX}.parquet"
+        if not ext_path.exists():
+            raw[key] = current
+            continue
+        ext = pd.read_parquet(ext_path)
+        if ext.index.max() >= current.index.min():
+            raise ValueError(f"{name}: 확장 원본({ext.index.max().date()})과 기존 원본({current.index.min().date()})의 날짜가 겹친다")
+        raw[key] = pd.concat([ext, current]).sort_index()
+    return raw
+
+
+def compare_overlap(old: pd.DataFrame, new: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """같은 날짜·열에서 두 특징 표의 값 차이. 시작점에 기대는 지표(RSI·PSAR·MACD 등)가 원본을 늘리면 조금 바뀐다."""
+    common = old.index.intersection(new.index)
+    a, b = old.loc[common, cols].astype(float), new.loc[common, cols].astype(float)
+    diff = (a - b).abs()
+    changed = ~((diff <= 1e-9) | (a.isna() & b.isna()))
+    return pd.DataFrame({"changed_rows": changed.sum(), "max_abs_diff": diff.max()}).query("changed_rows > 0")
+
+
+def main_ext():
+    """확장 원본까지 이어 붙여 특징 표를 만들어 FEATURES_EXT_PATH 에 저장한다. 운영 신호용 features.parquet 는 바꾸지 않는다."""
+    table = build_features(raw=load_raw_extended())
+    usable = table[config.FEATURE_SET_BASE].dropna()
+    table["is_dummy"] = False
+    table.to_parquet(config.FEATURES_EXT_PATH)
+    print(config.FEATURES_EXT_PATH, f"{len(table)}행, 운영 지표가 모두 있는 첫 날짜 {usable.index.min().date()}")
+    current = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
+    diff = compare_overlap(current, table, config.FEATURE_SET_BASE)
+    print("기존 특징 표와 같은 날짜에서 값이 달라진 운영 지표:", "없음" if diff.empty else "\n" + diff.to_string())
+
+
 def main():
     """특징 표를 만들어 data/processed/features.parquet 에 저장한다."""
     table = build_features()
@@ -268,4 +309,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main_ext() if "--ext" in sys.argv[1:] else main()

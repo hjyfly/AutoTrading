@@ -64,5 +64,16 @@ def main():
     print(label_distribution(labels, periods).to_string(index=False))
 
 
+def main_ext():
+    """확장 원본까지 이어 붙인 삼성전자 종가로 정답을 만들어 LABELS_EXT_PATH 에 저장한다(운영 정답 기준 그대로)."""
+    ext = pd.read_parquet(Path(config.RAW_DIR) / "prices" / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")["Close"]
+    current = pd.read_parquet(Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet")["Close"]
+    labels = make_labels(pd.concat([ext, current]).sort_index().astype(float))
+    labels["is_dummy"] = False
+    labels.to_parquet(config.LABELS_EXT_PATH)
+    print(config.LABELS_EXT_PATH, len(labels), labels.index.min().date(), "~", labels.index.max().date())
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    main_ext() if "--ext" in sys.argv[1:] else main()

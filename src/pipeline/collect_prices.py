@@ -1,3 +1,4 @@
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,5 +134,21 @@ def main():
         print(name, save_raw(df, name), len(df), df.index.min().date(), df.index.max().date())
 
 
+def main_ext():
+    """4일차 과거 확장: EXT_DATA_START ~ EXT_DATA_END 의 삼성전자 일봉·수급·국내 확장 시계열을 '<이름>_ext' 로 따로 저장한다.
+    기존 원본과 날짜가 겹치지 않고, 기존 파일은 건드리지 않는다. 하락=현금 규칙만 쓰므로 인버스 ETF 는 받지 않는다."""
+    start, end = config.EXT_DATA_START, config.EXT_DATA_END
+    jobs = [("samsung_ohlcv", lambda: fetch_ohlcv(config.SAMSUNG_CODE, start, end)),
+            ("samsung_investor_flows", lambda: fetch_foreign_net(config.SAMSUNG_CODE, start, end)),
+            *[(name, lambda code=code: fetch_close(code, start, end)) for name, code in config.KR_EXTRA.items()]]
+    for name, fetch in jobs:
+        ext = name + config.EXT_SUFFIX
+        if _exists(ext):
+            print(ext, "이미 있음")
+            continue
+        df = fetch()
+        print(ext, save_raw(df, ext), len(df), df.index.min().date(), df.index.max().date())
+
+
 if __name__ == "__main__":
-    main()
+    main_ext() if "--ext" in sys.argv[1:] else main()

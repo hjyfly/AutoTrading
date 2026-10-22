@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,5 +69,20 @@ def main():
         print(name, save_raw(df, name), len(df), df.index.min().date(), df.index.max().date())
 
 
+def main_ext():
+    """4일차 과거 확장: EXT_DATA_START ~ EXT_DATA_END 의 yfinance 지표를 '<이름>_ext' 로 따로 저장한다(기존 원본 불변)."""
+    start, end = config.EXT_DATA_START, config.EXT_DATA_END
+    for name, ticker in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}.items():
+        ext = name + config.EXT_SUFFIX
+        if (Path(config.RAW_DIR) / "macro" / f"{ext}.parquet").exists():
+            print(ext, "이미 있음")
+            continue
+        df = fetch_yf(ticker, start, end)
+        if df.empty:
+            print(ext, "자료 없음(이 기간에 상장 전)")
+            continue
+        print(ext, save_raw(df, ext), len(df), df.index.min().date(), df.index.max().date())
+
+
 if __name__ == "__main__":
-    main()
+    main_ext() if "--ext" in sys.argv[1:] else main()

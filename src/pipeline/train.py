@@ -116,5 +116,25 @@ def main():
         print("  신호 분포", signals["signal"].value_counts(normalize=True).round(3).to_dict())
 
 
+def ext_valid_start(features: pd.DataFrame, feature_set: str = "base") -> pd.Timestamp:
+    """확장 검증 시작일(고정 규칙): 운영 지표가 모두 있는 첫날부터 EXT_FIRST_TRAIN_MONTHS 개월 뒤의 첫 거래일."""
+    usable = features[feature_set_columns(feature_set)].dropna().index
+    target = usable.min() + pd.DateOffset(months=config.EXT_FIRST_TRAIN_MONTHS)
+    return usable[usable >= target].min()
+
+
+def main_ext():
+    """4일차 확장 검증: 확장 특징 표·정답으로 운영 조건(지표 묶음·재학습 주기·정답 기준 그대로) 워크포워드 신호를 만든다.
+    운영 신호(signals_numeric)와 공식 판정 신호는 바꾸지 않는다."""
+    features = pd.read_parquet(config.FEATURES_EXT_PATH)
+    labels = pd.read_parquet(config.LABELS_EXT_PATH)
+    start = ext_valid_start(features)
+    signals = walk_forward(features, labels, valid_start=start, feature_set="base")
+    signals.to_parquet(config.SIGNALS_EXT_PATH)
+    print(config.SIGNALS_EXT_PATH, len(signals), signals.index.min().date(), "~", signals.index.max().date(),
+          f"재학습 {signals['retrained_on'].nunique()}회, 첫 학습 {signals['train_rows'].iloc[0]}행")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    main_ext() if "--ext" in sys.argv[1:] else main()
