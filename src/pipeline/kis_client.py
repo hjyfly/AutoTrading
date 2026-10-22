@@ -63,6 +63,11 @@ class KisClient:
         self._last_call = 0.0
         self.token_path = Path(config.KIS_DIR) / f"token_{self.env}.json"
 
+    def key_id(self) -> str:
+        """저장 토큰이 어떤 키로 받은 것인지 가리는 값(키 자체가 아니라 해시 앞부분)."""
+        import hashlib
+        return hashlib.sha256(self.cfg["app_key"].encode()).hexdigest()[:12]
+
     def _wait(self):
         """호출 사이 최소 간격을 지킨다."""
         gap = config.KIS_MIN_INTERVAL_SEC[self.env] - (self.now() - self._last_call)
@@ -74,7 +79,8 @@ class KisClient:
         """저장된 토큰이 만료 KIS_TOKEN_MARGIN_MIN 분 전까지 남아 있으면 다시 쓰고, 아니면 새로 받아 저장한다."""
         if self.token_path.exists():
             saved = json.loads(self.token_path.read_text(encoding="utf-8"))
-            if saved.get("expires_at", 0) - config.KIS_TOKEN_MARGIN_MIN * 60 > self.now():
+            fresh = saved.get("expires_at", 0) - config.KIS_TOKEN_MARGIN_MIN * 60 > self.now()
+            if fresh and saved.get("key_id") == self.key_id():  # 키를 바꾸면(실전 ↔ 모의 키) 새로 받는다
                 return saved["access_token"]
         self._wait()
         resp = self.session.post(self.base + config.KIS_PATHS["token"], timeout=config.KIS_TIMEOUT_SEC,
@@ -85,7 +91,8 @@ class KisClient:
             raise KisError(mask(f"토큰 발급 실패({resp.status_code}): {body}", self.cfg))
         expires_at = self.now() + int(body.get("expires_in", 86400))
         self.token_path.parent.mkdir(parents=True, exist_ok=True)
-        self.token_path.write_text(json.dumps({"access_token": body["access_token"], "expires_at": expires_at}), encoding="utf-8")
+        self.token_path.write_text(json.dumps({"access_token": body["access_token"], "expires_at": expires_at, "key_id": self.key_id()}),
+                                   encoding="utf-8")
         return body["access_token"]
 
     def headers(self, tr_name: str) -> dict:

@@ -136,3 +136,10 @@ def test_운영_경로는_주문_모듈을_부르지_않는다():
     for path in ["src/daily_run.py", "src/pipeline/live_signal.py", "src/agent.py", "src/ui.py", "src/tools.py", "src/server.py"]:
         text = Path(path).read_text(encoding="utf-8")
         assert not re.search(r"\bbroker\b", text), path
+
+
+def test_키가_바뀌면_저장된_토큰을_쓰지_않고_새로_받는다():
+    session = FakeSession({"daily_price": {"rt_cd": "0", "output": []}})
+    kc.KisClient(CFG, session=session).daily_prices()
+    kc.KisClient({**CFG, "app_key": "OTHERKEY"}, session=session).daily_prices()
+    assert session.token_calls == 2
