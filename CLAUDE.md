@@ -56,7 +56,7 @@ src/pipeline/scoring.py          뉴스 채점 LangGraph (버전 2: 종합 + 분
 src/pipeline/leak_test.py        미래 정보 유출 테스트
 src/pipeline/train.py            LightGBM 워크포워드 학습
 src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙)
-src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(그 달 재학습 시점, 정답 기간 간격)
+src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(재학습 주기 config.RETRAIN_FREQ 안의 첫 거래일 재학습 — 지금 매주, 정답 기간 간격)
                                  뉴스 보정은 15:15 이후 요청할 때만(LLM 7회). 결과는 data/processed/signals_live.parquet
 src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
 src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고
