@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from lightgbm import LGBMClassifier
 
 from src import config
 from src.pipeline import features
@@ -27,11 +28,11 @@ def sector_of(code: str) -> str:
     return next(s for s, codes in config.SECTOR_UNIVERSE.items() if code in codes)
 
 
-def clean_raw(raw: dict) -> dict:
-    """거래량 0 인 날(거래정지)을 일봉·수급에서 뺀다(사전 등록한 공통 데이터 정리)."""
+def clean_raw(raw: dict, keep=None) -> dict:
+    """거래량 0 인 날(거래정지)을 일봉·수급에서 뺀다(사전 등록한 공통 데이터 정리). keep 날짜(실시간 t 빈 행)는 남긴다."""
     out = dict(raw)
     ohlcv = raw["ohlcv"]
-    out["ohlcv"] = ohlcv[ohlcv["Volume"].fillna(0) > 0]
+    out["ohlcv"] = ohlcv[(ohlcv["Volume"].fillna(0) > 0) | (ohlcv.index == keep)]
     out["flows"] = raw["flows"][raw["flows"].index.isin(out["ohlcv"].index)]
     return out
 
@@ -318,6 +319,58 @@ def confirm() -> dict:
     conf = confirm_rule(ev, chosen)
     write_report(sel_ev, sel, ev, conf)
     return conf
+
+
+def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
+    """채택된 분야 알고리즘(config.SECTOR_ADOPTED)으로 t 일 15:15 참고 신호를 만든다.
+    과거 검증(build_sector_tables·run_candidates)과 같은 지표·정답·학습 규칙: 원본은 t 전날까지, 재학습은 그 주 첫 거래일,
+    재학습일 전에 정답 기간이 끝난 행만 학습. S4 는 같은 분야 종목 행을 합쳐 학습한다."""
+    from src import tools
+    from src.pipeline.live_signal import block_start
+    t = tools.resolve_as_of(as_of)
+    if t.weekday() >= 5:
+        raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
+    sector = sector_of(code)
+    cand = config.SECTOR_ADOPTED[sector]
+    shared = mt.live_shared(t)
+    prev_day = shared["ohlcv"].index[shared["ohlcv"].index < t].max()
+    for key, name in [*[(f"sector_{n}", f"sector_{n}") for n in config.SECTOR_ETFS], *[(n, f"kr_{n}") for n in config.SECTOR_KR_INDEX]]:
+        df = pd.read_parquet(mt.raw_path(name))
+        shared[key] = df[df.index < t]
+    for n in config.SECTOR_KR_INDEX:  # 국내 지수는 종목 원본처럼 직전 거래일까지 있어야 과거 검증과 같은 t 행이 된다
+        if shared[n].index.max() != prev_day:
+            raise ValueError(f"kr_{n} 원본 끝 {shared[n].index.max().date()} ≠ 직전 거래일 {prev_day.date()}")
+    raws = {c: clean_raw(mt.live_raw(c, t, shared), keep=t) for c in config.SECTOR_UNIVERSE[sector]}
+    closes = {c: r["ohlcv"]["Close"].astype(float).dropna() for c, r in raws.items()}
+    cols = candidate_columns(cand, sector)
+    usable, pools = {}, {}
+    for c in (config.SECTOR_UNIVERSE[sector] if cand == "S4" else [code]):
+        table = features.build_features(as_of=t, raw=raws[c])
+        table = table.join(extra_features(c, table, raws[c], closes, as_of=t))
+        features.assert_no_lookahead(table[cols])
+        labels = make_vol_labels(closes[c]) if cand == "S5" else make_labels(closes[c])
+        usable[c] = table[cols].dropna()
+        pools[c] = usable[c].join(labels[["label", "future_date"]], how="inner")
+    if t not in usable[code].index:
+        raise ValueError(f"{code} {t.date()} 특징에 빈 값이 있다")
+    start = block_start(t, pd.DatetimeIndex(sorted(set().union(*[u.index for u in usable.values()]))), valid_start)
+    train = pd.concat([p[p["future_date"] < start] for p in pools.values()])
+    if config.TRAIN_WINDOW_YEARS:
+        train = train[train.index >= start - pd.DateOffset(years=config.TRAIN_WINDOW_YEARS)]
+    if len(train) < config.MIN_TRAIN_ROWS:
+        raise ValueError(f"{code} 학습 행 {len(train)}개 < 최소 {config.MIN_TRAIN_ROWS}개")
+    if train["future_date"].max() >= start:
+        raise AssertionError("학습 정답 기간이 예측 시작일과 겹친다")
+    model = LGBMClassifier(**config.LGBM_PARAMS).fit(train[cols], train["label"].map(CLASSES.index))
+    proba = pd.Series(model.predict_proba(usable[code].loc[[t], cols])[0],
+                      index=[CLASSES[i] for i in model.classes_]).reindex(CLASSES, fill_value=0.0)
+    return {"date": t, "code": code, "name": config.SECTOR_TICKER_NAMES[code], "signal": proba.idxmax(),
+            "confidence": float(proba.max()), **{f"p_{c}": float(proba[c]) for c in CLASSES}, "retrained_on": start,
+            "train_rows": len(train), "train_last_future_date": train["future_date"].max(),
+            "model": f"{cand} {CANDIDATE_NAMES[cand]}",
+            # 해외 분야 지수 끝날(미국 휴장·수집 지연이면 과거 검증과 다른 값일 수 있어 남겨 둔다)
+            "foreign_last": {n: str(shared[f"sector_{n}"].index.max().date()) for n in config.SECTOR_INDEX[sector]["foreign"]
+                             if f"sector_{n}" in shared}}
 
 
 if __name__ == "__main__":

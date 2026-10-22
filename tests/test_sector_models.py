@@ -95,6 +95,19 @@ def test_확인_규칙():
     assert sm.confirm_rule(ev, {"X": "S0"})["X"]["adopted"] is False
 
 
+def test_고르기_확인_규칙의_같은_값과_경계():
+    base = {(c, "S0"): 0.0 for c in "ABC"}
+    # 같은 값은 이긴 것으로 세지 않는다: 1종목만 높음 → S0 유지
+    v = sm.select_rule(_ev({**base, ("A", "S1"): 0.0, ("B", "S1"): 0.05, ("C", "S1"): -0.01}))
+    assert (v["X"]["chosen"], v["X"]["wins"]) == ("S0", 1)
+    # 평균이 정확히 1%p 이고 2/3 → 고름(이상), 조금 모자라면 S0
+    assert sm.select_rule(_ev({**base, ("A", "S1"): 0.02, ("B", "S1"): 0.01, ("C", "S1"): 0.0}))["X"]["chosen"] == "S1"
+    assert sm.select_rule(_ev({**base, ("A", "S1"): 0.0197, ("B", "S1"): 0.01, ("C", "S1"): 0.0}))["X"]["chosen"] == "S0"
+    # 확인: 한 종목이 같아도 나머지 두 종목이 높으면 2/3 채택
+    ev = _ev({**base, ("A", "S2"): 0.0, ("B", "S2"): 0.02, ("C", "S2"): 0.01})
+    assert sm.confirm_rule(ev, {"X": "S2"})["X"]["adopted"] is True
+
+
 def test_후보_지표_열은_누적된다():
     sector = "로봇"
     s0, s1, s2, s3 = (sm.candidate_columns(c, sector) for c in ["S0", "S1", "S2", "S3"])
@@ -118,3 +131,81 @@ def test_리포트는_확인_전에는_고르기만_싣는다(tmp_path, monkeypa
     assert "## 1. 고르기" in text and "## 2. 확인" not in text
     text = sm.write_report(ev, sel, ev, sm.confirm_rule(ev, {"X": sel["X"]["chosen"]}))
     assert "## 2. 확인" in text
+
+
+# 채택된 분야 알고리즘의 실시간 참고 신호 (D8-06)
+from src.pipeline import multi_ticker as mt  # noqa: E402
+from test_multi_ticker import CODE, DAYS as MT_DAYS, _flows, _ohlcv, stored  # noqa: E402,F401
+
+PEER = "999991"
+
+
+@pytest.fixture
+def sector_live(stored, monkeypatch, tmp_path):
+    """가짜 분야 X(CODE·PEER), 해외 f1·국내 지수 k1, 채택 알고리즘 S4."""
+    rng = np.random.default_rng(11)
+    _ohlcv(rng).to_parquet(tmp_path / f"{PEER}_ohlcv.parquet")
+    _flows(rng).to_parquet(tmp_path / f"{PEER}_flows.parquet")
+    walk = lambda: 100 * np.exp(np.cumsum(rng.normal(0, 0.01, len(MT_DAYS))))
+    pd.DataFrame({"value": walk()}, index=MT_DAYS).to_parquet(tmp_path / "sector_f1.parquet")
+    pd.DataFrame({"Close": walk()}, index=MT_DAYS).to_parquet(tmp_path / "kr_k1.parquet")
+    monkeypatch.setattr(config, "OPERATIONAL_EXTENDED_HISTORY", False)
+    monkeypatch.setattr(config, "SECTOR_UNIVERSE", {"X": [CODE, PEER]})
+    monkeypatch.setattr(config, "SECTOR_TICKER_NAMES", {CODE: "가짜", PEER: "가짜2"})
+    monkeypatch.setattr(config, "SECTOR_INDEX", {"X": {"foreign": ["f1"], "kr": "k1"}})
+    monkeypatch.setattr(config, "SECTOR_ETFS", {"f1": "F1"})
+    monkeypatch.setattr(config, "SECTOR_KR_INDEX", {"k1": "K1"})
+    monkeypatch.setattr(config, "SECTOR_ADOPTED", {"X": "S4"})
+    shared = {**stored["shared"], "sector_f1": pd.read_parquet(tmp_path / "sector_f1.parquet"),
+              "k1": pd.read_parquet(tmp_path / "kr_k1.parquet")}
+    return shared
+
+
+def test_분야_알고리즘_실시간_신호는_과거_검증과_같다(sector_live):
+    tables = sm.build_sector_tables(sector_live)
+    cols = sm.candidate_columns("S4", "X")
+    wf = mt.pooled_walk_forward({c: {"features": tables[c]["features"], "labels": tables[c]["labels"]} for c in [CODE, PEER]},
+                                cols, MT_DAYS[300])[CODE]
+    for t in [MT_DAYS[300], MT_DAYS[333], MT_DAYS[400]]:
+        live = sm.live_signal(CODE, str(t.date()), valid_start=MT_DAYS[300])
+        assert live["signal"] == wf.loc[t, "signal"]
+        assert live["confidence"] == pytest.approx(wf.loc[t, "confidence"])
+        assert (live["retrained_on"], live["train_rows"]) == (wf.loc[t, "retrained_on"], wf.loc[t, "train_rows"])
+        assert live["model"].startswith("S4")
+
+
+def test_분야_알고리즘_실시간_신호는_t_이후_동료_값을_쓰지_않는다(sector_live):
+    t = MT_DAYS[333]
+    before = sm.live_signal(CODE, str(t.date()))
+    for name in [f"{PEER}_ohlcv", f"{PEER}_flows", "sector_f1", "kr_k1"]:
+        path = Path(config.TICKER_RAW_DIR) / f"{name}.parquet"
+        df = pd.read_parquet(path)
+        df.loc[df.index >= t] = df.loc[df.index >= t] * 3
+        df.to_parquet(path)
+    after = sm.live_signal(CODE, str(t.date()))
+    assert (before["signal"], before["confidence"]) == (after["signal"], pytest.approx(after["confidence"]))
+
+
+def test_채택_분야_종목은_분야_알고리즘으로_매일_동료까지_받는다(sector_live, monkeypatch):
+    assert mt.live_tickers() == [CODE, PEER]
+    monkeypatch.setattr(config, "SECTOR_ADOPTED", {})
+    assert mt.live_tickers() == [CODE]
+    assert mt._live_one(CODE, str(MT_DAYS[333].date()))["model"] == "S0 단독"
+
+
+def test_분야_알고리즘은_동료_원본이_직전_거래일까지_없으면_멈춘다(sector_live):
+    t = MT_DAYS[333]
+    path = Path(config.TICKER_RAW_DIR) / f"{PEER}_ohlcv.parquet"
+    df = pd.read_parquet(path)
+    df[df.index < MT_DAYS[331]].to_parquet(path)
+    with pytest.raises(ValueError, match="직전 거래일"):
+        sm.live_signal(CODE, str(t.date()))
+
+
+def test_분야_알고리즘은_국내_지수가_묵으면_멈춘다(sector_live):
+    t = MT_DAYS[333]
+    path = Path(config.TICKER_RAW_DIR) / "kr_k1.parquet"
+    df = pd.read_parquet(path)
+    df[df.index < MT_DAYS[331]].to_parquet(path)
+    with pytest.raises(ValueError, match="kr_k1"):
+        sm.live_signal(CODE, str(t.date()))

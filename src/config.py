@@ -469,6 +469,7 @@ SECTOR_SELECT_PERIOD = (DEV_START, EXT_VALID_END)     # 고르는 구간 2022-03
 SECTOR_CONFIRM_START = VALID_START                    # 확인 구간 2025-04-23 ~ 데이터 끝
 SECTOR_DIR = "data/processed/sectors"                 # 후보 신호·결과 표(재생성 가능, git 제외)
 DAY8_REPORT_PATH = "evaluation/reports/day8_sector_models.md"
+SECTOR_ADOPTED = {"로봇": "S4"}  # 확인까지 통과한 분야 알고리즘(장부 R3, 2026-10-22). 그 분야 종목 참고 신호만 이 알고리즘으로 만든다
 
 # LLM 비용 한도 (SERVICE.md 15절). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)

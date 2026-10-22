@@ -21,6 +21,7 @@ from src.pipeline import collect_macro, collect_prices, features
 from src.pipeline.labels import DOWN, UP, make_labels
 from src.pipeline.train import CLASSES, feature_columns, prediction_chunks, walk_forward
 
+SINGLE_MODEL_TAG = "S0 단독"  # 분야 알고리즘이 채택되지 않은 종목의 참고 신호 꼬리표
 SECTOR_PREFIX = "sector"  # 분야 ETF 지표 열 이름 앞부분(종목마다 ETF 가 달라도 같은 열 이름)
 
 
@@ -277,16 +278,36 @@ def report(result: pd.DataFrame, v: dict) -> str:
 def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
     """다른 종목 원본에 어제까지의 새 확정 날짜만 덧붙인다(오늘 장중 값은 저장하지 않는다)."""
     today = (pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz=config.KST).tz_localize(None)).normalize()
-    return collect(end=str((today - pd.Timedelta(days=1)).date()))
+    return collect(end=str((today - pd.Timedelta(days=1)).date()), tickers=live_tickers())
 
 
-def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
-    """그 종목의 t 일 15:15 신호(운영 설정, 단독 모델). 원본은 t 전날까지, 재학습은 그 주 첫 거래일(과거 검증과 같은 규칙)."""
+def live_tickers() -> list[str]:
+    """매일 덧붙일 종목: 다른 종목과, 채택된 분야 알고리즘이 함께 쓰는 같은 분야 종목(삼성전자 제외)."""
+    from src.pipeline.sector_models import sector_of
+    codes = [c for c in config.MULTI_TICKERS if c != config.SAMSUNG_CODE]
+    peers = [p for c in config.MULTI_TICKERS if c in config.SECTOR_TICKER_NAMES and sector_of(c) in config.SECTOR_ADOPTED
+             for p in config.SECTOR_UNIVERSE[sector_of(c)]]
+    return list(dict.fromkeys(codes + [p for p in peers if p != config.SAMSUNG_CODE]))
+
+
+def _live_one(code: str, as_of: str | None) -> dict:
+    """채택된 분야 알고리즘이 있으면 그것으로, 없으면 단독 모델(운영 설정)로 참고 신호를 만든다."""
+    from src.pipeline import sector_models
+    if code in config.SECTOR_TICKER_NAMES and sector_models.sector_of(code) in config.SECTOR_ADOPTED:
+        return sector_models.live_signal(code, as_of)
+    return {**live_signal(code, as_of), "model": SINGLE_MODEL_TAG}
+
+
+def live_shared(t: pd.Timestamp) -> dict:
+    """t 일 신호용 공통 원본(t 전 값만, 운영 설정이면 확장 원본을 이어 붙인다)."""
     from src import tools
-    from src.pipeline.live_signal import block_start, prepend_extended
-    t = tools.resolve_as_of(as_of)
+    from src.pipeline.live_signal import prepend_extended
     shared, _ = tools.raw_until(t)
-    shared = prepend_extended(shared) if config.OPERATIONAL_EXTENDED_HISTORY else shared
+    return prepend_extended(shared) if config.OPERATIONAL_EXTENDED_HISTORY else shared
+
+
+def live_raw(code: str, t: pd.Timestamp, shared: dict) -> dict:
+    """t 일 신호용 종목 원본: t 전 값만 두고 t 행을 만들 빈 행을 덧붙인다. 원본이 직전 거래일까지 없으면 멈춘다."""
     raw = ticker_raw(code, shared)
     if code != config.SAMSUNG_CODE:
         before = lambda df: df[df.index < t]
@@ -297,6 +318,15 @@ def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
         ohlcv = before(raw["ohlcv"])[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         raw["ohlcv"] = pd.concat([ohlcv, pd.DataFrame(index=[t], columns=ohlcv.columns, dtype=float)])  # t 행을 만들기 위한 빈 행
         raw["flows"] = before(raw["flows"])
+    return raw
+
+
+def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
+    """그 종목의 t 일 15:15 신호(운영 설정, 단독 모델). 원본은 t 전날까지, 재학습은 그 주 첫 거래일(과거 검증과 같은 규칙)."""
+    from src import tools
+    from src.pipeline.live_signal import block_start
+    t = tools.resolve_as_of(as_of)
+    raw = live_raw(code, t, live_shared(t))
     table = features.build_features(as_of=t, raw=raw)
     if table.index[-1] != t:
         raise ValueError(f"{code} {t.date()} 행을 만들지 못했다")
@@ -324,7 +354,7 @@ def live_signals(as_of: str | None = None) -> list[dict]:
     out = []
     for code in [c for c in config.MULTI_TICKERS if c != config.SAMSUNG_CODE]:
         try:
-            out.append(live_signal(code, as_of))
+            out.append(_live_one(code, as_of))
         except Exception as e:
             out.append({"code": code, "name": config.MULTI_TICKERS[code][0], "error": f"{type(e).__name__}: {e}"})
     ok = [r for r in out if "error" not in r]
@@ -343,7 +373,8 @@ def live_signals(as_of: str | None = None) -> list[dict]:
 
 def summary_lines(results: list[dict]) -> list[str]:
     """메일용 요약(참고, 매매 대상 아님)."""
-    return [f"{r['name']}({r['code']}): " + (f"{r['signal']} (확신도 {r['confidence']:.0%})" if "error" not in r else f"실패 {r['error'][:60]}")
+    return [f"{r['name']}({r['code']}): " + (f"{r['signal']} (확신도 {r['confidence']:.0%}, {r.get('model', SINGLE_MODEL_TAG)})" if "error" not in r
+                                             else f"실패 {r['error'][:60]}")
             for r in results]
 
 

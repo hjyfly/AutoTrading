@@ -76,7 +76,7 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
             lines += ["", f"■ 조건 모니터링 실패: {type(e).__name__}: {e}"]
     if scheduled:
         lines += ["", "■ 실제 계좌(한국투자증권, 읽기 전용)"] + [f"  {x}" for x in account_lines()]
-        lines += ["", "■ 다른 종목(참고, 매매 대상 아님 · 단독 모델)"] + [f"  {x}" for x in other_ticker_lines(today)]
+        lines += ["", "■ 다른 종목(참고, 매매 대상 아님 · 줄 끝은 쓴 알고리즘)"] + [f"  {x}" for x in other_ticker_lines(today)]
     warnings = [f"{k}: {v['note']}" for k, v in out.get("data_sources", {}).items() if "실패" in v["note"]]
     if warnings:
         lines += ["", "■ 데이터 경고"] + [f"  {w}" for w in warnings]
