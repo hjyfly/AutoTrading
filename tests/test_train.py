@@ -102,3 +102,31 @@ def test_알_수_없는_재학습_주기는_거부한다():
     features, labels = make_data()
     with pytest.raises(ValueError):
         tr.walk_forward(features, labels, valid_start="2025-05-01", freq="D")
+
+
+def test_학습_창을_주면_재학습_시점에서_그_햇수_안의_행만_학습한다():
+    features, labels = make_data(500)
+    full = tr.walk_forward(features, labels, valid_start="2026-06-01", freq="M")
+    window = tr.walk_forward(features, labels, valid_start="2026-06-01", freq="M", window_years=1)
+    assert (window["train_rows"] <= full["train_rows"]).all() and (window["train_rows"] < full["train_rows"]).any()
+    for start, rows in window.groupby("retrained_on")["train_rows"].first().items():
+        in_window = labels.index[(labels.index >= start - pd.DateOffset(years=1)) & (labels["future_date"] < start)]
+        assert rows == len(in_window)
+
+
+def test_하락_위험_워크포워드는_정답_간격을_지키고_미래를_바꿔도_과거_예측이_같다():
+    from src.pipeline.labels import make_risk_labels
+    rng = np.random.default_rng(1)
+    days = pd.bdate_range("2025-01-01", periods=400)
+    close = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.02, len(days)))), index=days)
+    features = pd.DataFrame({"f1": rng.normal(size=len(days)), "f2": rng.normal(size=len(days))}, index=days)
+    labels = make_risk_labels(close)
+    out = tr.walk_forward_risk(features, labels, valid_start="2025-10-01", feature_set=None, freq="M")
+    assert (out["train_last_future_date"] < out["retrained_on"]).all()
+    assert out[["p_risk_raw", "p_risk_cal", "p_logit"]].stack().between(0, 1).all()
+    cut = pd.Timestamp("2026-01-01")
+    close2 = close.copy()
+    close2[close2.index >= cut] *= 0.5
+    out2 = tr.walk_forward_risk(features, make_risk_labels(close2), valid_start="2025-10-01", feature_set=None, freq="M")
+    before = out.index < pd.Timestamp("2025-12-01")  # 이 덩어리의 학습 정답은 cut 전에 끝난다
+    pd.testing.assert_frame_equal(out[before], out2[before])

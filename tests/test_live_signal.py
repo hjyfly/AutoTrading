@@ -101,3 +101,23 @@ def test_실시간_재학습일은_과거_검증_덩어리와_같다(freq):
     expected = {d: start for start, block in chunks for d in block}
     for t, start in expected.items():
         assert ls.block_start(t, days, valid_start, freq) == start
+
+
+def test_하락_위험_비교_신호는_시점_규칙을_지킨다(stored):
+    t = DAYS[333]
+    before = ls.risk_signal(str(t.date()))
+    assert before["train_last_future_date"] < before["retrained_on"] <= t
+    for df in stored.values():
+        df.loc[df.index >= t] = df.loc[df.index >= t] * 3
+    after = ls.risk_signal(str(t.date()))
+    assert (before["weight"], before["p_risk"]) == (after["weight"], pytest.approx(after["p_risk"]))
+
+
+def test_확장_원본은_날짜가_겹치면_붙이지_않는다(monkeypatch):
+    days = pd.bdate_range("2026-01-05", periods=4)
+    raw = {"ohlcv": pd.DataFrame({"Close": [1.0, 2, 3, 4]}, index=days)}
+    before = pd.DataFrame({"Close": [9.0, 9.0]}, index=pd.bdate_range("2026-01-01", periods=2))
+    overlap = pd.DataFrame({"Close": [9.0, 9.0]}, index=days[:2])
+    for ext, expected in [(before, 6), (overlap, 4)]:  # 앞 날짜만 있으면 붙이고, 겹치면 붙이지 않는다
+        monkeypatch.setattr(tools, "_load_raw", lambda kind, name, ext=ext: ext if name.endswith(config.EXT_SUFFIX) else pd.DataFrame())
+        assert len(ls.prepend_extended(raw)["ohlcv"]) == expected

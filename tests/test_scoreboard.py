@@ -82,3 +82,13 @@ def test_성적표는_현재_규칙을_기본으로_두_규칙을_함께_계산�
     s = sb.score_model(pd.Series([UP, DOWN] * 6, index=DAYS[:12]), samsung, inverse)
     assert set(s["by_rule"]) == set(config.DOWN_ACTIONS)
     assert s["model"] == s["by_rule"][config.DOWN_ACTION]
+
+
+def test_목표_비중_비교_모델은_비중대로_채점한다():
+    days = pd.bdate_range("2026-01-05", periods=10)
+    samsung = pd.Series([100.0, 102, 104, 100, 96, 95, 97, 99, 101, 103], index=days)
+    rows = pd.DataFrame({"weight": [1.0, 0.0]}, index=[days[0], days[3]])  # 4일째부터 현금, 빠진 날은 앞 비중 유지
+    s = sb.score_weight_model(rows, samsung)
+    assert s["n_signals"] == 2 and s["down_action"] == "cash"
+    assert s["model"]["total_return"] == pytest.approx(0.999 * 1.0 * (100 / 100) * 0.999 - 1)
+    assert s["risk_hit"] == 1.0  # 4일째(100) 뒤 5거래일 안에 95(-5%)

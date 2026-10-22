@@ -64,6 +64,20 @@ def main():
     print(label_distribution(labels, periods).to_string(index=False))
 
 
+def make_risk_labels(close: pd.Series, horizon: int | None = None, threshold: float | None = None) -> pd.DataFrame:
+    """5일차 하락 위험 정답: t+1 ~ t+N 거래일 중 최저 종가가 t 종가 대비 -기준 이하로 한 번이라도 내려가면 1, 아니면 0.
+    future_date 는 t+N 거래일(그날 종가까지 봐야 정답이 정해진다). 정답이 없는 마지막 N거래일은 뺀다."""
+    horizon = config.RISK_HORIZON_DAYS if horizon is None else horizon
+    threshold = config.RISK_THRESHOLD if threshold is None else threshold
+    close = close.sort_index().astype(float)
+    future_min = pd.concat([close.shift(-k) for k in range(1, horizon + 1)], axis=1).min(axis=1, skipna=False)
+    out = pd.DataFrame({"close": close, "future_min": future_min,
+                        "future_date": pd.Series(close.index, index=close.index).shift(-horizon)})
+    out = out.dropna()
+    out["risk"] = (out["future_min"] / out["close"] - 1 <= -threshold).astype(int)
+    return out[["risk", "future_date"]]
+
+
 def main_ext():
     """확장 원본까지 이어 붙인 삼성전자 종가로 정답을 만들어 LABELS_EXT_PATH 에 저장한다(운영 정답 기준 그대로)."""
     ext = pd.read_parquet(Path(config.RAW_DIR) / "prices" / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")["Close"]

@@ -75,6 +75,28 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series) -> d
     return out
 
 
+def score_weight_model(rows: pd.DataFrame, samsung: pd.Series) -> dict:
+    """목표 비중 기록(5일차 하락 위험 비교 조건)을 채점한다. 기록이 빠진 날은 앞 비중을 유지한다.
+    위험 적중은 '비중 0%' 날 중 실제로 5거래일 안에 -3% 이하로 내려간 비율이다."""
+    from src.pipeline.labels import make_risk_labels
+    weights = rows["weight"].astype(float).sort_index()
+    labels = make_risk_labels(samsung)
+    matured = weights[weights.index.isin(labels.index)]
+    high = matured[matured == config.RISK_WEIGHTS[2]]  # 위험 높음 비중
+    out = {"n_signals": int(len(weights)), "n_matured": int(len(matured)), "accuracy": None,
+           "first_date": str(weights.index.min().date()) if len(weights) else None,
+           "risk_hit": float(labels.loc[high.index, "risk"].mean()) if len(high) else None,
+           "drift": {"status": "해당 없음(비중 모델)"}}
+    days = samsung.index[samsung.index >= weights.index.min()] if len(weights) else samsung.index[:0]
+    if len(days) >= 2:
+        sim = backtest.simulate_target(weights.reindex(days).ffill(), samsung)
+        model = backtest.summary(sim["equity"])
+        out.update(model=model, by_rule={"cash": model}, down_action="cash", trading_days=int(len(days)),
+                   hold=backtest.summary(backtest.buy_and_hold(samsung, days)),
+                   equity={str(d.date()): round(float(v), 6) for d, v in sim["equity"].items()})
+    return out
+
+
 def drift_check(matured: pd.Series, labels: pd.Series) -> dict:
     """최근 DRIFT_WINDOW 개 확정 신호의 정확도를 같은 기간 '항상 가장 많은 정답' 비율과 비교한다."""
     n = config.DRIFT_WINDOW
@@ -101,6 +123,7 @@ def build(today: pd.Timestamp | None = None) -> dict:
         samsung, inverse = load_prices(today)
         board["price_last_date"] = str(samsung.index.max().date())
         extra = {name: f"비교용 지표 묶음 {name}" for name in config.LIVE_EXTRA_FEATURE_SETS}  # 지표 그룹 진단에서 고른 묶음
+        extra[config.LIVE_RISK_MODEL] = f"하락 위험 비교 조건 {config.LIVE_RISK_CONDITION}(목표 비중, 비교용)"
         for model, title in {**MODELS, **extra}.items():
             rows = live[live["model"] == model]
             if rows.empty:
@@ -109,6 +132,8 @@ def build(today: pd.Timestamp | None = None) -> dict:
             entry = {"title": title, "n_backfilled": int(len(rows) - len(realtime))}
             if realtime.empty:
                 entry.update(n_signals=0, n_matured=0, accuracy=None, drift={"status": "실시간 기록 없음"})
+            elif model == config.LIVE_RISK_MODEL:
+                entry.update(score_weight_model(realtime, samsung))
             else:
                 entry.update(score_model(realtime["signal"], samsung, inverse))
             board["models"][model] = entry

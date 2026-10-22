@@ -44,20 +44,31 @@ def load_prices() -> pd.Series:
 
 
 @st.cache_resource
+def _experiment_data(extended: bool) -> experiment.Data:
+    """조건 비교 실험용 원본 표와 학습 결과 보관소(같은 학습 조건은 한 번만 학습한다). 구간마다 따로 둔다."""
+    return experiment.Data(extended=extended)
+
+
 def experiment_data() -> experiment.Data:
-    """조건 비교 실험용 원본 표와 학습 결과 보관소(같은 학습 조건은 한 번만 학습한다)."""
-    return experiment.Data()
+    """화면에서 고른 비교 구간(기존 검증 / 4일차 확장 검증)의 실험 데이터."""
+    return _experiment_data(st.session_state.get("exp_scope") == "ext")
 
 
 def experiment_tab():
     """모니터링 리포트 보기와 조건 조회를 하위 탭으로 나눠 보여 준다. 결과는 모두 탐색이다."""
-    sub_report, sub_query, sub_features = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단"])
+    st.radio("조건 조회·지표 그룹 진단의 비교 구간", ["valid", "ext"], horizontal=True, key="exp_scope",
+             format_func=lambda v: {"valid": f"기존 검증({config.VALID_START} ~, 여러 번 본 구간)",
+                                    "ext": f"4일차 확장 검증(~ {config.EXT_VALID_END}, 처음 보는 구간)"}[v])
+    sub_report, sub_query, sub_features, sub_ext = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단", "확장 검증 리포트"])
     with sub_report:
         monitor_report_view()
     with sub_query:
         condition_query_view()
     with sub_features:
         feature_study_view()
+    with sub_ext:
+        path = Path(config.EXT_REPORT_PATH)
+        st.markdown(path.read_text(encoding="utf-8") if path.exists() else "아직 확장 검증 리포트가 없다(`python -m src.pipeline.backtest --ext`).")
 
 
 def monitor_report_view():
@@ -83,8 +94,6 @@ def condition_query_view():
     st.caption("선택한 날짜와 상관없이 저장된 전체 데이터로 다시 계산한다. 검증 구간을 본 뒤의 비교라 **탐색 결과**이며 공식 판정(기준 A·B)을 바꾸지 않는다. "
                "신호 시각(15:15)과 기사 수집 구간은 뉴스를 다시 채점해야 바뀌므로 여기서는 고를 수 없다.")
     base = config.EXPERIMENT_BASE
-    names = {**config.RETRAIN_FREQS, **config.EXECUTIONS, **config.DOWN_ACTION_LABELS, **config.NEWS_SCORE_FIELDS,
-             "none": "숫자 모델만", "adjust": "뉴스 보정", "base": f"운영 지표({len(config.FEATURE_SET_BASE)}개)", "base_v1": f"1~3일차 지표({len(config.FEATURE_SET_BASE_V1)}개)", "candidate": "후보 지표(A+B+D)", None: "쓰지 않음"}
     options = {**{k: config.EXPERIMENT_UI_OPTIONS[k] for k in ("horizon_days", "threshold")}, **experiment.CHOICES,
                **{k: v for k, v in config.EXPERIMENT_UI_OPTIONS.items() if k not in ("horizon_days", "threshold")}}
     # 폼 안의 선택은 '조회' 를 누를 때만 반영된다(조건을 바꿀 때마다 화면 전체를 다시 계산하지 않게)
@@ -95,7 +104,7 @@ def condition_query_view():
             if base[key] not in values:
                 values = [base[key], *values]
             vary[key] = cols[i % 3].multiselect(experiment.LABELS[key], values, default=[base[key]], key=f"exp_{key}",
-                                                format_func=lambda v: names.get(v, str(v)))
+                                                format_func=lambda v, key=key: experiment.value_label(key, v))
         c1, c2 = st.columns(2)
         start = c1.text_input("시작일(비우면 자동)", "", key="exp_start")
         end = c2.text_input("끝일(비우면 자동)", "", key="exp_end")
@@ -128,7 +137,8 @@ def feature_study_view():
     """지표 그룹을 빼고 더해 본 진단·추천 리포트와, 그룹을 직접 골라 기존 지표와 비교하는 폼."""
     st.caption("기존 지표를 그룹 단위로 하나씩 빼고 후보 그룹을 하나씩 더해 다시 학습한 **탐색 결과**다. 추천 묶음도 운영 신호를 바꾸지 않고, "
                "config.LIVE_EXTRA_FEATURE_SETS 에 넣으면 실시간 성적표에서 앞으로의 날로 함께 채점된다.")
-    report_path = Path(config.FEATURE_STUDY_REPORT_PATH)
+    ext = st.session_state.get("exp_scope") == "ext"
+    report_path = Path(config.FEATURE_STUDY_EXT_REPORT_PATH if ext else config.FEATURE_STUDY_REPORT_PATH)
     if st.button("지표 그룹 진단 다시 계산"):
         with st.spinner("계산 중(그룹마다 다시 학습해 몇 분 걸린다)"):
             st.session_state.feature_study = experiment.feature_study(experiment_data())

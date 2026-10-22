@@ -55,3 +55,13 @@ def test_정답_기간과_기준을_인자로_바꿀_수_있다():
     close = pd.Series([100, 101, 101.5, 104], index=pd.bdate_range("2026-01-05", periods=4))
     out = lb.make_labels(close, horizon=2, threshold=0.02)
     assert out["label"].tolist() == [lb.FLAT, lb.UP]  # 2거래일 뒤 +1.5% 는 보합, +3.0% 는 상승
+
+
+def test_하락_위험_정답은_기간_안_최저_종가로_정한다():
+    from src.pipeline.labels import make_risk_labels
+    days = pd.bdate_range("2026-01-05", periods=8)
+    close = pd.Series([100, 101, 96.9, 105, 106, 107, 108, 109.0], index=days)
+    out = make_risk_labels(close, horizon=3, threshold=0.03)
+    assert list(out.index) == list(days[:5])  # 마지막 3일은 정답이 없다
+    assert out["risk"].tolist() == [1, 1, 0, 0, 0]  # 1·2일째는 3일 안에 96.9(-3.1%, -4.1%)
+    assert out["future_date"].iloc[0] == days[3]

@@ -55,23 +55,40 @@ def simulate_split(signals: pd.Series, samsung_close: pd.Series, steps: int | No
     if steps < 1 or not 0 <= floor <= 1:
         raise ValueError(f"분할 단계는 1 이상, 바닥 비중은 0~1 이어야 한다: {steps}, {floor}")
     dates = signals.index.sort_values()
+    levels, level = [], 0.0
+    for t in dates:
+        base = max(level, floor)  # 바닥 아래에서 시작하지 않는다(첫 상승에도 바닥 비중부터 채운다)
+        level = {UP: min(1.0, base + 1 / steps), DOWN: max(floor, level - 1 / steps)}.get(signals[t], base)
+        levels.append(level)
+    out = simulate_target(pd.Series(levels, index=dates), samsung_close)
+    out.insert(0, "signal", signals.reindex(dates))
+    return out
+
+
+def simulate_target(targets: pd.Series, samsung_close: pd.Series) -> pd.DataFrame:
+    """목표 비중(0~1) 모의 매매. t일 목표 비중으로 t일 종가에 체결하고 현금으로 시작한다(나머지는 현금).
+
+    목표 비중이 바뀐 날만 그 비중에 맞춰 사고판다. 그 사이에는 가격 변동으로 실제 비중이 움직이게 둔다.
+    수수료는 사고판 금액의 FEE_RATE 다(부분 매매에서는 수수료를 떼기 전 금액 기준이라 FEE_RATE² 수준의 근사).
+    """
+    dates = targets.index.sort_values()
     closes = samsung_close.reindex(dates)
     if closes.isna().any():
         raise ValueError("신호 날짜에 가격이 없다")
+    if ((targets < 0) | (targets > 1)).any():
+        raise ValueError("목표 비중은 0~1 이어야 한다")
     stock, cash, level, rows = 0.0, 1.0, 0.0, []
     for i, t in enumerate(dates):
         if i > 0:
             stock *= closes[t] / closes[dates[i - 1]]
-        base = max(level, floor)  # 바닥 아래에서 시작하지 않는다(첫 상승에도 바닥 비중부터 채운다)
-        new_level = {UP: min(1.0, base + 1 / steps), DOWN: max(floor, level - 1 / steps)}.get(signals[t], base)
+        new_level = float(targets[t])
         equity, fee = stock + cash, 0.0
         if abs(new_level - level) > EPS:
             cost = abs(new_level * equity - stock) * config.FEE_RATE  # 사고판 금액의 수수료를 자산에서 뗀 뒤 목표 비중으로 나눈다
             fee = cost / equity
             equity -= cost
             stock, cash, level = new_level * equity, (1 - new_level) * equity, new_level
-        rows.append({"date": t, "signal": signals[t], "position": LONG if level > EPS else CASH, "weight": level,
-                     "fee": fee, "equity": stock + cash})
+        rows.append({"date": t, "position": LONG if level > EPS else CASH, "weight": level, "fee": fee, "equity": stock + cash})
     return pd.DataFrame(rows).set_index("date")
 
 
@@ -335,6 +352,180 @@ def extended_markdown(rows: list[dict], start: pd.Timestamp) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---- 5일차: 하락 위험 모델 판정 (DAY5_PLAN.md, 사전 등록 장부 evaluation/reports/preregistration.md) ----
+
+def risk_weights(p: pd.Series, t_mid: float, t_high: float) -> pd.Series:
+    """위험 확률을 3단계 목표 비중으로: t_high 이상 → 높음, t_mid 이상 → 중간, 그 밖 → 낮음(config.RISK_WEIGHTS)."""
+    low, mid, high = config.RISK_WEIGHTS
+    return pd.Series(np.where(p >= t_high, high, np.where(p >= t_mid, mid, low)), index=p.index)
+
+
+def day5_thresholds(risk: pd.DataFrame) -> dict:
+    """개발 구간의 위험 확률 분위수로 중간·높음 기준을 정한다(판정 구간 값은 보지 않는다)."""
+    dev = risk.loc[config.DEV_START:config.DEV_END]
+    q_mid, q_high = config.RISK_QUANTILES
+    return {col: (float(dev[col].quantile(q_mid)), float(dev[col].quantile(q_high))) for col in ("p_risk_raw", "p_risk_cal", "p_logit")}
+
+
+def day5_weights(risk: pd.DataFrame, th: dict) -> dict[str, pd.Series]:
+    """사전 등록 조건(P1~P3)마다 날짜별 목표 비중."""
+    p1 = risk_weights(risk["p_risk_raw"], *th["p_risk_raw"])
+    p2 = risk_weights(risk["p_risk_cal"], *th["p_risk_cal"])
+    votes = ((risk["p_risk_cal"] >= th["p_risk_cal"][1]).astype(int) + (risk["p_logit"] >= th["p_logit"][1]).astype(int)
+             + risk["trend_vote"].astype(int))
+    low, mid, high = config.RISK_WEIGHTS
+    p3 = pd.Series(np.select([votes >= 3, votes == 2], [high, mid], low), index=risk.index)
+    return {"P1": p1, "P2": p2, "P3": p3}
+
+
+def up_month_hold(weights: pd.Series, close: pd.Series) -> tuple[float, int]:
+    """그달 들고 있기 수익이 UP_MONTH_MIN_RETURN 이상인 달들에서 삼성전자를 들고 있던 날 비율과 그런 달 수."""
+    px = close.reindex(weights.index)
+    month = weights.index.to_period("M")
+    ret = px.groupby(month).agg(lambda s: s.iloc[-1] / s.iloc[0] - 1)
+    up = ret[ret >= config.UP_MONTH_MIN_RETURN].index
+    held = (weights > EPS)[month.isin(up)]
+    return (float(held.mean()) if len(held) else float("nan")), len(up)
+
+
+def calibration_check(p: pd.Series, y: pd.Series) -> dict:
+    """확률 구간별 실제 위험 비율과 Brier 점수. 구간은 0.1 간격, 표본 10개 미만 구간은 단조 확인에서 뺀다."""
+    df = pd.DataFrame({"p": p, "y": y}).dropna()
+    df["bin"] = pd.cut(df["p"], np.linspace(0, 1, config.CALIBRATION_BINS + 1), include_lowest=True)
+    table = df.groupby("bin", observed=True)["y"].agg(["count", "mean"])
+    used = table[table["count"] >= config.CALIBRATION_MIN_BIN]["mean"]
+    return {"brier": float(((df["p"] - df["y"]) ** 2).mean()), "table": table,
+            "monotonic": bool(used.is_monotonic_increasing) if len(used) >= 2 else False}
+
+
+def day5_period(weights: pd.Series, close: pd.Series, start, end) -> dict:
+    """한 구간을 현금에서 다시 시작해 목표 비중대로 모의 매매하고 들고 있기와 비교한다."""
+    w = weights.loc[start:end]
+    sim = simulate_target(w, close)
+    hold = buy_and_hold(close, w.index)
+    share, n_up = up_month_hold(w, close)
+    return {"model": summary(sim["equity"]), "hold": summary(hold), "judge_a": judge_a(sim["equity"], hold),
+            "hold_days": float((sim["weight"] > EPS).mean()), "avg_weight": float(sim["weight"].mean()),
+            "up_month_hold": share, "up_months": n_up, "trades": int((sim["fee"] > 0).sum()), "equity": sim["equity"]}
+
+
+def _day5_inputs():
+    """판정에 쓰는 확장 구간 종가, 위험 신호, 위험 정답, 비교용 3분류 운영 모델 신호(확장 특징 표로 만든 것)."""
+    from src.pipeline.labels import make_risk_labels
+    raw = Path(config.RAW_DIR) / "prices"
+    close = pd.concat([pd.read_parquet(raw / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")["Close"],
+                       pd.read_parquet(raw / "samsung_ohlcv.parquet")["Close"]]).sort_index().astype(float)
+    risk = pd.read_parquet(config.SIGNALS_RISK_PATH)
+    three = pd.read_parquet(config.SIGNALS_EXT_PATH)["signal"]
+    level = {UP: 1.0, DOWN: 0.0}
+    w3, cur = [], 0.0
+    for s in three:  # 3분류 운영 규칙(상승 100%, 보합 유지, 하락 현금)을 목표 비중으로
+        cur = level.get(s, cur)
+        w3.append(cur)
+    return close, risk, make_risk_labels(close), pd.Series(w3, index=three.index)
+
+
+def day5_evaluate(start, end) -> dict:
+    """사전 등록 조건(P1~P3)과 지금 3분류 운영 모델을 한 구간에서 계산한다. 기준은 개발 구간에서만 정한다."""
+    close, risk, labels, w3 = _day5_inputs()
+    th = day5_thresholds(risk)
+    weights = day5_weights(risk, th)
+    base = day5_period(w3, close, start, end)
+    y = labels["risk"].reindex(risk.loc[start:end].index)
+    known = labels["future_date"].reindex(y.index) <= pd.Timestamp(end)  # 구간 끝까지 확정된 정답만
+    cal = {name: calibration_check(risk.loc[start:end, col][known], y[known])
+           for name, col in [("P1", "p_risk_raw"), ("P2", "p_risk_cal")]}
+    results = {k: day5_period(w, close, start, end) for k, w in weights.items()}
+    return {"thresholds": th, "base": base, "results": results, "calibration": cal, "start": str(start), "end": str(end),
+            "risk_share": float(y[known].mean())}
+
+
+def day5_markdown(ev: dict, title: str) -> str:
+    """5일차 판정(또는 개발 구간) 결과 리포트."""
+    pct = lambda v: "" if pd.isna(v) else f"{v:.1%}"
+    b = ev["base"]
+    rows = [{"조건": "지금 3분류 운영 모델(비교)", "수익 / MDD": f"{b['model']['total_return']:+.1%} / {b['model']['mdd']:.1%}",
+             "칼마": f"{b['model']['calmar']:.2f}", "보유일": pct(b["hold_days"]), "평균 비중": pct(b["avg_weight"]),
+             "상승장 달 보유일": pct(b["up_month_hold"]), "포지션 변경": b["trades"], "기준 A": "통과" if b["judge_a"]["passed"] else "실패"}]
+    checks = []
+    for k, r in ev["results"].items():
+        a_ok, calmar_ok = r["judge_a"]["passed"], r["model"]["calmar"] > b["model"]["calmar"]
+        up_ok = pd.notna(r["up_month_hold"]) and r["up_month_hold"] >= config.UP_MONTH_MIN_HOLD
+        rows.append({"조건": f"{k}: {config.PREREGISTERED[k]}", "수익 / MDD": f"{r['model']['total_return']:+.1%} / {r['model']['mdd']:.1%}",
+                     "칼마": f"{r['model']['calmar']:.2f}", "보유일": pct(r["hold_days"]), "평균 비중": pct(r["avg_weight"]),
+                     "상승장 달 보유일": pct(r["up_month_hold"]), "포지션 변경": r["trades"], "기준 A": "통과" if a_ok else "실패"})
+        checks.append(f"- **{k}**: 기준 A {'통과' if a_ok else '실패'} · 칼마가 운영 모델보다 {'높다' if calmar_ok else '높지 않다'}"
+                      f"({r['model']['calmar']:.2f} vs {b['model']['calmar']:.2f}) · 상승장 달 보유일 {pct(r['up_month_hold'])}"
+                      f"({r['up_months']}개월, 기준 {config.UP_MONTH_MIN_HOLD:.0%}) {'통과' if up_ok else '실패'}")
+    cal = ev["calibration"]
+    h = b["hold"]
+    th = ev["thresholds"]
+    lines = [f"# {title}", "", f"계산 시각 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} (KST) · 구간 {ev['start'][:10]} ~ {ev['end'][:10]} · "
+             f"계획 [DAY5_PLAN.md](../../DAY5_PLAN.md) · 장부 [preregistration.md](preregistration.md)", "",
+             f"- 들고 있기: {h['total_return']:+.1%} / MDD {h['mdd']:.1%}. 구간 실제 하락 위험 비율 {ev['risk_share']:.1%}",
+             f"- 기준(개발 구간 {config.DEV_START} ~ {config.DEV_END} 의 분위수 {config.RISK_QUANTILES}): "
+             + ", ".join(f"{k} 중간 {v[0]:.3f} · 높음 {v[1]:.3f}" for k, v in th.items()),
+             "- 하락=현금 규칙이라 '항상 상승' 의 수익·MDD 는 들고 있기와 같다",
+             "- 모든 조건은 구간 첫날 현금에서 그날 목표 비중으로 들어간다. 3분류 운영 모델의 목표 비중은 이전 신호에서 이어진 값이다(보합 = 유지)", "",
+             "## 판정", "", *checks]
+    if cal:
+        c1, c2 = cal["P1"], cal["P2"]
+        lines.append(f"- **신뢰도(P2 보정)**: 구간별 실제 위험 비율이 단조 증가 {'예' if c2['monotonic'] else '아니오'}, "
+                     f"Brier {c2['brier']:.4f} vs 보정 전 {c1['brier']:.4f} → {'통과' if c2['monotonic'] and c2['brier'] < c1['brier'] else '실패'}")
+    lines += ["", "## 결과 표", "", pd.DataFrame(rows).to_markdown(index=False), ""]
+    if cal:
+        lines += ["## 확률 구간별 실제 위험 비율", ""]
+    for name, c in ([("P1 보정 전", cal["P1"]), ("P2 보정 후", cal["P2"])] if cal else []):
+        t = c["table"].rename(columns={"count": "일수", "mean": "실제 위험 비율"}).reset_index().rename(columns={"bin": "확률 구간"})
+        t["확률 구간"] = t["확률 구간"].astype(str)
+        t["실제 위험 비율"] = t["실제 위험 비율"].map(pct)
+        lines += [f"### {name} (Brier {c['brier']:.4f})", "", t.to_markdown(index=False), ""]
+    return "\n".join(lines) + "\n"
+
+
+def day5_dev_report() -> str:
+    """개발 구간 결과(여러 번 봐도 되는 구간). 판정 구간은 쓰지 않는다."""
+    return day5_markdown(day5_evaluate(config.DEV_START, config.DEV_END), "5일차 개발 구간 결과 (판정 아님)")
+
+
+def day5_judge(ids: list[str] | None = None) -> str:
+    """사전 등록 조건을 판정 구간에서 한 번만 판정해 리포트와 판정 기록을 남긴다. 이미 판정한 조건이 있으면 멈춘다."""
+    import json
+    ids = ids or list(config.PREREGISTERED)
+    unknown = [i for i in ids if i not in config.PREREGISTERED]
+    if unknown:
+        raise ValueError(f"장부에 없는 조건은 판정하지 않는다: {unknown}")
+    path = Path(config.JUDGED_PATH)
+    judged = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    again = [i for i in ids if i in judged]
+    if again:
+        raise ValueError(f"판정 구간을 이미 쓴 조건이다(다시 판정하지 않는다): {again}")
+    import hashlib
+    ev = day5_evaluate(config.JUDGE_START, config.JUDGE_END)
+    ev["results"] = {k: v for k, v in ev["results"].items() if k in ids}
+    if "P2" not in ids:
+        ev["calibration"] = None  # 보정 판정은 P2 를 판정할 때만 싣는다
+    report = day5_markdown(ev, f"5일차 판정 ({', '.join(ids)}, 판정 구간, 조건마다 한 번만)")
+    report_path = Path(config.DAY5_REPORT_PATH).with_name(f"day5_judgement_{'_'.join(ids)}.md")
+    report_path.write_text(report, encoding="utf-8", newline="\n")
+    stamp = pd.Timestamp.now(tz=config.KST).strftime("%Y-%m-%d %H:%M")
+    signal_hash = hashlib.sha256(Path(config.SIGNALS_RISK_PATH).read_bytes()).hexdigest()[:16]
+    base_calmar = ev["base"]["model"]["calmar"]
+    for i in ids:
+        r = ev["results"][i]
+        judged[i] = {"judged_at": stamp, "report": report_path.as_posix(), "signals_sha256_16": signal_hash, "thresholds": ev["thresholds"],
+                     "return": r["model"]["total_return"], "mdd": r["model"]["mdd"], "calmar": r["model"]["calmar"],
+                     "judge_a": bool(r["judge_a"]["passed"]), "calmar_beats_operational": bool(r["model"]["calmar"] > base_calmar),
+                     "up_month_hold": r["up_month_hold"],
+                     "up_month_ok": bool(pd.notna(r["up_month_hold"]) and r["up_month_hold"] >= config.UP_MONTH_MIN_HOLD)}
+        if i == "P2":
+            c1, c2 = ev["calibration"]["P1"], ev["calibration"]["P2"]
+            judged[i].update(brier_raw=c1["brier"], brier_cal=c2["brier"], monotonic=c2["monotonic"],
+                             calibration_ok=bool(c2["monotonic"] and c2["brier"] < c1["brier"]))
+    path.write_text(json.dumps(judged, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
 def rule_title(rule: str) -> str:
     """하락 행동 규칙의 출력용 제목. 공식 판정 규칙이 아니면 탐색 결과라고 밝힌다."""
     label = config.DOWN_ACTION_LABELS[rule]
@@ -413,5 +604,9 @@ if __name__ == "__main__":
     import sys
     if "--ext" in sys.argv[1:]:
         print(extended_report()["report"])
+    elif "--day5-dev" in sys.argv[1:]:
+        print(day5_dev_report())
+    elif "--day5-judge" in sys.argv[1:]:
+        print(day5_judge())
     else:
         main()

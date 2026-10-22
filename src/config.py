@@ -37,7 +37,7 @@ DATA_END = _refreshed_data_end() or DATA_END_INITIAL
 OFFICIAL_VALID_END = DATA_END_INITIAL
 # 뉴스 수집·채점 구간 (2026-10-22 사용자 결정으로 2~4월에서 앞뒤 6개월 확장)
 NEWS_START = "2025-11-01"
-NEWS_END = "2026-07-31"
+NEWS_END = "2026-10-20"  # 2026-10-22 사용자 결정: 8~10월 추가(10-21 은 실시간 기록이라 제외)
 # 공식 기준 B 판정 구간과 유출 테스트 구간 (1~3일차 그대로 고정. 뉴스 구간을 넓혀도 바꾸지 않는다)
 CRITERION_B_START = "2026-02-01"
 CRITERION_B_END = "2026-04-30"
@@ -66,6 +66,8 @@ VALID_START = "2025-04-23"
 RETRAIN_FREQ = "W"
 OFFICIAL_RETRAIN_FREQ = "M"
 RETRAIN_FREQS = {"W": "매주", "M": "매월", "Q": "분기"}
+# 학습 창(년). None = 처음부터 누적(지금 운영). DAY4 D4-10: 조건 비교에서 최근 2·3년만 쓰는 경우와 비교한다
+TRAIN_WINDOW_YEARS = None
 # 체결 시점 (기본 t 종가 = 공식 규칙). next_open 은 신호를 낸 다음 거래일 시가에 체결하는 비교용
 EXECUTION = "close"
 EXECUTIONS = {"close": "t 종가", "next_open": "t+1 시가"}
@@ -309,7 +311,7 @@ NEWS_RISK_VETO = None     # 하락 위험이 이 값 이상이면 상승 신호�
 EXPERIMENT_BASE = {
     "horizon_days": LABEL_HORIZON_DAYS, "threshold": LABEL_THRESHOLD, "feature_set": "base", "retrain_freq": RETRAIN_FREQ,
     "execution": EXECUTION, "down_action": DOWN_ACTION, "position_steps": POSITION_STEPS, "position_floor": POSITION_FLOOR,
-    "news_mode": "none", "news_field": NEWS_SCORE_FIELD,
+    "train_window": TRAIN_WINDOW_YEARS, "news_mode": "none", "news_field": NEWS_SCORE_FIELD,
     "news_window": NEWS_WINDOW_DAYS, "news_risk_veto": NEWS_RISK_VETO, "news_min_score": NEWS_ADJUST_SCORE,
     "news_min_conf": NEWS_ADJUST_MIN_CONF, "start": None, "end": None,
 }
@@ -319,7 +321,7 @@ EXPERIMENT_MAX_COMBOS = 48                     # 화면에서 한 번에 돌릴 
 # 화면 "조건 비교" 탭의 숫자 조건 선택지 (고를 수 있는 값이 정해진 조건은 위 사전에서 가져온다)
 EXPERIMENT_UI_OPTIONS = {
     "horizon_days": [3, 5, 10, 20], "threshold": [0.02, 0.03, 0.05], "position_steps": [1, 2, 3, 4],
-    "position_floor": [0.0, 0.25, 0.5], "news_window": [1, 3, 5],
+    "position_floor": [0.0, 0.25, 0.5], "train_window": [None, 2, 3], "news_window": [1, 3, 5],
     "news_risk_veto": [None, 3, 4], "news_min_score": [2, 3, 4], "news_min_conf": [0.5, 0.6, 0.7],
 }
 # 조건 모니터링: 기준 조건에서 하나씩만 바꿔 볼 값(사전 등록. 결과를 보고 목록을 바꾸지 않는다). 2026-10-22 사용자 요청
@@ -351,8 +353,41 @@ FEATURES_EXT_PATH = "data/processed/features_ext.parquet"
 LABELS_EXT_PATH = "data/processed/labels_ext.parquet"
 SIGNALS_EXT_PATH = "data/processed/signals_ext.parquet"
 EXT_REPORT_PATH = "evaluation/reports/day4_extended.md"
+FEATURE_STUDY_EXT_REPORT_PATH = "evaluation/reports/experiments_features_ext.md"  # 확장 검증 구간의 지표 그룹 진단
 # 장세 구분(결과 보기 전에 고정): 그 구간 들고 있기 수익이 이 값 이상이면 상승장, 이하이면 하락장, 그 사이는 횡보장
 REGIME_UP, REGIME_DOWN = 0.15, -0.15
+
+# ---- 5일차: 하락 위험 모델·신뢰도 측정 (DAY5_PLAN.md, 2026-10-22 사용자 결정: 기본값) ----
+# 확장 검증 구간을 개발·판정으로 나눈다. 판정 구간은 사전 등록 조건마다 한 번만 쓴다
+DEV_START, DEV_END = "2022-03-04", "2023-12-31"
+JUDGE_START, JUDGE_END = "2024-01-01", "2025-04-22"
+RISK_HORIZON_DAYS = 5          # 하락 위험: t+1 ~ t+5 거래일 중 최저 종가가 t 종가 대비
+RISK_THRESHOLD = 0.03          # -3% 이하로 한 번이라도 내려가면 1
+RISK_WEIGHTS = (1.0, 0.5, 0.0) # 위험 낮음 / 중간 / 높음일 때 삼성전자 비중(나머지는 현금)
+RISK_QUANTILES = (0.6, 0.85)   # 중간·높음 기준 = 개발 구간 위험 확률의 이 분위수(개발 구간에서만 정한다)
+CALIBRATION_SHARE = 0.2        # 확률 보정: 재학습 때 학습 구간 마지막 이 비율로 보정기를 맞춘다
+CALIBRATION_MIN_ROWS = 60      # 보정용 행이 이보다 적으면 보정하지 않는다
+TREND_MA = "ma120_gap"         # 합의 모델의 추세 규칙: 이 이동평균 괴리가 0 미만이면 위험 표
+LOGIT_C = 1.0                  # 로지스틱 회귀 규제 강도(기본값, 조정하지 않는다)
+LOGIT_MAX_ITER = 2000
+CALIBRATION_BINS = 10          # 신뢰도 단조 확인: 확률 0~1 을 이 개수로 나눈 구간(판정 때 값 그대로)
+CALIBRATION_MIN_BIN = 10       # 표본이 이보다 적은 구간은 단조 확인에서 뺀다
+UP_MONTH_MIN_RETURN = 0.05     # 반등장 확인: 그달 들고 있기 수익이 이 값 이상인 달
+UP_MONTH_MIN_HOLD = 0.70       # 그런 달에 삼성전자 보유일 비율이 이 값 이상이어야 한다
+LIVE_PROMOTION_MIN_SIGNALS = 40  # 운영 변경 검토에 필요한 실시간 확정 신호 수
+PREREG_PATH = "evaluation/reports/preregistration.md"
+JUDGED_PATH = "data/processed/day5_judged.json"   # 판정 구간을 이미 쓴 조건 기록(다시 판정하지 않는다)
+DAY5_REPORT_PATH = "evaluation/reports/day5_judgement.md"
+SIGNALS_RISK_PATH = "data/processed/signals_risk_ext.parquet"
+# 실시간 성적표에 비교용으로 기록할 하락 위험 조건(2026-10-22 사용자: 판정 기준을 일부 통과한 P2). 운영 신호는 바꾸지 않는다
+LIVE_RISK_CONDITION = "P2"
+LIVE_RISK_MODEL = "risk_p2"
+# 사전 등록 조건(2026-10-22 등록. 판정 결과를 보기 전에 고정. 바꾸려면 새 ID 로 등록한다)
+PREREGISTERED = {
+    "P1": "하락 위험 LightGBM(운영 46개·매주 재학습), 보정 없음, 3단계 비중",
+    "P2": "P1 과 같고 확률 보정(isotonic) 적용",
+    "P3": "합의: P2 위험 높음 표 + 로지스틱 회귀 위험 표 + 120일선 아래 표. 0~1표 100%, 2표 50%, 3표 0%",
+}
 
 # LLM 비용 한도 (SERVICE.md 섹션 10). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)

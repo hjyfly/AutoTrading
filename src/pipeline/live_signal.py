@@ -1,6 +1,6 @@
 """오늘(또는 지정한 날) 신호를 실시간 데이터로 만든다. 과거 검증(train.walk_forward)과 같은 규칙을 쓴다.
 
-- 숫자 모델: 그 달 첫 거래일을 재학습 시점으로 보고, 정답 기간이 그날 전에 끝난 행으로 LightGBM 을 학습해 t 행을 예측한다.
+- 숫자 모델: 재학습 주기(지금 매주)의 첫 거래일을 재학습 시점으로 보고, 정답 기간이 그날 전에 끝난 행으로 LightGBM 을 학습해 t 행을 예측한다.
   그래서 저장된 날짜에 대해 만들면 signals_numeric.parquet 과 같은 신호가 나온다.
 - 뉴스 보정: t 15:15 이후에만 만든다. 그날 구간 [t-1 15:15, t 15:15) 기사를 받아 선별·채점하고 고정 규칙으로 보정한다.
   LLM 을 7번 부르므로(약 $0.15) 사용자가 요청할 때만 돌린다.
@@ -43,6 +43,8 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
     start = block_start(t, table.index[table[cols].notna().all(axis=1)], valid_start)  # 과거 검증처럼 빈 값 없는 날로 재학습일을 정한다
     train = table[cols].dropna().join(labels[["label", "future_date"]], how="inner")
     train = train[train["future_date"] < start]
+    if config.TRAIN_WINDOW_YEARS:  # 과거 검증(walk_forward)과 같은 학습 창
+        train = train[train.index >= start - pd.DateOffset(years=config.TRAIN_WINDOW_YEARS)]
     if len(train) < config.MIN_TRAIN_ROWS:
         raise ValueError(f"학습 행 {len(train)}개 < 최소 {config.MIN_TRAIN_ROWS}개")
     model = LGBMClassifier(**config.LGBM_PARAMS)
@@ -55,6 +57,56 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
             **{f"p_{c}": float(proba[c]) for c in CLASSES},
             "retrained_on": start, "train_rows": len(train), "train_last_future_date": train["future_date"].max(),
             "data_sources": sources}
+
+
+RAW_KEYS = {"ohlcv": ("prices", "samsung_ohlcv"), "flows": ("prices", "samsung_investor_flows"),
+            **{n: ("macro", n) for n in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}},
+            **{n: ("prices", n) for n in config.KR_EXTRA}}
+
+
+def prepend_extended(raw: dict) -> dict:
+    """실시간 원본 앞에 4일차 확장 원본('<이름>_ext')을 붙인다. 확장 원본이 없거나 날짜가 겹치면 붙이지 않는다."""
+    out = dict(raw)
+    for key, (kind, name) in RAW_KEYS.items():
+        if key not in raw:
+            continue
+        ext = tools._load_raw(kind, name + config.EXT_SUFFIX)
+        if ext.empty or ext.index.max() >= raw[key].index.min():
+            continue
+        out[key] = pd.concat([ext[raw[key].columns.intersection(ext.columns)], raw[key]])
+    return out
+
+
+def risk_signal(as_of: str | None = None) -> dict:
+    """5일차 하락 위험 조건(config.LIVE_RISK_CONDITION, 지금 P2)의 오늘 목표 비중. 확장 원본까지 이어 붙여 판정 때와 같은
+    규칙(매주 재학습, 보정)으로 학습하고, 기준은 판정 기록(day5_judged.json)에 남은 개발 구간 값을 그대로 쓴다. 비교용이다."""
+    import json
+    from src.pipeline import backtest
+    from src.pipeline.labels import make_risk_labels
+    from src.pipeline.train import walk_forward_risk
+    judged = json.loads(Path(config.JUDGED_PATH).read_text(encoding="utf-8"))[config.LIVE_RISK_CONDITION]
+    t = tools.resolve_as_of(as_of)
+    if t.weekday() >= 5:
+        raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
+    raw, sources = tools.raw_until(t)
+    raw = prepend_extended(raw)
+    table = features.build_features(as_of=t, raw=raw)
+    if table.index[-1] != t:
+        raise ValueError(f"{t.date()} 행을 만들지 못했다")
+    cols = feature_columns(table, "base")
+    usable = table.index[table[cols].notna().all(axis=1)]
+    start = block_start(t, usable, valid_start=config.DEV_START)  # 확장 검증 시작일 기준(운영 VALID_START 로 자르지 않는다)
+    risk = walk_forward_risk(table, make_risk_labels(raw["ohlcv"]["Close"].dropna()), valid_start=start)
+    if t not in risk.index:
+        raise ValueError(f"{t.date()} 위험 확률을 만들지 못했다")
+    r = risk.loc[t]
+    col = "p_risk_cal" if config.LIVE_RISK_CONDITION == "P2" else "p_risk_raw"
+    weight = float(backtest.risk_weights(pd.Series([r[col]]), *judged["thresholds"][col]).iloc[0])
+    return {"date": t, "model": config.LIVE_RISK_MODEL, "signal": dict(zip(config.RISK_WEIGHTS, ("상승", "보합", "하락")))[weight],
+            "weight": weight, "p_risk": float(r[col]), "confidence": float(r[col]), "retrained_on": start,
+            "train_rows": int(r["train_rows"]), "train_last_future_date": r["train_last_future_date"],
+            "numeric_signal_label": None, "news_status": "하락 위험 비교 모델은 뉴스 보정 안 함",
+            "news_consensus": None, "news_consensus_conf": None, "data_sources": sources}
 
 
 def news_ready(t: pd.Timestamp, now: pd.Timestamp | None = None) -> bool:
@@ -98,6 +150,10 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
         extra.update(numeric_signal_label=extra["signal"], news_status="비교용 묶음은 뉴스 보정 안 함",
                      news_consensus=None, news_consensus_conf=None)
         save(extra)
+    try:  # 5일차 하락 위험 비교 조건(실패해도 운영 신호는 만든다). 시점 위반(AssertionError)은 그대로 멈춘다
+        save(risk_signal(as_of))
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        print(f"하락 위험 비교 신호 실패: {type(e).__name__}: {e}", flush=True)
     out = numeric_signal(as_of)
     t = out["date"]
     out.update(numeric_signal_label=out["signal"], news_status="요청 안 함", news_consensus=None, news_consensus_conf=None)

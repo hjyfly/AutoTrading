@@ -1,0 +1,84 @@
+{
+  "P1": {
+    "judged_at": "2026-10-22 15:00",
+    "report": "evaluation/reports/day5_judgement_P1_P2_P3.md",
+    "signals_sha256_16": "50af77b18bb09e92",
+    "thresholds": {
+      "p_risk_raw": [
+        0.04229692594161336,
+        0.2000683798585459
+      ],
+      "p_risk_cal": [
+        0.2125,
+        0.3
+      ],
+      "p_logit": [
+        0.20905126229465232,
+        0.40527197407844545
+      ]
+    },
+    "return": -0.25135763607966977,
+    "mdd": -0.33149362398702964,
+    "calmar": -0.6201410864858409,
+    "judge_a": false,
+    "calmar_beats_operational": false,
+    "up_month_hold": 0.810126582278481,
+    "up_month_ok": true
+  },
+  "P2": {
+    "judged_at": "2026-10-22 15:00",
+    "report": "evaluation/reports/day5_judgement_P1_P2_P3.md",
+    "signals_sha256_16": "50af77b18bb09e92",
+    "thresholds": {
+      "p_risk_raw": [
+        0.04229692594161336,
+        0.2000683798585459
+      ],
+      "p_risk_cal": [
+        0.2125,
+        0.3
+      ],
+      "p_logit": [
+        0.20905126229465232,
+        0.40527197407844545
+      ]
+    },
+    "return": -0.09947641726989886,
+    "mdd": -0.18785045138326228,
+    "calmar": -0.42544301047413824,
+    "judge_a": true,
+    "calmar_beats_operational": true,
+    "up_month_hold": 0.4936708860759494,
+    "up_month_ok": false,
+    "brier_raw": 0.3324258428399198,
+    "brier_cal": 0.26546597957384116,
+    "monotonic": false,
+    "calibration_ok": false
+  },
+  "P3": {
+    "judged_at": "2026-10-22 15:00",
+    "report": "evaluation/reports/day5_judgement_P1_P2_P3.md",
+    "signals_sha256_16": "50af77b18bb09e92",
+    "thresholds": {
+      "p_risk_raw": [
+        0.04229692594161336,
+        0.2000683798585459
+      ],
+      "p_risk_cal": [
+        0.2125,
+        0.3
+      ],
+      "p_logit": [
+        0.20905126229465232,
+        0.40527197407844545
+      ]
+    },
+    "return": -0.3181382586297179,
+    "mdd": -0.38594340796288384,
+    "calmar": -0.6800000699406404,
+    "judge_a": false,
+    "calmar_beats_operational": false,
+    "up_month_hold": 0.9367088607594937,
+    "up_month_ok": true
+  }
+}

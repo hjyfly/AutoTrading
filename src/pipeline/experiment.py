@@ -26,9 +26,9 @@ from src.pipeline import backtest as bt
 from src.pipeline import news_signal, scoreboard, train
 from src.pipeline.labels import DOWN, UP, make_labels
 
-TRAIN_KEYS = ("horizon_days", "threshold", "feature_set", "retrain_freq")
+TRAIN_KEYS = ("horizon_days", "threshold", "feature_set", "retrain_freq", "train_window")
 LABELS = {  # 보고서·화면에 쓰는 한국어 이름
-    "horizon_days": "정답 기간(거래일)", "threshold": "정답 기준(±)", "feature_set": "지표 묶음", "retrain_freq": "재학습 주기",
+    "horizon_days": "정답 기간(거래일)", "threshold": "정답 기준(±)", "feature_set": "지표 묶음", "retrain_freq": "재학습 주기", "train_window": "학습 창(년)",
     "execution": "체결 시점", "down_action": "하락 행동", "position_steps": "분할 단계", "position_floor": "기본 보유 비중", "news_mode": "뉴스 사용", "news_field": "뉴스 점수",
     "news_window": "뉴스 평균(채점일 수)", "news_risk_veto": "하락 위험 거부", "news_min_score": "보정 점수 기준",
     "news_min_conf": "보정 확신도 기준", "start": "시작", "end": "끝",
@@ -40,14 +40,29 @@ CHOICES = {  # 고를 수 있는 값이 정해진 조건
 
 
 class Data:
-    """실험마다 다시 읽지 않도록 원본 표와 학습 결과를 한 번만 읽고 보관한다."""
+    """실험마다 다시 읽지 않도록 원본 표와 학습 결과를 한 번만 읽고 보관한다.
 
-    def __init__(self):
+    extended=True 면 4일차 확장 원본·특징 표로 확장 검증 구간(처음 보는 구간)을 비교한다. 뉴스 점수는 쓰지 않는다.
+    """
+    extended, valid_start, period_end = False, None, None  # 테스트용 가짜 데이터는 기존 검증 구간을 쓴다
+
+    def __init__(self, extended: bool = False):
         raw = Path(config.RAW_DIR) / "prices"
+        self.extended = extended
         self.samsung = pd.read_parquet(raw / "samsung_ohlcv.parquet")
         self.inverse = pd.read_parquet(raw / f"inverse_{config.INVERSE_ETF_CODE}.parquet")
-        self.features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
-        self.scores = pd.read_parquet(config.SCORES_PATH) if Path(config.SCORES_PATH).exists() else None
+        if extended:
+            ext = pd.read_parquet(raw / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")
+            self.samsung = pd.concat([ext, self.samsung]).sort_index()
+            if not self.samsung.index.is_unique:  # 겹치면 정답 계산이 어긋난다
+                raise ValueError("확장 원본과 기존 원본의 날짜가 겹친다")
+            self.features = pd.read_parquet(config.FEATURES_EXT_PATH)
+            self.valid_start = str(train.ext_valid_start(self.features).date())
+            self.period_end = config.EXT_VALID_END
+            self.scores = None
+        else:
+            self.features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
+            self.scores = pd.read_parquet(config.SCORES_PATH) if Path(config.SCORES_PATH).exists() else None
         self._signals = {}
 
     def labels(self, horizon: int, threshold: float) -> pd.DataFrame:
@@ -59,7 +74,8 @@ class Data:
         key = tuple(cfg[k] for k in TRAIN_KEYS)
         if key not in self._signals:
             labels = self.labels(cfg["horizon_days"], cfg["threshold"])
-            self._signals[key] = train.walk_forward(self.features, labels, feature_set=cfg["feature_set"], freq=cfg["retrain_freq"])
+            self._signals[key] = train.walk_forward(self.features, labels, valid_start=self.valid_start, feature_set=cfg["feature_set"],
+                                                    freq=cfg["retrain_freq"], window_years=cfg["train_window"] or 0)  # 0 = 누적 전체(config 값과 상관없이)
         return self._signals[key]
 
     def news_range(self) -> tuple[pd.Timestamp, pd.Timestamp] | None:
@@ -97,7 +113,7 @@ def default_period(cfgs: list[dict], data: Data) -> tuple[str, str]:
         if rng is None:
             raise ValueError("뉴스를 쓰는 조건이 있는데 뉴스 점수 표가 없다")
         return str(rng[0].date()), str(rng[1].date())
-    return config.VALID_START, config.DATA_END
+    return data.valid_start or config.VALID_START, data.period_end or config.DATA_END
 
 
 def run_one(cfg: dict, data: Data) -> dict:
@@ -231,6 +247,7 @@ AXIS_NOTES = {  # 조건마다 무엇을 뜻하고 바꾸면 보통 어떤 득�
                  "정답 자체가 바뀌므로 방향 적중률은 같은 기준끼리만 비교한다.",
     "horizon_days": "몇 거래일 뒤의 방향을 맞히는지다. 짧으면 단기 잡음이 커지고 신호가 자주 바뀌며, 길면 추세를 보지만 방향 전환을 늦게 따라간다. "
                     "정답이 바뀌므로 방향 적중률은 같은 기간끼리만 비교한다.",
+    "train_window": "재학습 때 최근 몇 년의 행만 쓸지다. 누적 전체는 여러 장세를 배우지만 오래된 장세에 끌려가고, 짧은 창은 최근 흐름에 빨리 맞추지만 표본이 줄어든다.",
     "retrain_freq": "모델을 다시 학습하는 간격이다. 자주 하면 최근 흐름을 빨리 반영하지만 잡음에 흔들리고, 드물게 하면 안정적이지만 국면 변화에 늦다.",
     "execution": "t 종가 체결은 15:15 신호 뒤 장 마감 동시호가에 사는 가정, t+1 시가는 다음 날 아침에 사는 가정이다. 차이는 밤사이 해외 시장과 장 시작 갭의 몫이다.",
     "position_steps": "신호 한 번에 비중을 얼마나 바꿀지다. 단계를 늘리면 틀린 신호 하나의 손실이 줄지만 맞는 신호의 수익도 늦게 따라간다.",
@@ -252,6 +269,8 @@ def value_label(key: str, value) -> str:
     """조건 값의 한국어 표시."""
     names = {**config.RETRAIN_FREQS, **config.EXECUTIONS, **config.DOWN_ACTION_LABELS, **config.NEWS_SCORE_FIELDS,
              "none": "숫자 모델만", "adjust": "뉴스 보정", "base": f"운영 지표({len(config.FEATURE_SET_BASE)}개)", "base_v1": f"1~3일차 지표({len(config.FEATURE_SET_BASE_V1)}개)", "candidate": "후보 지표"}
+    if key == "train_window":
+        return "누적 전체" if value is None else f"최근 {value}년"
     if value is None:
         return "없음"
     if key == "feature_set" and str(value).startswith(config.FEATURE_GROUP_PREFIX):
@@ -585,8 +604,11 @@ def feature_study(data: Data | None = None, save: bool = True) -> dict:
             recommended = {"feature_set": name, "removed": picked["빼기"], "added": picked["더하기"], **row}
     study = pd.DataFrame(rows)
     report = study_report(study, b, recommended)
+    if data.extended:
+        report = report.replace("# 지표 그룹 진단", "# 지표 그룹 진단 (확장 검증 구간: 처음 보는 데이터)", 1)
     if save:
-        Path(config.FEATURE_STUDY_REPORT_PATH).write_text(report, encoding="utf-8", newline="\n")
+        path = config.FEATURE_STUDY_EXT_REPORT_PATH if data.extended else config.FEATURE_STUDY_REPORT_PATH
+        Path(path).write_text(report, encoding="utf-8", newline="\n")
     return {"report": report, "table": study, "base": b, "curves": curves, "recommended": recommended}
 
 
@@ -646,8 +668,8 @@ def parse_value(key: str, text: str):
     text = text.strip()
     base = config.EXPERIMENT_BASE[key]
     if text.lower() in ("none", ""):
-        return None if key in ("news_risk_veto", "start", "end") else base  # 빈 값은 기본 조건으로
-    if key in ("horizon_days", "news_window", "news_risk_veto", "position_steps"):
+        return None if key in ("news_risk_veto", "train_window", "start", "end") else base  # 빈 값은 기본 조건으로
+    if key in ("horizon_days", "news_window", "news_risk_veto", "position_steps", "train_window"):
         return int(text)
     if key in ("threshold", "news_min_score", "news_min_conf", "position_floor"):
         return float(text)
@@ -663,12 +685,13 @@ def main(argv=None):
     parser.add_argument("--note", default="", help="보고서에 남길 메모")
     parser.add_argument("--monitor", action="store_true", help="사전 등록한 조건으로 모니터링 리포트를 만든다")
     parser.add_argument("--features", action="store_true", help="지표 그룹 진단과 추천 리포트를 만든다")
+    parser.add_argument("--ext", action="store_true", help="4일차 확장 검증 구간(처음 보는 구간)에서 비교한다")
     args = parser.parse_args(argv)
     if args.features:
-        result = feature_study()
+        result = feature_study(Data(extended=args.ext))
         rec = result["recommended"]
         print("추천 묶음:", rec["feature_set"] if rec else "없음(기존 묶음 유지)")
-        print("저장:", config.FEATURE_STUDY_REPORT_PATH)
+        print("저장:", config.FEATURE_STUDY_EXT_REPORT_PATH if args.ext else config.FEATURE_STUDY_REPORT_PATH)
         return
     if args.monitor:
         result = monitor()
@@ -683,7 +706,7 @@ def main(argv=None):
     for item in args.vary:
         key, values = item.split("=", 1)
         vary[key] = [parse_value(key, v) for v in values.split(",")]
-    table, _ = compare(expand(base, vary))
+    table, _ = compare(expand(base, vary), Data(extended=args.ext))
     stamp = pd.Timestamp.now(tz=config.KST).strftime("%Y%m%d_%H%M")
     out_dir = Path(config.EXPERIMENT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)

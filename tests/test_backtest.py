@@ -261,3 +261,49 @@ def test_구간_성적_손계산과_구간_뒤_정답_제외():
     assert r["hold"]["total_return"] == pytest.approx(0.999 * 1.045 - 1)
     assert r["accuracy"] == 1.0  # 마지막 날 정답은 구간 끝 뒤에 확정돼 빠진다(앞 3일은 모두 맞음)
     assert r["hold_share"] == pytest.approx(0.5)  # 1·2일 보유, 3일 하락으로 현금, 4일 보합 유지
+
+
+def test_목표_비중_모의_매매_손계산():
+    days = pd.bdate_range("2026-01-05", periods=3)
+    result = bt.simulate_target(pd.Series([1.0, 0.5, 0.5], index=days), pd.Series([100.0, 110.0, 99.0], index=days))
+    eq1 = 0.999 * 1.1
+    eq1_after = eq1 - 0.5 * eq1 * 0.001
+    assert result["equity"].iloc[1] == pytest.approx(eq1_after)
+    assert result["equity"].iloc[2] == pytest.approx(eq1_after * (0.5 + 0.5 * 0.9))
+    with pytest.raises(ValueError):
+        bt.simulate_target(pd.Series([1.5], index=days[:1]), pd.Series([100.0], index=days[:1]))
+
+
+def test_위험_비중은_기준에_따라_세_단계():
+    p = pd.Series([0.1, 0.5, 0.9])
+    assert bt.risk_weights(p, 0.4, 0.8).tolist() == list(config.RISK_WEIGHTS)
+
+
+def test_5일차_판정은_장부에_없거나_이미_판정한_조건을_거부한다(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setattr(config, "JUDGED_PATH", str(tmp_path / "judged.json"))
+    with pytest.raises(ValueError):
+        bt.day5_judge(["P9"])
+    (tmp_path / "judged.json").write_text(json.dumps({"P1": {}}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        bt.day5_judge(["P1"])
+
+
+def test_합의_표_규칙과_상승장_달_보유일():
+    days = pd.bdate_range("2026-01-05", periods=4)
+    risk = pd.DataFrame({"p_risk_raw": [0.9, 0.9, 0.1, 0.9], "p_risk_cal": [0.9, 0.9, 0.1, 0.9],
+                         "p_logit": [0.9, 0.1, 0.1, 0.9], "trend_vote": [1, 1, 1, 0]}, index=days)
+    th = {"p_risk_raw": (0.5, 0.8), "p_risk_cal": (0.5, 0.8), "p_logit": (0.5, 0.8)}
+    assert bt.day5_weights(risk, th)["P3"].tolist() == [0.0, 0.5, 1.0, 0.5]
+    close = pd.Series([100.0, 110.0, 99.0, 108.9], index=days)
+    share, n = bt.up_month_hold(pd.Series([1.0, 0.5, 0.0, 1.0], index=days), close)
+    assert n == 1 and share == pytest.approx(0.75)
+    r = bt.day5_period(pd.Series([1.0, 0.5, 0.0, 1.0], index=days), close, days[0], days[-1])
+    assert r["model"]["total_return"] == pytest.approx(0.0418959, abs=1e-6) and not r["judge_a"]["passed"]
+
+
+def test_보정_단조_확인은_표본이_적은_구간을_뺀다():
+    p = pd.Series([0.05] * 20 + [0.15] * 20 + [0.95] * 5)
+    y = pd.Series([0] * 18 + [1] * 2 + [0] * 15 + [1] * 5 + [0] * 5)
+    c = bt.calibration_check(p, y)
+    assert c["monotonic"] and c["brier"] > 0  # 0.9~1.0 구간은 5일이라 뺀다

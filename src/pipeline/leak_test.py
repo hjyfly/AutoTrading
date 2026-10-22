@@ -39,9 +39,9 @@ def question(date: str, anonymize: bool) -> str:
             f"그리고 {when} 이후에 일어났다고 네가 알고 있는 경제·산업·{target} 관련 사건을 날짜와 함께 모두 적어라. 모르면 빈 목록으로 둔다.")
 
 
-def pick_dates(labels: pd.DataFrame) -> list[pd.Timestamp]:
-    """뉴스 구간에서 정답이 있는 거래일 중 고르게 LEAK_TEST_DAYS 개를 고른다."""
-    days = labels.loc[config.CRITERION_B_START:config.CRITERION_B_END].index
+def pick_dates(labels: pd.DataFrame, start=None, end=None) -> list[pd.Timestamp]:
+    """시험 구간(기본 기준 B 구간)에서 정답이 있는 거래일 중 고르게 LEAK_TEST_DAYS 개를 고른다."""
+    days = labels.loc[start or config.CRITERION_B_START:end or config.CRITERION_B_END].index
     idx = np.linspace(0, len(days) - 1, config.LEAK_TEST_DAYS).round().astype(int)
     return list(days[np.unique(idx)])
 
@@ -60,12 +60,12 @@ def binomial_p_at_least(k: int, n: int, p: float) -> float:
     return sum(math.comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k, n + 1))
 
 
-def run(anonymize: bool = False, model=None) -> pd.DataFrame:
+def run(anonymize: bool = False, model=None, start=None, end=None) -> pd.DataFrame:
     """날짜마다 질문하고 정답과 비교한 표를 돌려준다."""
     labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")
     model = (model or llm.get_scoring_llm()).with_structured_output(LeakAnswer)
     rows = []
-    for d in pick_dates(labels):
+    for d in pick_dates(labels, start, end):
         ans = model.invoke([HumanMessage(question(str(d.date()), anonymize))])
         kinds = [classify_event_date(e.date, d) for e in ans.events_after]
         rows.append({
@@ -76,9 +76,9 @@ def run(anonymize: bool = False, model=None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def judge(result: pd.DataFrame, labels: pd.DataFrame) -> dict:
+def judge(result: pd.DataFrame, labels: pd.DataFrame, start=None, end=None) -> dict:
     """통과 기준 ① 적중률이 가장 많은 정답 비율보다 통계적으로 높지 않다 ② 이후(당일 포함)이거나 날짜가 불분명한 사건 언급 0건."""
-    share = labels.loc[config.CRITERION_B_START:config.CRITERION_B_END, "label"].value_counts(normalize=True)
+    share = labels.loc[start or config.CRITERION_B_START:end or config.CRITERION_B_END, "label"].value_counts(normalize=True)
     n, k = len(result), int((result["answer"] == result["truth"]).sum())
     p_value = binomial_p_at_least(k, n, share.max())
     events = int(result["events_after_dated"].sum() + result.get("events_undated", pd.Series(dtype=int)).sum())
@@ -100,7 +100,7 @@ def write_report(results: dict[str, tuple[pd.DataFrame, dict]]) -> Path:
                   f"→ {'통과' if verdict['pass_accuracy'] else '실패'} (p ≥ {config.LEAK_TEST_ALPHA})",
                   f"- ② 기준 날짜 당일·이후이거나 날짜가 불분명한 사건 언급 {verdict['events_after']}건 → {'통과' if verdict['pass_events'] else '실패'}",
                   f"- 답 분포: {result['answer'].value_counts().to_dict()}",
-                  "- 한계: 20일·기준선 61.7%에서는 17일 이상 맞혀야 ①이 실패한다. 모델이 한 답만 고르면 ①은 가려내는 힘이 약하다. "
+                  f"- 한계: {verdict['n']}일·기준선 {verdict['baseline']:.1%}에서는 모델이 한 답만 고르면 ①은 가려내는 힘이 약하다. "
                   "지식 기준 시점이 더 늦은 모델로 바꾸면 반드시 다시 돌리고, 실제 채점 프롬프트로도 시험한다.", ""]
         lines += ["| 날짜 | 답 | 정답 | 확신도 | 언급한 사건 |", "|---|---|---|---|---|"]
         for r in result.itertuples():
@@ -116,11 +116,14 @@ def main():
     """실명으로 시험하고, 실패하면 익명화해서 다시 시험한 뒤 보고서를 쓴다."""
     labels = pd.read_parquet(Path(config.PROCESSED_DIR) / "labels.parquet")
     results = {}
-    plain = run(anonymize=False)
-    results["실명 시험"] = (plain, judge(plain, labels))
-    if not results["실명 시험"][1]["passed"]:
-        anon = run(anonymize=True)
-        results["익명화 재시험"] = (anon, judge(anon, labels))
+    periods = [("기준 B 구간", config.CRITERION_B_START, config.CRITERION_B_END), ("넓힌 뉴스 구간", config.NEWS_START, config.NEWS_END)]
+    for title, start, end in periods:  # 기준 B 판정 구간과, 넓힌 뉴스 채점 구간을 따로 시험한다
+        name = f"실명 시험 · {title} {start} ~ {end}"
+        plain = run(anonymize=False, start=start, end=end)
+        results[name] = (plain, judge(plain, labels, start, end))
+        if not results[name][1]["passed"]:
+            anon = run(anonymize=True, start=start, end=end)
+            results[f"익명화 재시험 · {title}"] = (anon, judge(anon, labels, start, end))
     print(write_report(results))
     for name, (_, v) in results.items():
         print(name, "통과" if v["passed"] else "실패", f"적중 {v['hits']}/{v['n']}, p={v['p_value']:.3f}, 이후 사건 {v['events_after']}건")

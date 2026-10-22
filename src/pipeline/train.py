@@ -60,12 +60,14 @@ def prediction_chunks(dates: pd.DatetimeIndex, valid_start, freq: str | None = N
 
 
 def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None, feature_set: str | None = None,
-                 freq: str | None = None) -> pd.DataFrame:
+                 freq: str | None = None, window_years: int | None = None) -> pd.DataFrame:
     """재학습 주기(기본 매월)의 첫 예측일에 다시 학습하고 그 기간 거래일마다 신호와 클래스 확률을 낸다.
 
     학습 행은 정답 기간이 끝나는 날(future_date)이 그 달 첫 예측일보다 앞선 것만 쓴다(정답이 검증 구간과 겹치지 않게).
     feature_set 은 config.FEATURE_SETS 의 이름('base' = 1~3일차 모델, 'candidate' = A+B+D 추가 후보) 또는 그룹 묶음 이름('groups:...').
+    window_years 를 주면 재학습 시점에서 그 햇수 안의 행만 학습한다(기본 config.TRAIN_WINDOW_YEARS, None = 누적 전체).
     """
+    window_years = config.TRAIN_WINDOW_YEARS if window_years is None else window_years
     cols = feature_columns(features, feature_set)
     X_all = features[cols]
     assert_no_lookahead(X_all)
@@ -74,6 +76,8 @@ def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None,
     rows = []
     for start, days in prediction_chunks(usable.index, valid_start or config.VALID_START, freq):
         train = train_pool[train_pool["future_date"] < start]
+        if window_years:
+            train = train[train.index >= start - pd.DateOffset(years=window_years)]
         if len(train) < config.MIN_TRAIN_ROWS:
             raise ValueError(f"{start.date()} 재학습: 학습 행 {len(train)}개 < 최소 {config.MIN_TRAIN_ROWS}개")
         if train["future_date"].max() >= start:
@@ -116,6 +120,76 @@ def main():
         print("  신호 분포", signals["signal"].value_counts(normalize=True).round(3).to_dict())
 
 
+def _logit_model():
+    """합의용 로지스틱 회귀(표준화 + 규제 C, 설정은 조정하지 않는다)."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    return make_pipeline(StandardScaler(), LogisticRegression(C=config.LOGIT_C, max_iter=config.LOGIT_MAX_ITER))
+
+
+def _risk_lgbm():
+    """하락 위험 2분류 LightGBM(운영과 같은 설정)."""
+    return LGBMClassifier(**config.LGBM_PARAMS)
+
+
+def walk_forward_risk(features: pd.DataFrame, risk_labels: pd.DataFrame, valid_start, feature_set: str = "base",
+                      freq: str | None = None) -> pd.DataFrame:
+    """5일차 하락 위험 워크포워드. 재학습 시점마다 정답 기간이 그 전에 끝난 행만 학습한다(walk_forward 와 같은 간격 규칙).
+
+    p_risk_raw: 학습 행 전체로 맞춘 LightGBM 위험 확률
+    p_risk_cal: 학습 행의 앞쪽으로 LightGBM 을 맞추고, 정답이 그 뒤에 시작하는 마지막 CALIBRATION_SHARE 로 isotonic 보정
+                (보정용 행이 CALIBRATION_MIN_ROWS 보다 적으면 p_risk_raw 그대로)
+    p_logit: 같은 지표·같은 학습 행의 로지스틱 회귀 위험 확률
+    """
+    from sklearn.isotonic import IsotonicRegression
+    cols = feature_columns(features, feature_set)
+    X_all = features[cols]
+    assert_no_lookahead(X_all)
+    usable = X_all.dropna()
+    pool = usable.join(risk_labels[["risk", "future_date"]], how="inner")
+    rows = []
+    for start, days in prediction_chunks(usable.index, valid_start, freq):
+        train = pool[pool["future_date"] < start]
+        if len(train) < config.MIN_TRAIN_ROWS:
+            raise ValueError(f"{start.date()} 재학습: 학습 행 {len(train)}개 < 최소 {config.MIN_TRAIN_ROWS}개")
+        X = usable.loc[days, cols]
+        full = _risk_lgbm().fit(train[cols], train["risk"])
+        p_raw = full.predict_proba(X)[:, 1]
+        cal_start = train.index[int(len(train) * (1 - config.CALIBRATION_SHARE))]
+        fit_part = train[train["future_date"] < cal_start]  # 보정용 행의 정답과 겹치지 않게
+        cal_part = train[train.index >= cal_start]
+        if len(cal_part) >= config.CALIBRATION_MIN_ROWS and len(fit_part) >= config.MIN_TRAIN_ROWS and cal_part["risk"].nunique() == 2:
+            part = _risk_lgbm().fit(fit_part[cols], fit_part["risk"])
+            iso = IsotonicRegression(out_of_bounds="clip", y_min=0, y_max=1).fit(part.predict_proba(cal_part[cols])[:, 1], cal_part["risk"])
+            p_cal, calibrated = iso.predict(part.predict_proba(X)[:, 1]), True
+        else:
+            p_cal, calibrated = p_raw, False
+        p_logit = _logit_model().fit(train[cols], train["risk"]).predict_proba(X)[:, 1]
+        rows.append(pd.DataFrame({"p_risk_raw": p_raw, "p_risk_cal": p_cal, "p_logit": p_logit, "calibrated": calibrated,
+                                  "retrained_on": start, "train_rows": len(train),
+                                  "train_last_future_date": train["future_date"].max()}, index=days))
+    out = pd.concat(rows)
+    out.index.name = "date"
+    if (out["train_last_future_date"] >= out["retrained_on"]).any():
+        raise AssertionError("학습 정답 기간이 예측 시작일과 겹친다")
+    return out
+
+
+def main_risk():
+    """5일차: 확장 특징 표로 하락 위험 워크포워드를 돌려 SIGNALS_RISK_PATH 에 저장한다(운영 신호는 바꾸지 않는다)."""
+    from src.pipeline.labels import make_risk_labels
+    features = pd.read_parquet(config.FEATURES_EXT_PATH)
+    raw = Path(config.RAW_DIR) / "prices"
+    close = pd.concat([pd.read_parquet(raw / f"samsung_ohlcv{config.EXT_SUFFIX}.parquet")["Close"],
+                       pd.read_parquet(raw / "samsung_ohlcv.parquet")["Close"]]).sort_index()
+    out = walk_forward_risk(features, make_risk_labels(close), ext_valid_start(features))
+    out["trend_vote"] = (features.loc[out.index, config.TREND_MA] < 0).astype(int)  # t-1 종가까지로 만든 지표
+    out.to_parquet(config.SIGNALS_RISK_PATH)
+    print(config.SIGNALS_RISK_PATH, len(out), out.index.min().date(), "~", out.index.max().date(),
+          f"재학습 {out['retrained_on'].nunique()}회, 보정한 덩어리 {int(out.groupby('retrained_on')['calibrated'].first().sum())}")
+
+
 def ext_valid_start(features: pd.DataFrame, feature_set: str = "base") -> pd.Timestamp:
     """확장 검증 시작일(고정 규칙): 운영 지표가 모두 있는 첫날부터 EXT_FIRST_TRAIN_MONTHS 개월 뒤의 첫 거래일."""
     usable = features[feature_set_columns(feature_set)].dropna().index
@@ -137,4 +211,7 @@ def main_ext():
 
 if __name__ == "__main__":
     import sys
-    main_ext() if "--ext" in sys.argv[1:] else main()
+    if "--risk" in sys.argv[1:]:
+        main_risk()
+    else:
+        main_ext() if "--ext" in sys.argv[1:] else main()
