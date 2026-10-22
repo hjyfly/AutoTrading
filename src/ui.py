@@ -103,8 +103,7 @@ def experiment_tab():
         if st.button("보고서로 저장"):
             stamp = pd.Timestamp.now(tz=config.KST).strftime("%Y%m%d_%H%M")
             path = Path(config.EXPERIMENT_REPORT_DIR) / f"experiments_{stamp}_ui.md"
-            path.write_text(f"# 조건 비교 실험 {stamp}\n\n" + experiment.to_markdown(table), encoding="utf-8", newline="
-")
+            path.write_text(f"# 조건 비교 실험 {stamp}\n\n" + experiment.to_markdown(table), encoding="utf-8", newline="\n")
             st.success(f"저장: {path}")
 
 
