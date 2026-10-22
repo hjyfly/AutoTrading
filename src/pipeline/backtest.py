@@ -43,6 +43,38 @@ def simulate(signals: pd.Series, samsung_close: pd.Series, inverse_close: pd.Ser
     return pd.DataFrame(rows).set_index("date")
 
 
+def simulate_split(signals: pd.Series, samsung_close: pd.Series, steps: int | None = None, floor: float | None = None) -> pd.DataFrame:
+    """분할 매매 모의 매매. t일 신호대로 t일 종가에 체결하고 현금으로 시작한다(하락 행동은 현금만).
+
+    목표 비중: 상승 → +1/steps(최대 1), 하락 → -1/steps(최소 floor), 보합 → 유지(첫날은 floor).
+    목표 비중이 바뀐 날만 그 비중에 맞춰 사고판다. 그 사이에는 가격 변동으로 실제 비중이 움직이게 둔다.
+    수수료는 사고판 금액의 FEE_RATE 다(부분 매매에서는 수수료를 떼기 전 금액 기준이라 FEE_RATE² 수준의 근사). 1단계·바닥 0 이면 simulate(down_action="cash") 와 같은 결과다.
+    """
+    steps = config.POSITION_STEPS if steps is None else steps
+    floor = config.POSITION_FLOOR if floor is None else floor
+    if steps < 1 or not 0 <= floor <= 1:
+        raise ValueError(f"분할 단계는 1 이상, 바닥 비중은 0~1 이어야 한다: {steps}, {floor}")
+    dates = signals.index.sort_values()
+    closes = samsung_close.reindex(dates)
+    if closes.isna().any():
+        raise ValueError("신호 날짜에 가격이 없다")
+    stock, cash, level, rows = 0.0, 1.0, 0.0, []
+    for i, t in enumerate(dates):
+        if i > 0:
+            stock *= closes[t] / closes[dates[i - 1]]
+        base = max(level, floor)  # 바닥 아래에서 시작하지 않는다(첫 상승에도 바닥 비중부터 채운다)
+        new_level = {UP: min(1.0, base + 1 / steps), DOWN: max(floor, level - 1 / steps)}.get(signals[t], base)
+        equity, fee = stock + cash, 0.0
+        if abs(new_level - level) > EPS:
+            cost = abs(new_level * equity - stock) * config.FEE_RATE  # 사고판 금액의 수수료를 자산에서 뗀 뒤 목표 비중으로 나눈다
+            fee = cost / equity
+            equity -= cost
+            stock, cash, level = new_level * equity, (1 - new_level) * equity, new_level
+        rows.append({"date": t, "signal": signals[t], "position": LONG if level > EPS else CASH, "weight": level,
+                     "fee": fee, "equity": stock + cash})
+    return pd.DataFrame(rows).set_index("date")
+
+
 def buy_and_hold(samsung_close: pd.Series, dates: pd.DatetimeIndex) -> pd.Series:
     """구간 첫날 종가에 삼성전자를 사서(수수료 한 번) 끝까지 들고 있을 때의 자산."""
     prices = samsung_close.reindex(dates.sort_values())

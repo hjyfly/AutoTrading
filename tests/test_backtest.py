@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -189,3 +190,45 @@ def test_공식_구간은_데이터가_늘어도_그대로다(monkeypatch, tmp_p
     assert short["judge_a"]["model"] == longer["judge_a"]["model"]
     assert longer["judge_a"]["model"]["mdd"] == pytest.approx(0.9 * 0.999 - 1)  # 110 → 99 하락 뒤 매도 수수료
     assert longer["direction"]["n"] == short["direction"]["n"] == 1  # 3일째 신호 정답(4일째 종가)은 구간 뒤라 빠진다
+
+
+def test_분할_매매_1단계_바닥_0은_전량_현금_규칙과_같다():
+    rng = np.random.default_rng(1)
+    days = pd.bdate_range("2026-01-05", periods=60)
+    samsung = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.02, len(days)))), index=days)
+    signals = pd.Series(rng.choice([UP, FLAT, DOWN], len(days)), index=days)
+    whole = bt.simulate(signals, samsung, pd.Series(dtype=float), down_action="cash")
+    split = bt.simulate_split(signals, samsung, steps=1, floor=0.0)
+    assert np.allclose(whole["equity"], split["equity"]) and (whole["fee"] > 0).sum() == (split["fee"] > 0).sum()
+
+
+def test_분할_매매_손계산():
+    days = pd.bdate_range("2026-01-05", periods=4)
+    samsung = pd.Series([100.0, 110.0, 110.0, 99.0], index=days)
+    result = bt.simulate_split(pd.Series([UP, UP, DOWN, FLAT], index=days), samsung, steps=2, floor=0.0)
+    assert result["weight"].tolist() == [0.5, 1.0, 0.5, 0.5]
+    fee = config.FEE_RATE
+    eq0 = 1 - 0.5 * fee                                   # 첫날 절반 매수(수수료를 뗀 뒤 절반씩)
+    stock1 = 0.5 * eq0 * 1.1                              # 주식 절반이 10% 오름
+    eq1 = stock1 + 0.5 * eq0
+    eq1 -= (eq1 - stock1) * fee                           # 100% 로 늘림
+    assert result["equity"].iloc[1] == pytest.approx(eq1)
+    assert result["equity"].iloc[3] == pytest.approx(result["equity"].iloc[2] - 0.5 * result["equity"].iloc[2] * 0.1, rel=1e-6)
+
+
+def test_분할_매매_바닥_비중은_하락에도_남긴다():
+    days = pd.bdate_range("2026-01-05", periods=3)
+    result = bt.simulate_split(pd.Series([FLAT, DOWN, DOWN], index=days), pd.Series(100.0, index=days), steps=2, floor=0.5)
+    assert result["weight"].tolist() == [0.5, 0.5, 0.5]
+
+
+def test_분할_매매_첫_상승도_바닥_아래로_가지_않고_하락에_사지_않는다():
+    days = pd.bdate_range("2026-01-05", periods=3)
+    result = bt.simulate_split(pd.Series([UP, DOWN, DOWN], index=days), pd.Series(100.0, index=days), steps=3, floor=0.5)
+    assert result["weight"].tolist() == pytest.approx([0.5 + 1 / 3, 0.5, 0.5]) and result["fee"].iloc[2] == 0
+
+
+def test_분할_단계_0은_거부한다():
+    days = pd.bdate_range("2026-01-05", periods=2)
+    with pytest.raises(ValueError):
+        bt.simulate_split(pd.Series([UP, UP], index=days), pd.Series(100.0, index=days), steps=0)

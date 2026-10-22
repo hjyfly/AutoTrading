@@ -52,11 +52,13 @@ def experiment_data() -> experiment.Data:
 
 def experiment_tab():
     """모니터링 리포트 보기와 조건 조회를 하위 탭으로 나눠 보여 준다. 결과는 모두 탐색이다."""
-    sub_report, sub_query = st.tabs(["모니터링 리포트", "조건 조회"])
+    sub_report, sub_query, sub_features = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단"])
     with sub_report:
         monitor_report_view()
     with sub_query:
         condition_query_view()
+    with sub_features:
+        feature_study_view()
 
 
 def monitor_report_view():
@@ -121,6 +123,37 @@ def condition_query_view():
             path = Path(config.EXPERIMENT_REPORT_DIR) / f"experiments_{stamp}_ui.md"
             path.write_text(f"# 조건 비교 실험 {stamp}\n\n" + experiment.to_markdown(table), encoding="utf-8", newline="\n")
             st.success(f"저장: {path}")
+
+
+def feature_study_view():
+    """지표 그룹을 빼고 더해 본 진단·추천 리포트와, 그룹을 직접 골라 기존 지표와 비교하는 폼."""
+    st.caption("기존 지표를 그룹 단위로 하나씩 빼고 후보 그룹을 하나씩 더해 다시 학습한 **탐색 결과**다. 추천 묶음도 운영 신호를 바꾸지 않고, "
+               "config.LIVE_EXTRA_FEATURE_SETS 에 넣으면 실시간 성적표에서 앞으로의 날로 함께 채점된다.")
+    report_path = Path(config.FEATURE_STUDY_REPORT_PATH)
+    if st.button("지표 그룹 진단 다시 계산"):
+        with st.spinner("계산 중(그룹마다 다시 학습해 몇 분 걸린다)"):
+            st.session_state.feature_study = experiment.feature_study(experiment_data())
+    if "feature_study" in st.session_state:
+        st.line_chart(pd.DataFrame(st.session_state.feature_study["curves"]))
+    with st.form("feature_group_form"):
+        groups = st.multiselect("직접 고를 지표 그룹", list(config.FEATURE_GROUPS), default=config.FEATURE_GROUPS_BASE,
+                                format_func=lambda g: f"{config.FEATURE_GROUP_LABELS[g]} ({len(config.FEATURE_GROUPS[g])}개)")
+        submitted = st.form_submit_button("기존 지표와 비교")
+    if submitted:
+        if not groups:
+            st.warning("그룹을 하나 이상 고른다.")
+        else:
+            name = experiment.train.group_set_name(groups)
+            with st.spinner("계산 중"):
+                table, curves = experiment.compare(experiment.expand(dict(config.EXPERIMENT_BASE), {"feature_set": ["base", name]}),
+                                                   experiment_data())
+            st.markdown(experiment.to_markdown(table))
+            st.line_chart(pd.DataFrame(curves))
+            st.caption(f"이 묶음 이름: `{name}`")
+    if report_path.exists():
+        st.markdown(report_path.read_text(encoding="utf-8"))
+    else:
+        st.info("아직 진단 리포트가 없다. 위 버튼으로 만든다.")
 
 
 @st.cache_data(ttl=600)

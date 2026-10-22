@@ -121,3 +121,49 @@ def test_모니터링은_하나씩_바꾼_조건과_해석을_만든다(monkeypa
 ])
 def test_기준_대비_변화_분류(d_ret, d_mdd, expected):
     assert expected in ex.change_kind(d_ret, d_mdd)
+
+
+def test_지표_그룹은_겹치지_않고_기존과_후보_묶음을_나눈다():
+    from src.pipeline import train
+    groups = config.FEATURE_GROUPS
+    all_cols = [c for g in groups.values() for c in g]
+    assert len(all_cols) == len(set(all_cols))
+    assert set(all_cols) == set(config.FEATURE_SETS["candidate"])
+    assert train.feature_set_columns(train.group_set_name(config.FEATURE_GROUPS_BASE)) == config.FEATURE_SETS["base"]  # 순서까지 같다
+
+
+def test_그룹_묶음_이름은_고른_순서와_상관없고_모르는_그룹은_거부한다():
+    from src.pipeline import train
+    assert train.group_set_name(["flow", "price"]) == train.group_set_name(["price", "flow"]) == "groups:price+flow"
+    with pytest.raises(ValueError):
+        train.feature_set_columns("groups:price+nothing")
+    with pytest.raises(ValueError):
+        ex.run_one({**config.EXPERIMENT_BASE, "feature_set": "groups:nothing"}, FakeData())
+
+
+@pytest.mark.parametrize("acc, ret, mdd, expected, rec", [
+    (0.05, 0.0, -0.40, "정확도 좋아짐", True), (0.05, -0.1, -0.40, "수익 나빠짐", False),
+    (0.0, 0.0, -0.30, "MDD 좋아짐", True), (0.0, 0.0, -0.40, "거의 같음", False), (-0.05, 0.2, -0.40, "정확도 나빠짐", False),
+])
+def test_지표_진단_추천_규칙(acc, ret, mdd, expected, rec):
+    b = pd.Series({"accuracy": 0.3, "total_return": 1.0, "mdd": -0.40})
+    verdict, recommend = ex.study_verdict(pd.Series({"accuracy": 0.3 + acc, "total_return": 1.0 + ret, "mdd": mdd}), b)
+    assert expected in verdict and recommend is rec
+
+
+def test_지표_진단은_그룹을_빼고_더해_보고_리포트를_남긴다(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "FEATURE_STUDY_REPORT_PATH", str(tmp_path / "features.md"))
+    result = ex.feature_study(FakeData())  # 가짜 데이터에는 후보 지표가 없어 더하기 줄은 계산하지 못하고 빠진다
+    removed = result["table"][result["table"]["change"].str.startswith("빼기")]
+    assert len(removed) == len(config.FEATURE_GROUPS_BASE)
+    report = (tmp_path / "features.md").read_text(encoding="utf-8")
+    for text in ["탐색 결과", "다중 비교 경고", "기준선", "'상승' 이라고만", "추천 규칙", "## 추천"]:
+        assert text in report
+
+
+def test_인버스와_분할_매매는_섞지_않는다():
+    with pytest.raises(ValueError):
+        ex.run_one({**config.EXPERIMENT_BASE, "down_action": "inverse", "position_steps": 2}, FakeData())
+    cfgs = ex.expand(dict(config.EXPERIMENT_BASE), {"down_action": ["cash", "inverse"], "position_steps": [1, 2]})
+    table, _ = ex.compare(cfgs, FakeData())
+    assert len(table) == 3 and table.attrs["skipped"] == 1 and "계산하지 않았다" in ex.to_markdown(table)

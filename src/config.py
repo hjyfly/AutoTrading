@@ -91,6 +91,11 @@ DOWN_ACTIONS = ["cash", "inverse"]  # 성적표·보고서에서 비교로 함�
 DOWN_ACTION_LABELS = {"cash": "현금", "inverse": "인버스"}
 OFFICIAL_DOWN_ACTION = "inverse"  # 1~3일차 공식 판정에 쓴 규칙
 DOWN_ACTION_CHANGED_ON = "2026-10-22"
+# 분할 매매 (2026-10-22 사용자 요청, 조건 비교 실험용. 운영 규칙은 전량 매매 그대로)
+# 상승 신호마다 삼성전자 비중을 1/POSITION_STEPS 씩 늘리고 하락 신호마다 같은 만큼 줄인다. 보합은 유지한다
+# POSITION_FLOOR 는 하락 신호가 이어져도 남겨 두는 기본 보유 비중이다. 1단계·바닥 0 이면 지금 규칙(전량)과 같다
+POSITION_STEPS = 1
+POSITION_FLOOR = 0.0
 DART_CORP_CODE = "00126380"  # 삼성전자
 
 # 거시·해외 지표 출처 ID
@@ -214,6 +219,38 @@ FEATURE_SETS = {
 }
 SIGNALS_CANDIDATE_PATH = "data/processed/signals_candidate.parquet"
 
+# 지표 그룹 (2026-10-22 사용자 요청: 그룹 단위로 빼고 더해 보는 진단). 기존 45개와 후보 A·B·D 를 겹치지 않게 나눈다
+# 그룹 묶음 이름은 "groups:price+chart+flow" 처럼 FEATURE_GROUP_PREFIX 뒤에 그룹을 + 로 잇는다
+FEATURE_GROUPS = {
+    "price": ["ret_1d", "ret_5d", "ret_20d", "volume_ratio"],
+    "chart": ["psar_gap", "psar_trend", "ma5_gap", "ma20_gap", "ma60_gap", "ma120_gap", "bb_pctb", "bb_width",
+              "ichi_tenkan_gap", "ichi_kijun_gap", "ichi_tenkan_kijun", "ichi_cloud_top_gap", "ichi_cloud_bottom_gap", "ichi_cloud_thickness"],
+    "flow": ["foreign_net_ratio", "institution_net_ratio", "foreign_net_ratio_5d", "foreign_hold_change_5d"],
+    "macro": ["us10y_yf_level", "us10y_yf_chg_1d", "us10y_yf_chg_5d", "vix_yf_level", "vix_yf_chg_1d", "vix_yf_chg_5d",
+              "wti_fut_ret_1d", "wti_fut_ret_5d", "usdkrw_yf_ret_1d", "usdkrw_yf_ret_5d"],
+    "peer": ["sox_ret_1d", "sox_ret_5d", "nvda_ret_1d", "nvda_ret_5d", "hstech_ret_1d", "hstech_ret_5d"],
+    "age": ["us10y_yf_age_days", "vix_yf_age_days", "wti_fut_age_days", "usdkrw_yf_age_days", "sox_age_days", "nvda_age_days",
+            "hstech_age_days"],
+    "tech_extra": FEATURE_SET_A,
+    "market_extra": FEATURE_SET_B,
+    "calendar": FEATURE_SET_D,
+}
+FEATURE_GROUP_LABELS = {
+    "price": "가격·거래량", "chart": "차트(이동평균·볼린저·일목·PSAR)", "flow": "수급(외국인·기관)",
+    "macro": "거시(금리·VIX·유가·환율)", "peer": "해외 동종(SOX·엔비디아·항셍테크)", "age": "데이터 경과일",
+    "tech_extra": "추가 기술 지표(A)", "market_extra": "시장·동종 추가(B)", "calendar": "일정(D)",
+}
+FEATURE_GROUPS_BASE = ["price", "chart", "flow", "macro", "peer", "age"]  # 합치면 FEATURE_SET_BASE
+FEATURE_GROUP_PREFIX = "groups:"
+# 지표 그룹 진단의 추천 규칙(결과를 보기 전에 정한 고정 규칙): 정확도·수익·MDD 중 어느 것도 허용 폭 넘게 나빠지지 않고
+# 하나 이상이 허용 폭 넘게 좋아진 변경만 추천한다. 수익·MDD 허용 폭은 MONITOR_TOL, 정확도 허용 폭은 아래 값
+# (2026-10-22 실제 데이터로 진단을 처음 돌리기 전에 정함. 이후 바꾸면 사후 조정이라고 리포트에 적는다)
+FEATURE_STUDY_ACC_TOL = 0.01
+FEATURE_STUDY_REPORT_PATH = "evaluation/reports/experiments_features.md"
+# 기존·후보 모델 말고 실시간 성적표에서 함께 추적할 지표 묶음 (사용자가 진단 결과를 보고 고른 뒤 추가한다. 최종 신호는 바꾸지 않는다)
+# 2026-10-22 사용자 결정: 진단 추천 묶음(데이터 경과일 7개 제외)을 추적한다
+LIVE_EXTRA_FEATURE_SETS: list[str] = ["groups:price+chart+flow+macro+peer"]
+
 # 특징 계산 기간(거래일)
 RETURN_WINDOWS = [1, 5, 20]  # 삼성전자 수익률
 FLOW_WINDOW = 5  # 순매수 합계·보유비율 변화
@@ -261,7 +298,8 @@ NEWS_RISK_VETO = None     # 하락 위험이 이 값 이상이면 상승 신호�
 # 조건 비교 실험(src/pipeline/experiment.py)의 기준 조건 = 지금 운영 설정. 결과는 모두 탐색이며 공식 판정을 바꾸지 않는다
 EXPERIMENT_BASE = {
     "horizon_days": LABEL_HORIZON_DAYS, "threshold": LABEL_THRESHOLD, "feature_set": "base", "retrain_freq": RETRAIN_FREQ,
-    "execution": EXECUTION, "down_action": DOWN_ACTION, "news_mode": "none", "news_field": NEWS_SCORE_FIELD,
+    "execution": EXECUTION, "down_action": DOWN_ACTION, "position_steps": POSITION_STEPS, "position_floor": POSITION_FLOOR,
+    "news_mode": "none", "news_field": NEWS_SCORE_FIELD,
     "news_window": NEWS_WINDOW_DAYS, "news_risk_veto": NEWS_RISK_VETO, "news_min_score": NEWS_ADJUST_SCORE,
     "news_min_conf": NEWS_ADJUST_MIN_CONF, "start": None, "end": None,
 }
@@ -270,7 +308,8 @@ EXPERIMENT_REPORT_DIR = "evaluation/reports"   # 조건 비교·모니터링 보
 EXPERIMENT_MAX_COMBOS = 48                     # 화면에서 한 번에 돌릴 수 있는 조합 수 상한
 # 화면 "조건 비교" 탭의 숫자 조건 선택지 (고를 수 있는 값이 정해진 조건은 위 사전에서 가져온다)
 EXPERIMENT_UI_OPTIONS = {
-    "horizon_days": [3, 5, 10, 20], "threshold": [0.02, 0.03, 0.05], "news_window": [1, 3, 5],
+    "horizon_days": [3, 5, 10, 20], "threshold": [0.02, 0.03, 0.05], "position_steps": [1, 2, 3, 4],
+    "position_floor": [0.0, 0.25, 0.5], "news_window": [1, 3, 5],
     "news_risk_veto": [None, 3, 4], "news_min_score": [2, 3, 4], "news_min_conf": [0.5, 0.6, 0.7],
 }
 # 조건 모니터링: 기준 조건에서 하나씩만 바꿔 볼 값(사전 등록. 결과를 보고 목록을 바꾸지 않는다). 2026-10-22 사용자 요청

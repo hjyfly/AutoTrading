@@ -27,7 +27,7 @@ def block_start(t: pd.Timestamp, days: pd.DatetimeIndex, valid_start=None) -> pd
 
 
 def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base") -> dict:
-    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base' 또는 'candidate'."""
+    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base'·'candidate' 또는 그룹 묶음 이름."""
     t = tools.resolve_as_of(as_of)
     if t.weekday() >= 5:
         raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
@@ -87,6 +87,15 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
     candidate.update(numeric_signal_label=candidate["signal"], news_status="후보 모델은 뉴스 보정 안 함",
                      news_consensus=None, news_consensus_conf=None)
     save(candidate)
+    for feature_set in config.LIVE_EXTRA_FEATURE_SETS:  # 지표 그룹 진단에서 고른 묶음(비교용, 뉴스 보정 안 함)
+        try:  # 비교용 묶음이 데이터 부족 등으로 실패해도 운영 신호(base)는 만든다. 시점 위반(AssertionError)은 그대로 멈춘다
+            extra = numeric_signal(as_of, feature_set=feature_set)
+        except ValueError as e:
+            print(f"비교용 묶음 {feature_set} 신호 실패: {type(e).__name__}: {e}", flush=True)
+            continue
+        extra.update(numeric_signal_label=extra["signal"], news_status="비교용 묶음은 뉴스 보정 안 함",
+                     news_consensus=None, news_consensus_conf=None)
+        save(extra)
     out = numeric_signal(as_of)
     t = out["date"]
     out.update(numeric_signal_label=out["signal"], news_status="요청 안 함", news_consensus=None, news_consensus_conf=None)

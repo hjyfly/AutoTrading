@@ -18,11 +18,32 @@ def feature_columns(features: pd.DataFrame, feature_set: str | None = None) -> l
     """
     if feature_set is None:
         return [c for c in features.columns if c != "is_dummy"]
-    cols = config.FEATURE_SETS[feature_set]
+    cols = feature_set_columns(feature_set)
     missing = [c for c in cols if c not in features.columns]
     if missing:
         raise ValueError(f"지표 묶음 '{feature_set}' 의 열이 특징 표에 없다: {missing}")
     return list(cols)
+
+
+def feature_set_columns(feature_set: str) -> list[str]:
+    """지표 묶음 이름을 열 목록으로 바꾼다. config.FEATURE_SETS 의 이름이거나 'groups:price+chart' 처럼 지표 그룹을 + 로 이은 이름이다.
+    그룹 묶음의 열 순서는 그룹을 고른 순서와 상관없이 후보 묶음(기존 45개 → A → B → D)의 순서를 따른다."""
+    if feature_set in config.FEATURE_SETS:
+        return list(config.FEATURE_SETS[feature_set])
+    if not str(feature_set).startswith(config.FEATURE_GROUP_PREFIX):
+        raise ValueError(f"알 수 없는 지표 묶음: {feature_set}")
+    groups = [g for g in feature_set[len(config.FEATURE_GROUP_PREFIX):].split("+") if g]
+    unknown = [g for g in groups if g not in config.FEATURE_GROUPS]
+    if not groups or unknown:
+        raise ValueError(f"알 수 없는 지표 그룹: {unknown or '(없음)'}")
+    chosen = {c for g in groups for c in config.FEATURE_GROUPS[g]}
+    return [c for c in config.FEATURE_SETS["candidate"] if c in chosen]
+
+
+def group_set_name(groups) -> str:
+    """지표 그룹 목록을 묶음 이름으로 바꾼다. 같은 그룹이면 고른 순서와 상관없이 같은 이름이 된다."""
+    picked = set(groups)
+    return config.FEATURE_GROUP_PREFIX + "+".join(g for g in config.FEATURE_GROUPS if g in picked)
 
 
 def prediction_chunks(dates: pd.DatetimeIndex, valid_start, freq: str | None = None) -> list[tuple[pd.Timestamp, pd.DatetimeIndex]]:
@@ -43,7 +64,7 @@ def walk_forward(features: pd.DataFrame, labels: pd.DataFrame, valid_start=None,
     """재학습 주기(기본 매월)의 첫 예측일에 다시 학습하고 그 기간 거래일마다 신호와 클래스 확률을 낸다.
 
     학습 행은 정답 기간이 끝나는 날(future_date)이 그 달 첫 예측일보다 앞선 것만 쓴다(정답이 검증 구간과 겹치지 않게).
-    feature_set 은 config.FEATURE_SETS 의 이름('base' = 1~3일차 모델, 'candidate' = A+B+D 추가 후보).
+    feature_set 은 config.FEATURE_SETS 의 이름('base' = 1~3일차 모델, 'candidate' = A+B+D 추가 후보) 또는 그룹 묶음 이름('groups:...').
     """
     cols = feature_columns(features, feature_set)
     X_all = features[cols]

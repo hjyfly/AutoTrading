@@ -99,7 +99,8 @@ def build(today: pd.Timestamp | None = None) -> dict:
     else:
         samsung, inverse = load_prices(today)
         board["price_last_date"] = str(samsung.index.max().date())
-        for model, title in MODELS.items():
+        extra = {name: f"비교용 지표 묶음 {name}" for name in config.LIVE_EXTRA_FEATURE_SETS}  # 지표 그룹 진단에서 고른 묶음
+        for model, title in {**MODELS, **extra}.items():
             rows = live[live["model"] == model]
             if rows.empty:
                 continue

@@ -36,7 +36,7 @@ def stored(monkeypatch):
     return data
 
 
-@pytest.mark.parametrize("feature_set", ["base", "candidate"])
+@pytest.mark.parametrize("feature_set", ["base", "candidate", "groups:price+chart+flow+macro+peer"])
 def test_저장된_날짜는_과거_검증_신호와_같다(stored, feature_set):
     """실시간 경로와 워크포워드 경로가 같은 데이터·같은 규칙·같은 지표 묶음이면 같은 신호·확률이 나와야 한다."""
     from src.pipeline import features
@@ -53,12 +53,13 @@ def test_저장된_날짜는_과거_검증_신호와_같다(stored, feature_set)
         assert live["retrained_on"] == wf.loc[t, "retrained_on"]
 
 
-def test_미래_데이터가_바뀌어도_신호는_같다(stored):
+@pytest.mark.parametrize("feature_set", ["base", "groups:price+chart+flow+macro+peer"])
+def test_미래_데이터가_바뀌어도_신호는_같다(stored, feature_set):
     t = DAYS[333]
-    before = ls.numeric_signal(str(t.date()))
+    before = ls.numeric_signal(str(t.date()), feature_set=feature_set)
     for df in stored.values():
         df.loc[df.index >= t] = df.loc[df.index >= t] * 3
-    after = ls.numeric_signal(str(t.date()))
+    after = ls.numeric_signal(str(t.date()), feature_set=feature_set)
     assert (before["signal"], before["confidence"]) == (after["signal"], pytest.approx(after["confidence"]))
 
 
