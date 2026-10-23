@@ -105,7 +105,7 @@ def load_article_features(dates=None) -> pd.DataFrame:
 
 
 def news_volume(days: pd.DatetimeIndex) -> pd.Series:
-    """신호일마다 모은 전체 기사 수(그날 15:15 까지 모인 것, 중복 포함 = 보도량)."""
+    """신호일마다 모은 기사 수(그날 구간 [t-1 15:15, t 15:15) 기사, 같은 URL·같은 제목 중복은 수집 때 지운 뒤) = 보도량."""
     path = Path(config.PROCESSED_DIR) / "news.parquet"
     if not path.exists():
         return pd.Series(np.nan, index=days)
@@ -212,7 +212,8 @@ def alert_evidence(day_articles: pd.DataFrame) -> list[dict]:
 
 
 def risk_alerts(articles: pd.DataFrame, daily: pd.DataFrame, consensus_risk: pd.Series | None = None) -> pd.DataFrame:
-    """A1 경보를 신호일 순서대로 판단한다(그날 기사와 그날까지의 일별 피처만 쓴다). 쿨다운 안의 같은 사건은 등급이 오를 때만 다시 알린다."""
+    """A1 경보를 신호일 순서대로 판단한다(그날 기사와 그날까지의 일별 피처만 쓴다). 쿨다운 안의 같은 사건은 등급이 오를 때만 다시 알린다.
+    근거 기사가 없는 경보(z·채점자 위험만으로 생긴 MEDIUM)는 사건 키가 그날 날짜라 쿨다운에 걸리지 않는다(장부 A1 정의 그대로, 판정 뒤 바꾸지 않음)."""
     risk_sum = daily["f_risk_sum"]
     roll = risk_sum.rolling(config.NEWS_VOLUME_WINDOW, min_periods=10)
     z = ((risk_sum - roll.mean()) / roll.std()).replace([np.inf, -np.inf], np.nan)
@@ -246,13 +247,13 @@ def risk_alerts(articles: pd.DataFrame, daily: pd.DataFrame, consensus_risk: pd.
 
 def render_alert(t: pd.Timestamp, alert: dict, status: str = "") -> str:
     """경보 메일 문구. 사실은 추출 결과(제목·한 줄 요약·근거) 안에서만 쓴다."""
-    lines = [f"[하락 위험 경보 · {alert['level']}] {pd.Timestamp(t).date()} {config.SIGNAL_CUTOFF_KST} 기준 삼성전자" + (f" ({status})" if status else ""),
+    lines = [f"[하락 위험 경보 · {alert['level']}] {pd.Timestamp(t).date()} {config.SIGNAL_CUTOFF_KST} 기준 {config.MULTI_TICKERS[config.NEWS_TICKERS[0]][0]}" + (f" ({status})" if status else ""),
              "■ 이유: " + " / ".join(alert["reasons"])]
     if alert["evidence"]:
         lines.append("■ 근거 기사")
         for k, e in enumerate(alert["evidence"], start=1):
             lines.append(f"  {k}) {e['title']} · {e['published_kst']} · {e['source']}")
-            summary = str(e["one_line_summary"]).replace(config.ANONYMIZED_NAME, "삼성전자")  # 추출은 익명으로 했다
+            summary = str(e["one_line_summary"]).replace(config.ANONYMIZED_NAME, config.MULTI_TICKERS[config.NEWS_TICKERS[0]][0])  # 추출은 익명으로 했다
             lines.append(f"     → {summary} (하락 위험 {e['downside_risk']}/3, {e['novelty']})")
             if e.get("url"):
                 lines.append(f"     {e['url']}")

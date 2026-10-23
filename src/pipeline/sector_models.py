@@ -267,7 +267,7 @@ def write_report(sel_ev: pd.DataFrame, sel: dict, conf_ev: pd.DataFrame | None =
                 lines.append(f"- **{sector}:** 고르기에서 S0 유지 → 확인할 후보 없음")
             else:
                 lines.append(f"- **{sector}:** {v['candidate']} S0 대비 {v['gain']:+.2%}p, {v['wins']}/{v['n']}종목에서 높음 → "
-                             f"**{'채택(참고 신호용)' if v['adopted'] else '확인 실패, S0 유지'}**")
+                             f"**{'채택(2026-10-23 부터 정식 신호, 매매 대상 아님)' if v['adopted'] else '확인 실패, S0 유지'}**")
         lines += ["", _table(conf_ev), ""]
     text = "\n".join(lines) + "\n"
     Path(config.DAY8_REPORT_PATH).write_text(text, encoding="utf-8", newline="\n")
@@ -296,7 +296,8 @@ def load_signals() -> dict[str, dict[str, pd.DataFrame]]:
 
 
 def select() -> dict:
-    """고르는 구간만 평가하고 분야마다 후보를 고른다. 결과를 select.csv 에 남긴다."""
+    """고르는 구간만 평가하고 분야마다 후보를 고른다. 결과를 select.csv 에 남긴다.
+    2026-10-22 판정 기록(장부 R1 ~ R3)이다. 다시 돌리면 판정 리포트(day8_sector_models.md)를 덮어쓰므로 돌리지 않는다."""
     tables = build_sector_tables()
     ev = evaluate(load_signals(), tables, *config.SECTOR_SELECT_PERIOD)
     ev.to_csv(_dir() / "select.csv", index=False, encoding="utf-8-sig")
@@ -306,7 +307,7 @@ def select() -> dict:
 
 
 def confirm() -> dict:
-    """확인 구간을 한 번 평가한다. 고르기 결과는 select.csv 에서 다시 계산한다."""
+    """확인 구간을 한 번 평가한다. 고르기 결과는 select.csv 에서 다시 계산한다. 판정 기록이라 다시 돌리지 않는다(구간 재사용 금지)."""
     tables = build_sector_tables()
     sel_ev = pd.read_csv(_dir() / "select.csv", dtype={"code": str})
     sel = select_rule(sel_ev)

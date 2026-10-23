@@ -206,6 +206,9 @@ def ticker_performance_view(code: str, as_of: pd.Timestamp):
         st.info("아직 종목 분석이 없다. '리포트·조건 비교 → 종목 비교'에서 계산한다.")
         return
     mine = periods[periods["code"] == code]
+    if mine.empty:  # 레지스트리에 더한 뒤 아직 분석을 다시 돌리지 않은 종목
+        st.info("이 종목은 아직 종목 분석 표에 없다. '리포트·조건 비교 → 종목 비교'에서 다시 계산한다.")
+        return
     st.caption(f"선정 알고리즘 {mine['algorithm'].iloc[0]} 의 워크포워드 신호로 운영 종목({MAIN_NAME})과 같은 규칙(하락 = 현금, 수수료 {config.FEE_RATE:.1%})에서 계산했다. "
                "7·8일차에 이미 본 구간이라 모두 탐색이고, 판정은 실시간 성적표로만 한다. 뉴스는 쓰지 않았다. "
                "자산 곡선은 고른 날짜 전까지만 그리고, 아래 표는 고른 날짜와 관계없이 데이터 끝까지의 사후 성적이다.")
@@ -450,8 +453,8 @@ with tab_data:
             st.write(j["final"]["rationale"])
             st.caption(f"남은 이견: {j['final']['disagreement']}")
             st.markdown("**핵심 기사**\n" + "\n".join(f"- {t}" for t in j["final"]["key_articles"] if t))
-            for name, o in j["personas"].items():
-                with st.expander(f"{name}: {o['score']:+d} (확신도 {o['confidence']:.2f})"):
+            for persona, o in j["personas"].items():  # name(사이드바 종목 이름)을 덮어쓰지 않게 다른 이름을 쓴다
+                with st.expander(f"{persona}: {o['score']:+d} (확신도 {o['confidence']:.2f})"):
                     st.write(o["rationale"])
                     st.caption(f"토론 뒤: {o['change_reason']}")
         if is_main and has_news:  # 판단 기록·기사 피처는 지금 운영 종목 파이프라인 전용

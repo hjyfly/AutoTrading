@@ -13,6 +13,10 @@
 
 신호 시각(15:15)과 기사 수집 구간 자체는 바꾸지 않는다. 바꾸면 뉴스를 다시 채점해야 해서 저장된 점수로는 비교할 수 없다.
 여기서 나온 숫자는 모두 검증 구간을 보고 고른 조건의 '탐색' 결과이고 공식 판정(기준 A·B)을 바꾸지 않는다.
+
+- 종목별 실행(10일차): Data(code=...), 명령줄 --code·--all. 다른 종목은 그 종목 원본(거래정지일 제외)·운영 설정(S0) 기준이고
+  인버스 ETF·뉴스 점수가 없다. 리포트는 ticker_path 로 종목 코드를 붙여 따로 저장한다(evaluation/reports/README.md 네이밍 규칙).
+- 9일차 뉴스 평가(--news): 점수별 IC·Newey-West·기준선과 장부 V1·V2·A1 확인 판정(judge_day9). 판정 기록은 장부가 기준이다.
 """
 import argparse
 import itertools
@@ -817,8 +821,9 @@ def news_scores_table(inp: dict) -> dict[str, pd.Series]:
 
 
 def judge_day9(inp: dict, targets: pd.DataFrame) -> dict:
-    """확인 구간에서 V1·V2·A1 을 한 번 판정한다(장부 기준 그대로)."""
-    from sklearn.metrics import roc_auc_score  # noqa: F401  (위험 AUC 는 리포트 표에서 쓴다)
+    """확인 구간에서 V1·V2·A1 을 판정한다(장부 기준 그대로). 가격만 판정 당시(config.DAY9_JUDGE_PRICE_END)로 고정한다.
+    V1·V2 신호·운영 숫자 신호·기사 피처는 실행 때마다 다시 읽으므로, 채점 모델·프롬프트 버전·운영 신호가 바뀐 뒤 --news 를 다시 돌리면
+    리포트 숫자가 장부(2026-10-23 판정)와 달라질 수 있다. 판정 결과는 장부 값이 기준이다."""
     from src.pipeline.labels import make_risk_labels
     lo, hi = (pd.Timestamp(x) for x in config.DAY9_CONFIRM_PERIOD)
     close = inp["close"][inp["close"].index <= pd.Timestamp(config.DAY9_JUDGE_PRICE_END)]  # 판정 당시 가격으로 고정

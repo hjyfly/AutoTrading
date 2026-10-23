@@ -199,7 +199,8 @@ def raw_until(cut: pd.Timestamp) -> tuple[dict, dict]:
 
 def indicators(as_of: str | None = None, code: str | None = None) -> dict:
     """as_of 신호 시점의 차트·수급 지표(전날 종가 기준)와 해외 지표 변화. 학습에 쓰는 특징과 같은 계산이다.
-    다른 종목(code)은 국내 일봉·수급만 그 종목 원본으로 바꿔 같은 계산을 한다(분야 알고리즘 S4 의 동료·분야 지수 지표는 넣지 않는다)."""
+    다른 종목(code)은 국내 일봉·수급만 그 종목 원본(거래정지일 제외, 신호 계산과 같은 정리)으로 바꿔 같은 계산을 한다.
+    분야 알고리즘 S4 의 동료·분야 지수 지표는 넣지 않고, 원본이 직전 거래일까지 있는지는 확인하지 않는다(출처의 last_date 를 본다)."""
     cut, code = resolve_as_of(as_of), ticker_code(code)
     raw, sources = raw_until(cut)
     if code != config.MAIN_TICKER:
@@ -207,6 +208,8 @@ def indicators(as_of: str | None = None, code: str | None = None) -> dict:
             df, note = ticker_series(code, part, cut)
             raw[part] = df
             sources[part] = {"note": f"{ticker_name(code)} {note}", "last_date": str(df.index.max().date()) if len(df) else None}
+        from src.pipeline.sector_models import clean_raw
+        raw = clean_raw(raw)  # 거래정지일(거래량 0) 제외
         ohlcv = raw["ohlcv"][["Open", "High", "Low", "Close", "Volume"]].astype(float)
         raw["ohlcv"] = pd.concat([ohlcv, pd.DataFrame(index=[cut], columns=ohlcv.columns, dtype=float)])
     table = features.build_features(as_of=cut, raw=raw)
@@ -326,7 +329,10 @@ def ticker_signal(date: str, code: str) -> dict:
             row, source, algorithm = stored.loc[t], "워크포워드 검증 신호(8일차, 그날 전 데이터로 학습)", f"{alg} {CANDIDATE_NAMES[alg]}"
     if row is None:
         last = str(pd.read_parquet(stored_path, columns=["signal"]).index.max().date()) if stored_path.exists() else "-"
-        out["note"] = _no_signal_note(t, config.SECTOR_SELECT_PERIOD[0], last) + ". " + out["note"]
+        ohlcv = _load_raw("tickers", f"{code}_ohlcv")
+        halted = t in ohlcv.index and float(ohlcv.loc[t, "Volume"] or 0) == 0  # 거래정지일은 신호를 만들지 않는다(clean_raw)
+        reason = "거래정지일(거래량 0)이라 신호가 없다" if halted else _no_signal_note(t, config.SECTOR_SELECT_PERIOD[0], last)
+        out["note"] = reason + ". " + out["note"]
         return out
     out["numeric"] = {"signal": row["signal"], "confidence": round(float(row["confidence"]), 3),
                       "probabilities": {c: round(float(row[f"p_{c}"]), 3) for c in ("상승", "보합", "하락")},
@@ -409,7 +415,8 @@ def news_judgement(date: str) -> dict:
 
 
 def news_features(date: str) -> dict:
-    """그날(뉴스 종목) 기사별 추출 결과와 그날 하락 위험 경보 기록(9일차). 그날 15:15 신호 시점에 만든 것만 돌려준다."""
+    """그날(뉴스 종목) 기사별 추출 결과, 그날 하락 위험 경보 기록, V1 참고 지표(9일차). 화면 전용이라 요청 상한 검사는 없다.
+    기사 피처는 그날 15:15 구간 기사만으로 뽑았지만 추출 시각은 날마다 다르다(2026-10-23 대량 추출분은 사후, 그 뒤는 평일 15:20 실행)."""
     t = resolve_as_of(date)
     path = Path(config.FEATURES_DIR) / f"{t.date()}.json"
     if not path.exists():
@@ -422,7 +429,7 @@ def news_features(date: str) -> dict:
     keep = ["published_kst", "title", "category", "event_type", "direction", "magnitude", "novelty", "downside_risk", "relevance", "one_line_summary"]
     from src.pipeline import news_signal
     try:  # V1 참고 지표(장부 V1 통과). 그날까지의 기사 피처와 그날 전 종가만 쓴다
-        v1 = news_signal.v1_signal(t, series_until("prices", "samsung_ohlcv", t)[0]["Close"].astype(float))
+        v1 = news_signal.v1_signal(t, ticker_series(config.NEWS_TICKERS[0], "ohlcv", t)[0]["Close"].astype(float))
     except (ValueError, KeyError) as e:
         v1 = {"error": f"{type(e).__name__}: {e}"}
     n_collected = rec.get("n_collected")
@@ -492,7 +499,12 @@ def _call(fn, as_of: str, *args) -> dict:
     t, note = capped(as_of or None)
     try:
         return _with_note(fn(str(t.date()), *args), note)
-    except (KeyError, ValueError, IndexError) as e:
+    except ValueError as e:
+        if str(e).startswith("지원하지 않는 종목"):  # ticker_code: 날짜 문제가 아니므로 지원 종목만 안내한다
+            return _with_note({"as_of": str(t.date()), "error": str(e)}, note)
+        return _with_note({"as_of": str(t.date()), "error": f"{t.date()} 시점 데이터로 계산하지 못했다({type(e).__name__}: {e}). "
+                           f"신호·검증 구간은 {config.VALID_START} 부터다"}, note)
+    except (KeyError, IndexError) as e:
         return _with_note({"as_of": str(t.date()), "error": f"{t.date()} 시점 데이터로 계산하지 못했다({type(e).__name__}: {e}). "
                            f"신호·검증 구간은 {config.VALID_START} 부터다"}, note)
 

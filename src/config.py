@@ -10,6 +10,12 @@ JUDGE_TEMPERATURE = 0
 # 2026-10-22: 채점·에이전트 모델을 Sonnet 4.6(global. 프로필, ID 에 날짜 없음)으로 바꾼다(사용자 결정). 유출 테스트를 다시 돌리고 뉴스 구간 전체를 다시 채점한다
 SCORING_MODEL_DEFAULT = "global.anthropic.claude-sonnet-4-6"
 
+# 비밀이 아닌 실행 설정 기본값 (2026-10-23: 다른 PC 에서 이어 개발하도록 .env 에서 옮김). .env 에 같은 키가 있으면 .env 가 이긴다
+# 비밀 값(AWS 키, DART·FRED 키, Gmail 비밀번호·주소, 한국투자증권 키·계좌)과 주문 스위치 KIS_TRADING_ENABLED 는 .env 에만 둔다(README.md 수행 가이드)
+LLM_PROVIDER_DEFAULT = "bedrock"                               # .env LLM_PROVIDER (bedrock | anthropic)
+AWS_REGION_DEFAULT = "us-east-1"                               # .env AWS_DEFAULT_REGION. 채점·에이전트·임베딩 호출 리전(judge 는 JUDGE_REGION)
+EMBEDDING_MODEL_DEFAULT = "amazon.titan-embed-text-v2:0"       # .env BEDROCK_EMBEDDING_MODEL_ID. 바꾸면 RAG 색인을 다시 만든다
+
 # 데이터 기간 (SERVICE.md 7절)
 DATA_START = "2023-10-23"
 DATA_END_INITIAL = "2026-10-20"  # 처음 수집한 끝날
@@ -89,7 +95,8 @@ RSS_LOOKBACK_DAYS = 4
 # 종목
 SAMSUNG_CODE = "005930"
 # 종목 역할 (10일차, DAY10_PLAN.md 2.1). 코드 곳곳에서 "삼성전자인가" 대신 이 역할로 판단한다. 종목 목록 자체는 MULTI_TICKERS(종목 레지스트리)
-MAIN_TICKER = SAMSUNG_CODE          # 운영 모델 종목: 숫자 모델 운영 신호·비교 줄·과거 공식 판정·확장 원본이 있는 종목
+MAIN_TICKER = SAMSUNG_CODE          # 운영 모델 종목: 숫자 모델 운영 신호·비교 줄·과거 공식 판정·확장 원본이 있는 종목.
+                                    # 운영 원본 파일 이름(data/raw/prices/samsung_*)·운영 신호 파일과 묶여 있어 값만 바꾸면 깨진다(바꾸려면 원본 이름부터)
 TRADE_TICKERS = [SAMSUNG_CODE]      # 매매·주문 대상. 사용자 결정으로만 바꾼다(주문 모듈 KIS_ORDER_CODES 가 따른다)
 NEWS_TICKERS = [SAMSUNG_CODE]       # 뉴스 채점·판단 기록·공시·문서 검색이 있는 종목
 INVERSE_ETF_CANDIDATES = {"114800": "KODEX 인버스", "123310": "TIGER 인버스"}
@@ -445,7 +452,7 @@ PREREGISTERED = {
 # ---- 6일차: 한국투자증권 Open API (DAY6_PLAN.md, 2026-10-22 사용자 결정) ----
 # 엔드포인트·거래 ID 는 KIS Developers 문서 기준이며 키를 받은 뒤 모의 서버 시험(--probe)으로 다시 확인한다
 KIS_BASE_URLS = {"real": "https://openapi.koreainvestment.com:9443", "mock": "https://openapivts.koreainvestment.com:29443"}
-KIS_DEFAULT_ENV = "mock"                      # .env 의 KIS_ENV 가 없으면 모의투자
+KIS_DEFAULT_ENV = "mock"                      # .env 의 KIS_ENV 가 없으면 모의투자. 주문 스위치(KIS_TRADING_ENABLED)는 일부러 config 에 두지 않는다(.env 에만, 없으면 꺼짐)
 KIS_DIR = "data/kis"                          # 토큰 저장·계좌 기록·주문 기록(git 제외)
 KIS_TOKEN_MARGIN_MIN = 30                     # 만료 이만큼 전이면 토큰을 새로 받는다
 KIS_MIN_INTERVAL_SEC = {"real": 1.1, "mock": 1.1}  # 호출 사이 최소 간격(2026-10-22 실전 0.06·0.5초에서 초당 한도 초과. 하루 호출이 몇 번뿐이라 넉넉히 1.1초)

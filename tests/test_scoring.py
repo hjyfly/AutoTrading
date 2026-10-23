@@ -262,3 +262,18 @@ def test_추출_형식_오류는_다시_묻고_계속되면_멈춘다(tmp_path, 
     monkeypatch.setattr(config, "FEATURES_DIR", str(tmp_path / "features3"))
     with pytest.raises(ValueError):
         sc.extract_day(T, model=Flaky(3, fails=config.FEATURE_MAX_ATTEMPTS), selected=selected, close=close)
+
+
+def test_추출은_비용_한도_예외를_형식_오류로_삼키지_않는다(tmp_path, monkeypatch):
+    from src import llm
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+
+    class Limited:
+        def with_structured_output(self, schema):
+            class R:
+                def invoke(self, messages):
+                    raise llm.CostLimitExceeded("한도")
+            return R()
+
+    with pytest.raises(llm.CostLimitExceeded):
+        sc.extract_day(T, model=Limited(), selected=selected, close=close)

@@ -88,9 +88,14 @@ class CostTrackedEmbeddings(Embeddings):
         return self.inner.embed_query(text)
 
 
+def aws_region() -> str:
+    """채점·에이전트·임베딩 호출 리전. .env 의 AWS_DEFAULT_REGION, 없으면 config 기본값."""
+    return os.environ.get("AWS_DEFAULT_REGION") or config.AWS_REGION_DEFAULT
+
+
 def get_embeddings() -> CostTrackedEmbeddings:
-    """RAG 색인·검색용 임베딩. 모델은 .env 의 BEDROCK_EMBEDDING_MODEL_ID."""
-    return CostTrackedEmbeddings(os.environ["BEDROCK_EMBEDDING_MODEL_ID"], os.environ["AWS_DEFAULT_REGION"])
+    """RAG 색인·검색용 임베딩. 모델은 .env 의 BEDROCK_EMBEDDING_MODEL_ID, 없으면 config 기본값."""
+    return CostTrackedEmbeddings(os.environ.get("BEDROCK_EMBEDDING_MODEL_ID") or config.EMBEDDING_MODEL_DEFAULT, aws_region())
 
 
 class CostTracker(BaseCallbackHandler):
@@ -133,19 +138,18 @@ def scoring_model_id() -> str:
 def get_agent_llm() -> ChatBedrockConverse:
     """/query 질의응답 에이전트용 LLM. 채점과 같은 모델이며 비용은 'agent' 로 기록한다."""
     model = scoring_model_id()
-    return ChatBedrockConverse(model=model, region_name=os.environ["AWS_DEFAULT_REGION"],
-                               callbacks=[CostTracker("agent", model)])
+    return ChatBedrockConverse(model=model, region_name=aws_region(), callbacks=[CostTracker("agent", model)])
 
 
 def get_scoring_llm() -> ChatBedrockConverse:
-    """뉴스 채점용 LLM 을 만든다. 공급자와 모델은 .env 로 고른다."""
-    provider = os.environ.get("LLM_PROVIDER", "bedrock")
+    """뉴스 채점용 LLM 을 만든다. 공급자와 모델은 .env 로 고르고, 없으면 config 기본값(Bedrock, Sonnet 4.6)."""
+    provider = os.environ.get("LLM_PROVIDER") or config.LLM_PROVIDER_DEFAULT
     if provider == "bedrock":
         # Sonnet 5.5 로 옮기면 temperature 를 기본값이 아닌 값으로 보낼 때 400 오류가 나므로 설정하지 않는다
         model = scoring_model_id()
         return ChatBedrockConverse(
             model=model,
-            region_name=os.environ["AWS_DEFAULT_REGION"],
+            region_name=aws_region(),
             callbacks=[CostTracker("scoring", model)],
         )
     raise ValueError(f"지원하지 않는 LLM_PROVIDER: {provider}")

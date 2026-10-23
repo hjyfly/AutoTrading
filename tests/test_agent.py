@@ -37,6 +37,14 @@ def test_주_표기는_해석한_구간을_에이전트에_알린다():
     assert late == ["'3월 다섯째 주' = 2026-03-23 ~ 2026-03-27 (월~일 주, 1일이 든 주가 첫째 주) — 이 가운데 2026-03-05 뒤 날짜는 이 시점에 알 수 없다"]
 
 
+def test_주_표기는_앞의_연도를_읽고_평일이_없는_첫째_주는_다시_묻는다():
+    assert agent.extract_as_of("2025년 3월 둘째 주 하락 이유", today=TODAY) == "2025-03-07"
+    assert agent.period_notes("2025년 3월 둘째 주", today=TODAY)[0].startswith("'2025년 3월 둘째 주' = 2025-03-03 ~ 2025-03-07")
+    with pytest.raises(agent.InvalidDateError, match="첫째 주"):  # 2026-03-01 은 일요일: 전달 날짜로 넘어가지 않는다
+        agent.extract_as_of("3월 첫째 주 신호", today=TODAY)
+    assert agent.extract_as_of("4월 첫째 주", today=TODAY) == "2026-04-03"  # 4월 1일은 수요일
+
+
 @pytest.mark.parametrize("question", ["2월 30일 신호는?", "2026-02-30 신호", "2월 29일 신호"])
 def test_없는_날짜는_오류로_알린다(question):
     with pytest.raises(agent.InvalidDateError):

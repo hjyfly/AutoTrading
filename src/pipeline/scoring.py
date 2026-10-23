@@ -266,6 +266,15 @@ def main(dates: list[str] | None = None):
 
 # ---- 9일차: 기사별 구조화 추출 (DAY9_PLAN.md 3.1). 하루 1회 호출, 회사명 익명화, 결과는 날짜별로 캐시한다 ----
 
+class FeatureFormatError(ValueError):
+    """구조화 출력 형식 오류가 FEATURE_MAX_ATTEMPTS 번 이어졌다(그날만 건너뛰고 다시 실행하면 다시 뽑는다).
+    시점 규칙 위반(validate_inputs 의 ValueError)과 구분하려고 따로 둔다."""
+
+
+# 다시 물어볼 형식 오류: 허용 밖 값·목록 대신 문자열 같은 구조화 출력 검증 실패. 비용 한도·요청 제한·인증·네트워크 오류는 다시 묻지 않고 위로 올린다
+FORMAT_ERRORS = (ValueError, TypeError, KeyError)
+
+
 class ArticleFeature(BaseModel):
     """기사 하나의 구조화 피처. 근거를 먼저 쓴다."""
 
@@ -389,9 +398,7 @@ def extract_day(signal_date, model=None, articles: pd.DataFrame | None = None, c
             attempts += 1
             try:
                 got = model.with_structured_output(DayFeatures).invoke(messages)
-            except Exception as e:  # 구조화 출력 검증 실패(허용 밖 값, 목록 대신 문자열 등). 요청 제한은 위로 올린다
-                if "Throttling" in type(e).__name__ or "Throttling" in str(e):
-                    raise
+            except FORMAT_ERRORS as e:  # pydantic ValidationError·출력 파싱 오류는 ValueError 의 하위 클래스다
                 error = f"{type(e).__name__}: {str(e)[:200]}"
                 continue
             out = got if out is None or len(got.articles) > len(out.articles) else out
@@ -399,7 +406,7 @@ def extract_day(signal_date, model=None, articles: pd.DataFrame | None = None, c
             if sorted(set(nos)) == list(range(1, n + 1)) or attempts >= 2:
                 break
         if out is None:
-            raise ValueError(f"{t.date()} 기사 피처 형식 오류가 {attempts}번 이어졌다: {error}")
+            raise FeatureFormatError(f"{t.date()} 기사 피처 형식 오류가 {attempts}번 이어졌다: {error}")
         by_no = {a.no: a.model_dump() for a in out.articles if 1 <= a.no <= n}
         sizes = _cluster_sizes(articles, day_titles)
         for i, r in enumerate(articles.itertuples(), start=1):
@@ -426,7 +433,7 @@ def main_features(dates: list[str] | None = None):
             try:
                 record = extract_day(t, selected=selected)
                 break
-            except ValueError as e:  # 형식 오류가 이어진 날은 건너뛴다(다시 실행하면 그날만 다시 뽑는다)
+            except FeatureFormatError as e:  # 형식 오류가 이어진 날만 건너뛴다(다시 실행하면 그날만 다시 뽑는다). 시점 위반·비용 한도는 멈춘다
                 print(pd.Timestamp(t).date(), f"건너뜀: {e}", flush=True)
                 record = {}
                 break

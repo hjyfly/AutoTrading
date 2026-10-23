@@ -35,25 +35,118 @@
 
 ## 빠른 시작
 
-```powershell
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-```
-
-저장소 루트에 `.env` 파일을 만들고(이미 있으면 그대로 쓴다) 아래 키를 채웁니다. 값은 코드·문서에 적지 않습니다.
-
-`.env` 키: `AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`·`AWS_DEFAULT_REGION`(Bedrock), `DART_API_KEY`, `BEDROCK_EMBEDDING_MODEL_ID`(RAG). 선택: `GMAIL_SENDER`·`GMAIL_APP_PASSWORD`·`NOTIFY_TO`(알림), `KIS_*`(한국투자증권 조회·사람 실행 주문, 기본 모의·주문 꺼짐).
+처음 설치하거나 다른 PC 로 옮길 때는 아래 [수행 가이드](#수행-가이드-다른-pc-에서-이어-개발실행하기)를 따릅니다. 설치가 끝난 뒤 자주 쓰는 명령:
 
 ```powershell
 .venv\Scripts\streamlit run src/ui.py                          # 화면 (종목 선택)
 .venv\Scripts\python -m uvicorn src.server:app --port 8000     # API: POST /query {"question": "2026-10-15 SK하이닉스 신호는?"}
-.venv\Scripts\python -m src.daily_run --no-email               # 하루치 자동 실행을 손으로
+.venv\Scripts\python -m src.daily_run --no-email               # 하루치 자동 실행을 손으로(오늘 신호를 기록한다. 자동 실행과 겹치지 않게)
 .venv\Scripts\python -m src.pipeline.scoreboard                # 실시간 성적표
 .venv\Scripts\python -m src.pipeline.multi_ticker analysis     # 종목별 분석·비교
 .venv\Scripts\python -m src.pipeline.experiment --monitor --code 000660   # 종목별 조건 모니터링 (--all 전 종목)
 .venv\Scripts\python -m evaluation.run_eval --judge            # /query 평가
 .venv\Scripts\python -m pytest -q                              # 테스트
 ```
+
+## 수행 가이드: 다른 PC 에서 이어 개발·실행하기
+
+### 1. 코드와 파이썬
+
+```powershell
+git clone https://github.com/hjyfly/AutoTrading.git
+cd AutoTrading
+python -m venv .venv                      # Python 3.11 이상 (개발 PC 는 3.14.8)
+.venv\Scripts\pip install -r requirements.txt   # 개발 PC 에서 확인한 버전으로 고정돼 있다
+```
+
+macOS·Linux 는 `.venv/bin/python`, `.venv/bin/pip` 로 바꿔 쓴다.
+
+### 2. `.env` 설정 (git 에 올리지 않는다)
+
+저장소 루트에 `.env` 를 만든다. **비밀 값과 주문 스위치만** 여기에 두고, 나머지 실행 설정은 git 에 올라가는 `src/config.py` 에 기본값이 있다(`.env` 에 같은 키를 쓰면 `.env` 가 이긴다).
+
+| 키 | 필수 | 용도 | 얻는 곳 / 기본값 |
+|---|---|---|---|
+| `AWS_ACCESS_KEY_ID` · `AWS_SECRET_ACCESS_KEY` | **필수** | Bedrock 호출(뉴스 채점·기사 추출·`/query` 에이전트·judge·RAG 임베딩) | AWS IAM 사용자 키. Bedrock 모델 접근 권한: Sonnet 4.6(`global.` 프로필), Sonnet 4.5(`us.` 프로필, judge), Titan Embeddings v2 |
+| `DART_API_KEY` | **필수** | DART 공시 수집, `/query` 공시 조회 | opendart.fss.or.kr 인증키 |
+| `AWS_DEFAULT_REGION` | 선택 | 채점·에이전트·임베딩 리전 | 기본 `config.AWS_REGION_DEFAULT` = `us-east-1` (judge 리전은 `config.JUDGE_REGION`) |
+| `BEDROCK_MODEL_ID` | 선택 | 채점·에이전트 모델 | 기본 `config.SCORING_MODEL_DEFAULT` = Sonnet 4.6. **바꾸면 유출 테스트와 뉴스 전체 재채점이 필요하다**(CLAUDE.md) |
+| `BEDROCK_EMBEDDING_MODEL_ID` | 선택 | RAG 임베딩 | 기본 `config.EMBEDDING_MODEL_DEFAULT` = `amazon.titan-embed-text-v2:0`. 바꾸면 색인을 다시 만든다 |
+| `LLM_PROVIDER` | 선택 | LLM 공급자 | 기본 `config.LLM_PROVIDER_DEFAULT` = `bedrock` (`anthropic` 은 이전 대비용, 지금 미구현) |
+| `GMAIL_SENDER` · `GMAIL_APP_PASSWORD` · `NOTIFY_TO` | 선택 | 평일 15:20 알림 메일. 없으면 메일만 건너뛴다 | Google 계정 2단계 인증 뒤 "앱 비밀번호" |
+| `KIS_APP_KEY` · `KIS_APP_SECRET` · `KIS_ACCOUNT_NO` | 선택 | 한국투자증권 조회(계좌 잔고)·사람 실행 주문. 없으면 계좌 줄만 건너뛴다 | KIS Developers 앱 키. 계좌는 `8자리-2자리` |
+| `KIS_ENV` | 선택 | `mock`(모의투자) / `real` | 기본 `config.KIS_DEFAULT_ENV` = `mock` |
+| `KIS_TRADING_ENABLED` | 선택 | **주문 스위치.** `true` 일 때만 `src/broker.py` 를 사람이 직접 실행해 주문할 수 있다(신호로 자동 주문하지 않는다) | 기본 꺼짐. 안전을 위해 config 에 두지 않는다 |
+| `FRED_API_KEY` | 안 씀 | 옛 FRED 원본을 다시 만들 때만 | — |
+
+빈 템플릿(값을 채워 `.env` 로 저장):
+
+```dotenv
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+DART_API_KEY=
+# 선택: 비우면 config 기본값
+# AWS_DEFAULT_REGION=us-east-1
+# BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-6
+# BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
+# LLM_PROVIDER=bedrock
+# 선택: 알림
+GMAIL_SENDER=
+GMAIL_APP_PASSWORD=
+NOTIFY_TO=
+# 선택: 한국투자증권
+KIS_APP_KEY=
+KIS_APP_SECRET=
+KIS_ACCOUNT_NO=
+KIS_ENV=mock
+KIS_TRADING_ENABLED=false
+```
+
+### 3. 데이터 옮기기
+
+학습 표·신호·뉴스 점수·비용 기록 등 일부는 git 에 있지만, 아래는 git 에 없다(기사 원문·제목이 있거나 크다). **기존 PC 의 `data/` 폴더를 통째로 복사하는 것이 가장 안전하다**(USB·사내 저장소 등, 공개 저장소에 올리지 않는다).
+
+| 위치 | 다시 만들 수 있나 | 없으면 |
+|---|---|---|
+| `data/processed/signals_live.parquet`, `data/processed/tickers/signals_live_tickers.parquet` | **아니요** — 장 마감 전에 기록한 실시간 신호(판정 근거) | 실시간 성적표가 처음부터 다시 쌓인다. 반드시 복사 |
+| `data/raw/` (일봉·수급·거시 원본, 뉴스 원문, 다른 종목 원본) | 일부만 — 다시 받으면 이미 저장한 날짜의 값이 달라질 수 있고(저장 행 불변 원칙) 뉴스는 수집에 오래 걸린다 | 반드시 복사 |
+| `data/scores/traces/`, `data/scores/features/`, `data/scores/alerts/` | 가능하지만 LLM 비용(약 $70)이 든다 | 복사 권장 |
+| `data/processed/news.parquet`, `selected_news.parquet` | `data/raw` 가 있으면 다시 만든다 | 복사 권장 |
+| `data/index/` (RAG 색인) | `python -m src.retriever` (판단 기록이 있어야 한다, 비용 약 $0.01) | 다시 만들어도 된다 |
+| `data/processed/tickers/`(신호 기록 외), `data/processed/sectors/` | `python -m src.pipeline.sector_models run` → `multi_ticker analysis` | 다시 만들어도 된다 |
+| `data/scores/traces_archive/` | 아니요 — 옛 모델(Sonnet 4.5)·옛 채점 버전 판단 기록 보관본 | 지금 운영에는 쓰지 않는다. 기록을 남기려면 복사 |
+| `data/processed/scoreboard.json`, `data/experiments/`, `data/logs/`, `data/backup/`, `data/kis/`(토큰), `data/scores/eval/`(평가 상세) | 실행하면 다시 생긴다 | 복사하지 않아도 된다 |
+
+### 4. 확인
+
+```powershell
+.venv\Scripts\python -m pytest -q                         # 모두 통과해야 한다
+.venv\Scripts\python -m src.pipeline.scoreboard           # 실시간 기록이 옮겨졌는지 (실시간 기록 N일)
+.venv\Scripts\python -c "from src import tools; print(tools.signal_for('2026-10-15', 'SK하이닉스'))"   # 읽기만 하는 조회
+.venv\Scripts\streamlit run src/ui.py
+```
+
+### 5. 평일 자동 실행 옮기기
+
+**두 PC 가 동시에 자동 실행하지 않게 한다.** 같은 날 두 번 기록되면 실시간 기록이 엇갈린다. 새 PC 에 등록하기 전에 기존 PC 의 작업을 끈다: `schtasks /Change /TN AutoTrading_Daily /DISABLE`.
+
+Windows (작업 스케줄러, 평일 15:20, PC 가 켜져 있어야 한다):
+
+```powershell
+schtasks /Create /TN AutoTrading_Daily /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 15:20 /TR "cmd /c cd /d C:\경로\AutoTrading && .venv\Scripts\python.exe -m src.daily_run >> data\logs\scheduler.log 2>&1"
+```
+
+macOS·Linux (cron, 시스템 시간대가 KST 여야 한다):
+
+```
+20 15 * * 1-5 cd /경로/AutoTrading && .venv/bin/python -m src.daily_run >> data/logs/scheduler.log 2>&1
+```
+
+### 6. 개발을 이어 갈 때
+
+- Claude Code 로 열면 [CLAUDE.md](CLAUDE.md) 규칙과 `.claude/agents/` 검증 에이전트(leak-guard·backtest-auditor·spec-checker·data-probe)가 그대로 적용된다.
+- 기준 문서는 [SERVICE.md](SERVICE.md), 산출물 목록·네이밍 규칙은 [evaluation/reports/README.md](evaluation/reports/README.md), 지난 작업은 `DAY<N>_PLAN.md` 의 결과 절에 있다.
+- 비용은 `data/scores/cost_log.csv`(git 에 있음)로 이어서 센다. 개발 한도는 `config.COST_LIMIT_POC_USD`.
 
 ## 종목 추가
 

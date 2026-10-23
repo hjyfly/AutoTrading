@@ -60,7 +60,7 @@ src/pipeline/leak_test.py        미래 정보 유출 테스트
 src/pipeline/train.py            LightGBM 워크포워드 학습
 src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙). 9일차 일별 뉴스 피처·V1/V2 로지스틱 워크포워드·하락 위험 경보(참고, 운영 신호를 바꾸지 않음)
 src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(재학습 주기 config.RETRAIN_FREQ 안의 첫 거래일 재학습 — 지금 매주, 정답 기간 간격)
-                                 뉴스 채점은 15:15 이후 요청할 때만(LLM 7회). 2026-10-22 부터 뉴스는 참고용(config.NEWS_ADJUST_IN_SIGNAL). 결과는 data/processed/signals_live.parquet
+                                 뉴스 채점·기사별 추출은 15:15 이후 요청할 때만(LLM 8회, 하루 약 $0.27). 2026-10-22 부터 뉴스는 참고용(config.NEWS_ADJUST_IN_SIGNAL). 결과는 data/processed/signals_live.parquet
 src/ui.py                        Streamlit 화면 (종목 선택, 채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
 src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고. 다른 종목도 (종목, 알고리즘)마다 같은 기준(SERVICE.md 5.6)
 src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점·기사별 추출은 참고용) → 다른 종목 신호 → 성적표 → 뉴스 V1 참고·경보 → Gmail 알림
@@ -111,10 +111,10 @@ data/processed/sectors/  8일차 분야별 후보 신호·고르기·확인 결�
 - 파일 하나에 한 가지 역할만 둔다
 - 함수와 도구에는 한국어 docstring 을 쓴다
 - 비밀 값은 .env 에서 읽고 코드에 적지 않는다
-  - 있음: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+  - 필수: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
   - 있음: DART_API_KEY, FRED_API_KEY(지금은 미사용. 옛 FRED 원본을 다시 만들 때만)
-  - 선택: LLM_PROVIDER(기본 bedrock), BEDROCK_MODEL_ID(기본 config.SCORING_MODEL_DEFAULT = Sonnet 4.6)
-  - 추가 필요: BEDROCK_EMBEDDING_MODEL_ID (RAG 색인 단계에서)
+  - 선택(비우면 config 기본값, 2026-10-23 비밀이 아닌 값은 config 로 옮김): LLM_PROVIDER(config.LLM_PROVIDER_DEFAULT = bedrock), BEDROCK_MODEL_ID(config.SCORING_MODEL_DEFAULT = Sonnet 4.6), AWS_DEFAULT_REGION(config.AWS_REGION_DEFAULT), BEDROCK_EMBEDDING_MODEL_ID(config.EMBEDDING_MODEL_DEFAULT)
+  - .env 키 전체와 다른 PC 설정 방법은 README.md 수행 가이드에 있다. 비밀 값과 주문 스위치(KIS_TRADING_ENABLED)는 config 에 두지 않는다
   - 선택: GMAIL_SENDER, GMAIL_APP_PASSWORD, NOTIFY_TO (Gmail 알림. 값은 코드·로그·문서에 남기지 않는다)
   - 선택: KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO(계좌 8자리-상품 2자리), KIS_ENV(mock | real, 기본 mock), KIS_TRADING_ENABLED(기본 false) (한국투자증권. 값은 코드·로그·문서에 남기지 않는다)
   - 나중에 추가: ANTHROPIC_API_KEY

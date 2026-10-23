@@ -13,8 +13,9 @@ FULL_DATE = re.compile(r"(?<!\d)(\d{4})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})�
 COMPACT_DATE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
 MONTH_DAY = re.compile(r"(?<![\d.\-/])(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 SLASH_DAY = re.compile(r"(?<![\d.\-/])(\d{1,2})[/.](\d{1,2})(?![\d.\-/])")
-MONTH_WEEK = re.compile(r"(\d{1,2})\s*월\s*(첫째|둘째|셋째|넷째|다섯째)\s*주")
+MONTH_WEEK = re.compile(r"(?:(\d{4})\s*년\s*)?(\d{1,2})\s*월\s*(첫째|둘째|셋째|넷째|다섯째)\s*주")  # 그룹: 연도(없을 수 있음), 월, 몇째
 WEEK_ORDINAL = {"첫째": 1, "둘째": 2, "셋째": 3, "넷째": 4, "다섯째": 5}
+ORDINAL_WORD = {v: k for k, v in WEEK_ORDINAL.items()}
 
 
 class InvalidDateError(ValueError):
@@ -66,20 +67,24 @@ def _with_year(month: int, day: int, today: pd.Timestamp) -> pd.Timestamp:
     return _make_date(year, month, day)
 
 
-def _week_span(month: int, ordinal: int, today: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """'M월 N째 주'의 평일 구간(그 달 안의 월요일 ~ 금요일). 주는 월~일이고 1일이 든 주가 첫째 주다."""
-    first = _with_year(month, 1, today)
+def _week_span(month: int, ordinal: int, today: pd.Timestamp, year: int | None = None) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """'[YYYY년] M월 N째 주'의 평일 구간(그 달 안의 월요일 ~ 금요일). 주는 월~일이고 1일이 든 주가 첫째 주다.
+    연도가 없으면 오늘 이전의 가장 가까운 해. 1일이 토·일요일이면 첫째 주에 그 달 평일이 없어 InvalidDateError 로 다시 묻는다
+    (전달 날짜로 넘어가지 않게)."""
+    first = _make_date(year, month, 1) if year else _with_year(month, 1, today)
     week_start = first - pd.Timedelta(days=first.weekday()) + pd.Timedelta(weeks=ordinal - 1)
     friday = week_start + pd.Timedelta(days=4)
     month_end = first + pd.offsets.MonthEnd(0)
     if week_start > month_end:
         raise InvalidDateError(f"{month}월에는 {ordinal}째 주가 없다")
+    if friday < first:
+        raise InvalidDateError(f"{first.year}년 {month}월 1일이 주말이라 {ORDINAL_WORD[ordinal]} 주(1일이 든 주)에는 그 달 평일이 없다. 둘째 주나 날짜로 물어 달라")
     return max(week_start, first), min(friday, month_end)
 
 
-def _week_end(month: int, ordinal: int, today: pd.Timestamp) -> pd.Timestamp:
-    """'M월 N째 주'를 그 주의 금요일로 본다. 그 주의 신호를 설명하려면 주말까지 알아야 한다."""
-    return _week_span(month, ordinal, today)[1]
+def _week_end(month: int, ordinal: int, today: pd.Timestamp, year: int | None = None) -> pd.Timestamp:
+    """'M월 N째 주'를 그 주의 금요일(그 달 안)로 본다. 그 주의 신호를 설명하려면 주말까지 알아야 한다."""
+    return _week_span(month, ordinal, today, year)[1]
 
 
 def period_notes(question: str, today: pd.Timestamp | None = None, as_of: str | None = None) -> list[str]:
@@ -88,7 +93,7 @@ def period_notes(question: str, today: pd.Timestamp | None = None, as_of: str | 
     today = today or tools.resolve_as_of(None)
     notes = []
     for m in MONTH_WEEK.finditer(question):
-        start, end = _week_span(int(m[1]), WEEK_ORDINAL[m[2]], today)
+        start, end = _week_span(int(m[2]), WEEK_ORDINAL[m[3]], today, int(m[1]) if m[1] else None)
         note = f"'{m[0]}' = {start.date()} ~ {end.date()} (월~일 주, 1일이 든 주가 첫째 주)"
         if as_of and end > pd.Timestamp(as_of):
             note += f" — 이 가운데 {as_of} 뒤 날짜는 이 시점에 알 수 없다"
@@ -99,7 +104,7 @@ def period_notes(question: str, today: pd.Timestamp | None = None, as_of: str | 
 def extract_as_of(question: str, today: pd.Timestamp | None = None) -> str | None:
     """질문에 있는 날짜를 모두 찾아 가장 이른 날짜를 as_of 로 쓴다(보수적). 없으면 None(오늘).
 
-    알아듣는 표기: 2026-03-11, 2026.3.11, 2026년 3월 11일, 20260311, 3월 11일, 3/11, 3.11, 3월 둘째 주(그 주 금요일).
+    알아듣는 표기: 2026-03-11, 2026.3.11, 2026년 3월 11일, 20260311, 3월 11일, 3/11, 3.11, [2026년] 3월 둘째 주(그 주 금요일).
     연도가 없으면 오늘 이전의 가장 가까운 해. 달력에 없는 날짜면 InvalidDateError.
     """
     today = today or tools.resolve_as_of(None)
@@ -111,7 +116,7 @@ def extract_as_of(question: str, today: pd.Timestamp | None = None) -> str | Non
     for pattern, build in [
         (FULL_DATE, lambda m: _make_date(int(m[1]), int(m[2]), int(m[3]))),
         (COMPACT_DATE, lambda m: _make_date(int(m[1]), int(m[2]), int(m[3]))),
-        (MONTH_WEEK, lambda m: _week_end(int(m[1]), WEEK_ORDINAL[m[2]], today)),
+        (MONTH_WEEK, lambda m: _week_end(int(m[2]), WEEK_ORDINAL[m[3]], today, int(m[1]) if m[1] else None)),
         (MONTH_DAY, lambda m: _with_year(int(m[1]), int(m[2]), today)),
         (SLASH_DAY, lambda m: _with_year(int(m[1]), int(m[2]), today)),
     ]:

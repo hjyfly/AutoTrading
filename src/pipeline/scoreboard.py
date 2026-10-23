@@ -42,9 +42,12 @@ def load_ticker_live() -> pd.DataFrame:
 
 
 def ticker_close(code: str, until: pd.Timestamp) -> pd.Series:
-    """until 전날까지 확정된 그 종목 종가(data/raw/tickers 저장 원본)."""
+    """until 전날까지 확정된 그 종목 종가(data/raw/tickers 저장 원본). 거래정지일(거래량 0)은 뺀다:
+    신호를 학습한 정답(5거래일)이 거래정지일을 건너뛰어 셌으므로 채점도 같은 거래일로 센다(sector_models.clean_raw 와 같은 기준)."""
     from src.pipeline.multi_ticker import raw_path
-    close = pd.read_parquet(raw_path(f"{code}_ohlcv"))["Close"].astype(float).dropna()
+    ohlcv = pd.read_parquet(raw_path(f"{code}_ohlcv"))
+    ohlcv = ohlcv[ohlcv["Volume"].fillna(0) > 0] if "Volume" in ohlcv else ohlcv
+    close = ohlcv["Close"].astype(float).dropna()
     return close[close.index < until.normalize()]
 
 
@@ -89,7 +92,8 @@ def realtime_mask(rows: pd.DataFrame) -> pd.Series:
 
 
 def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down_action: str | None = None) -> dict:
-    """한 모델의 기록을 채점한다. signals 는 날짜별 신호(상승·보합·하락). down_action 은 판정에 쓰는 하락 행동(기본 config.DOWN_ACTION)."""
+    """한 모델의 기록을 채점한다. signals 는 날짜별 신호(상승·보합·하락). down_action 은 판정에 쓰는 하락 행동(기본 config.DOWN_ACTION).
+    samsung 은 채점 대상 종목의 종가다(옛 이름. 다른 종목은 그 종목 종가가 들어온다). 인버스 가격이 비면 인버스 규칙은 계산에서 빠진다."""
     down_action = down_action or config.DOWN_ACTION
     signals = signals.sort_index()
     labels = make_labels(samsung)["label"]
@@ -156,7 +160,7 @@ def score_weight_model(rows: pd.DataFrame, samsung: pd.Series) -> dict:
 
 def criteria(n_matured: int, equity: pd.Series, hold: pd.Series, weights: pd.Series, samsung: pd.Series,
              hit: float | None, base: float | None, kind: str) -> dict:
-    """SERVICE.md 5.2 성공 기준. 확정 신호가 LIVE_PROMOTION_MIN_SIGNALS 개 미만이면 '참고'로만 계산한다.
+    """SERVICE.md 5.2(다른 종목은 5.6) 성공 기준. samsung 은 채점 대상 종목 종가(옛 이름). 확정 신호가 LIVE_PROMOTION_MIN_SIGNALS 개 미만이면 '참고'로만 계산한다.
     A: MDD ≤ 들고 있기 MDD 의 절반, 수익 ≥ 들고 있기의 절반(들고 있기 ≤ 0 이면 이상)
     B: 하락(위험) 신호 적중 > 같은 기간 실제 하락(위험) 비율
     C: 그달 들고 있기 ≥ UP_MONTH_MIN_RETURN 인 달의 보유일 ≥ UP_MONTH_MIN_HOLD (그런 달이 없으면 판정 없음)"""

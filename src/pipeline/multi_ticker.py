@@ -7,8 +7,10 @@
 - 수집: 종목별 일봉(FinanceDataReader)·수급(네이버)과 분야 ETF(yfinance)를 data/raw/tickers/ 에 따로 둔다.
   이미 저장한 행은 바꾸지 않고, 갱신은 새 확정 날짜만 덧붙인다.
 - 특징: 국내 지표(가격·차트·수급)는 그 종목, 거시·해외·지수는 기존 원본(확장 원본 포함)으로 만든다. 시점 규칙은 features.build_features 그대로.
-- 학습: 운영 설정(지표 묶음 base, 5거래일 ±3%, 매주 재학습, 누적)으로 종목별 단독 워크포워드와 4종목 공동 워크포워드.
-- 판정: 사전 등록 Q1 ~ Q3(evaluation/reports/preregistration.md)을 확장 구간에서 한 번 계산해 리포트로 남긴다.
+- 학습: 운영 설정(지표 묶음 base, 5거래일 ±3%, 매주 재학습, 누적)으로 종목별 단독 워크포워드(S0)와 공동 워크포워드(pooled_walk_forward).
+- 7일차 판정(study): 사전 등록 Q1 ~ Q3 을 확장 구간에서 한 번 계산한 기록이다. 다시 돌리면 판정 리포트를 덮어쓰므로 돌리지 않는다.
+- 실시간 신호(live_signals): 평일 15:20 레지스트리 종목 신호(채택 분야는 sector_models, 나머지 S0 단독). 장 마감 전 기록은 덮어쓰지 않는다.
+- 분석(analysis): 레지스트리 전 종목을 선정 알고리즘 신호로 비교하는 탐색 리포트(tickers_analysis.md).
 
 명령줄: python -m src.pipeline.multi_ticker collect | study | analysis | add <코드> | backfill <코드> | live [YYYY-MM-DD]
 """
@@ -48,7 +50,7 @@ def append_only(path: Path, fresh: pd.DataFrame) -> int:
 
 
 def collect(end: str | None = None, tickers=None) -> pd.DataFrame:
-    """종목별 일봉·수급과 분야 ETF 를 받아 덧붙인다. 삼성전자는 기존 원본을 쓰므로 받지 않는다."""
+    """종목별 일봉·수급과 분야 ETF·국내 지수를 받아 덧붙인다. 운영 종목(MAIN_TICKER)은 기존 원본을 쓰므로 받지 않는다."""
     end = end or config.DATA_END
     rows = []
     for code in tickers or [c for c in config.MULTI_TICKERS if c != config.MAIN_TICKER]:
@@ -81,7 +83,7 @@ def base_raw() -> dict:
 
 
 def ticker_raw(code: str, shared: dict | None = None) -> dict:
-    """그 종목의 원본 묶음. 삼성전자는 기존(확장) 원본 그대로."""
+    """그 종목의 원본 묶음. 운영 종목(MAIN_TICKER)은 공통(확장) 원본 그대로, 다른 종목은 일봉·수급만 data/raw/tickers 원본으로 바꾼다."""
     raw = dict(shared or base_raw())
     if code != config.MAIN_TICKER:
         raw["ohlcv"] = pd.read_parquet(raw_path(f"{code}_ohlcv"))
@@ -181,7 +183,8 @@ VALID = (config.VALID_START, None)                      # 검증 구간(참고):
 
 
 def study(save: bool = True) -> dict:
-    """사전 등록 Q1 ~ Q3 을 한 번 계산하고 리포트를 쓴다. 신호 표도 저장한다."""
+    """사전 등록 Q1 ~ Q3 을 한 번 계산하고 리포트를 쓴다. 신호 표도 저장한다.
+    2026-10-22 판정 기록이다. 다시 돌리면 지금 레지스트리·운영 설정으로 다시 계산해 판정 리포트(day7_multi_ticker.md)를 덮어쓰므로 돌리지 않는다."""
     tables = build_tables()
     base_cols = list(config.FEATURE_SET_BASE)
     start = pd.Timestamp(config.DEV_START)
@@ -277,8 +280,6 @@ def report(result: pd.DataFrame, v: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ---- 실시간 신호 (D7-07, 2026-10-23 부터 정식 신호·SERVICE.md 5.6): 다른 종목의 오늘 신호. 매매·주문과 연결하지 않는다 ----
-
 # ---- 종목별 분석·비교 (2026-10-23 사용자 요청, 뉴스 제외). 각 종목의 선정 알고리즘 워크포워드 신호로 계산하며 모두 탐색이다 ----
 
 def selected_signals(code: str) -> tuple[str, pd.DataFrame]:
@@ -327,7 +328,7 @@ def feature_ic(table: pd.DataFrame, close: pd.Series, cols: list[str], start, en
 
 
 def analysis(save: bool = True) -> dict:
-    """4종목(삼성전자 포함)을 각 선정 알고리즘 신호로 같은 규칙(하락 = 현금, 수수료 0.1%)에서 분석·비교한다.
+    """레지스트리 전 종목(운영 종목 포함)을 각 선정 알고리즘 신호로 같은 규칙(하락 = 현금, 수수료 config.FEE_RATE)에서 분석·비교한다.
     데이터 개요, 구간별 성적(A·B·C), 연도별 장세, 방향별 적중, 확신도 구간별 적중, 지표별 5일 IC. 뉴스는 쓰지 않는다."""
     shared = base_raw()
     out = {}
@@ -482,6 +483,8 @@ def add(code: str) -> dict:
             "next": "다음 평일 15:20 자동 실행부터 실시간 신호·성적표·메일에 포함된다. 화면·/query 에서는 바로 조회된다"}
 
 
+# ---- 실시간 신호 (D7-07, 2026-10-23 부터 정식 신호·SERVICE.md 5.6): 운영 종목 밖 레지스트리 종목의 오늘 신호. 매매·주문과 연결하지 않는다 ----
+
 def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
     """다른 종목 원본에 어제까지의 새 확정 날짜만 덧붙인다(오늘 장중 값은 저장하지 않는다)."""
     today = (pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz=config.KST).tz_localize(None)).normalize()
@@ -489,7 +492,7 @@ def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
 
 
 def live_tickers() -> list[str]:
-    """매일 덧붙일 종목: 다른 종목과, 채택된 분야 알고리즘이 함께 쓰는 같은 분야 종목(삼성전자 제외)."""
+    """매일 덧붙일 종목: 운영 종목 밖 레지스트리 종목과, 채택된 분야 알고리즘이 함께 쓰는 같은 분야 종목(운영 종목 제외)."""
     from src.pipeline.sector_models import sector_of
     codes = [c for c in config.MULTI_TICKERS if c != config.MAIN_TICKER]
     peers = [p for c in config.MULTI_TICKERS if c in config.SECTOR_TICKER_NAMES and sector_of(c) in config.SECTOR_ADOPTED
@@ -529,15 +532,20 @@ def live_raw(code: str, t: pd.Timestamp, shared: dict) -> dict:
 
 
 def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
-    """그 종목의 t 일 15:15 신호(운영 설정, 단독 모델). 원본은 t 전날까지, 재학습은 그 주 첫 거래일(과거 검증과 같은 규칙)."""
+    """그 종목의 t 일 15:15 신호(운영 설정 S0, 단독 모델). 과거 신호(8일차 S0·backfill)와 같은 규칙: 원본은 t 전날까지, 거래정지일(거래량 0) 제외,
+    재학습은 그 주 첫 거래일, 재학습일 전에 정답 기간이 끝난 행만 학습. 분야 알고리즘 종목은 sector_models.live_signal 이 만든다."""
     from src import tools
     from src.pipeline.live_signal import block_start
+    from src.pipeline.sector_models import clean_raw
     t = tools.resolve_as_of(as_of)
-    raw = live_raw(code, t, live_shared(t))
+    if t.weekday() >= 5:
+        raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
+    raw = clean_raw(live_raw(code, t, live_shared(t)), keep=t)  # t 빈 행은 거래량이 비어 있어도 남긴다
     table = features.build_features(as_of=t, raw=raw)
     if table.index[-1] != t:
         raise ValueError(f"{code} {t.date()} 행을 만들지 못했다")
     cols = feature_columns(table, "base")
+    features.assert_no_lookahead(table[cols])
     labels = make_labels(raw["ohlcv"]["Close"].dropna().astype(float))
     start = block_start(t, table.index[table[cols].notna().all(axis=1)], valid_start)
     train = table[cols].dropna().join(labels[["label", "future_date"]], how="inner")
