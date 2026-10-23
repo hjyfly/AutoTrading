@@ -170,3 +170,18 @@ def test_지표_지정_워크포워드는_운영_워크포워드와_같다(store
     b = tr.walk_forward(feats, labels, valid_start=DAYS[300], feature_set="base")
     assert (a["signal"] == b["signal"]).all()
     assert np.allclose(a["confidence"], b["confidence"])
+
+
+def test_장_마감_전_기록은_다시_실행해도_덮어쓰지_않는다(tmp_path, monkeypatch):
+    path = tmp_path / "live.parquet"
+    monkeypatch.setattr(config, "MULTI_LIVE_PATH", str(path))
+    t = pd.Timestamp("2026-10-23")
+    old = pd.DataFrame({"code": ["000660", "012450"], "signal": ["상승", "하락"]}, index=[t, t])
+    old["created_at"] = [t + pd.Timedelta(hours=15, minutes=20), t + pd.Timedelta(hours=21)]  # 하나는 실시간, 하나는 사후
+    old.to_parquet(path)
+    monkeypatch.setattr(mt, "_live_one", lambda code, as_of: {"date": t, "code": code, "name": code, "signal": "보합", "confidence": 0.5})
+    monkeypatch.setattr(config, "MULTI_TICKERS", {"005930": ("삼성전자",), "000660": ("SK하이닉스",), "012450": ("한화",)})
+    mt.live_signals("2026-10-23")
+    saved = pd.read_parquet(path).set_index("code")["signal"]
+    assert saved["000660"] == "상승"  # 15:20 실시간 기록 유지
+    assert saved["012450"] == "보합"  # 사후 기록은 새 값으로 바뀜

@@ -21,7 +21,7 @@ from src.pipeline import collect_macro, collect_prices, features
 from src.pipeline.labels import DOWN, UP, make_labels
 from src.pipeline.train import CLASSES, feature_columns, prediction_chunks, walk_forward
 
-SINGLE_MODEL_TAG = "S0 단독"  # 분야 알고리즘이 채택되지 않은 종목의 참고 신호 꼬리표
+SINGLE_MODEL_TAG = "S0 단독"  # 분야 알고리즘이 채택되지 않은 종목의 신호 꼬리표
 SECTOR_PREFIX = "sector"  # 분야 ETF 지표 열 이름 앞부분(종목마다 ETF 가 달라도 같은 열 이름)
 
 
@@ -273,7 +273,7 @@ def report(result: pd.DataFrame, v: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ---- 실시간 참고 신호 (D7-07): 다른 종목의 오늘 신호. 매매·주문과 연결하지 않는다 ----
+# ---- 실시간 신호 (D7-07, 2026-10-23 부터 정식 신호·SERVICE.md 5.6): 다른 종목의 오늘 신호. 매매·주문과 연결하지 않는다 ----
 
 def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
     """다른 종목 원본에 어제까지의 새 확정 날짜만 덧붙인다(오늘 장중 값은 저장하지 않는다)."""
@@ -291,7 +291,7 @@ def live_tickers() -> list[str]:
 
 
 def _live_one(code: str, as_of: str | None) -> dict:
-    """채택된 분야 알고리즘이 있으면 그것으로, 없으면 단독 모델(운영 설정)로 참고 신호를 만든다."""
+    """채택된 분야 알고리즘이 있으면 그것으로, 없으면 단독 모델(운영 설정)로 신호를 만든다."""
     from src.pipeline import sector_models
     if code in config.SECTOR_TICKER_NAMES and sector_models.sector_of(code) in config.SECTOR_ADOPTED:
         return sector_models.live_signal(code, as_of)
@@ -364,15 +364,19 @@ def live_signals(as_of: str | None = None) -> list[dict]:
         new = pd.DataFrame(ok).set_index("date")
         new["created_at"] = pd.Timestamp.now(tz=config.KST).tz_localize(None)
         if path.exists():
+            from src.pipeline.scoreboard import realtime_mask
             old = pd.read_parquet(path)
-            keep = ~(old.index.isin(new.index) & old["code"].isin(new["code"]))
+            key = lambda df: pd.Series(list(zip(df.index, df["code"])), index=df.index)
+            protected = set(key(old)[realtime_mask(old)])  # 장 마감 전 실시간 기록은 다시 실행해도 덮어쓰지 않는다(성적표 대상)
+            new = new[~key(new).isin(protected)]
+            keep = ~key(old).isin(set(key(new)))
             new = pd.concat([old[keep], new]).sort_index()
         new.to_parquet(path)
     return out
 
 
 def summary_lines(results: list[dict]) -> list[str]:
-    """메일용 요약(참고, 매매 대상 아님)."""
+    """메일용 요약(성적표 판정 대상, 매매·주문 대상 아님)."""
     return [f"{r['name']}({r['code']}): " + (f"{r['signal']} (확신도 {r['confidence']:.0%}, {r.get('model', SINGLE_MODEL_TAG)})" if "error" not in r
                                              else f"실패 {r['error'][:60]}")
             for r in results]

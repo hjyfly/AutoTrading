@@ -28,6 +28,15 @@ def test_질문에서_시점을_찾는다(question, expected):
     assert agent.extract_as_of(question, today=TODAY) == expected
 
 
+def test_주_표기는_해석한_구간을_에이전트에_알린다():
+    assert agent.period_notes("3월 둘째 주에 하락 신호가 나온 이유는?", today=TODAY) == [
+        "'3월 둘째 주' = 2026-03-02 ~ 2026-03-06 (월~일 주, 1일이 든 주가 첫째 주)"]
+    assert agent.period_notes("4월 첫째 주", today=TODAY)[0].startswith("'4월 첫째 주' = 2026-04-01 ~ 2026-04-03")  # 그 달 안만
+    assert agent.period_notes("2026-03-11 신호", today=TODAY) == []
+    late = agent.period_notes("3월 5일과 3월 다섯째 주 비교", today=TODAY, as_of="2026-03-05")
+    assert late == ["'3월 다섯째 주' = 2026-03-23 ~ 2026-03-27 (월~일 주, 1일이 든 주가 첫째 주) — 이 가운데 2026-03-05 뒤 날짜는 이 시점에 알 수 없다"]
+
+
 @pytest.mark.parametrize("question", ["2월 30일 신호는?", "2026-02-30 신호", "2월 29일 신호"])
 def test_없는_날짜는_오류로_알린다(question):
     with pytest.raises(agent.InvalidDateError):

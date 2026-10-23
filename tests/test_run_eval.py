@@ -21,6 +21,14 @@ def test_모두_맞으면_통과():
     assert c["tools_ok"] and c["forbidden_ok"] and c["leak_ok"] and c["as_of"] == "2026-03-04"
 
 
+def test_금지_날짜는_한글_표기도_잡는다():
+    result = make_result("2026-03-04", ["get_signal", "get_news_judgement"], "3월 5일 신호는 보합", [])
+    c = ev.auto_checks(ROW, result)
+    assert not c["forbidden_ok"] and c["forbidden_hits"] == ["2026-03-05"]
+    assert ev.auto_checks(ROW, make_result("2026-03-04", ["get_signal", "get_news_judgement"], "3월 15일은 모른다", []))["forbidden_ok"]
+    assert not ev.forbidden_hit("2026-03-01", "3월 11일 신호") and ev.forbidden_hit("2026-03-01", "3월1일 신호")
+
+
 def test_시점_이후_자료가_들어오면_유출로_잡는다():
     result = make_result("2026-03-04", ["get_signal"], "보합",
                          [{"tool": "get_price", "args": {}, "result": {"as_of": "2026-03-12"}},

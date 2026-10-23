@@ -26,6 +26,11 @@ SYSTEM_PROMPT = """너는 삼성전자 {horizon}거래일 방향 신호 시스�
 - 이 시점 이후의 가격·뉴스·공시·신호·성과는 모른다. 도구가 그보다 뒤를 조회하지 않게 되어 있고, 도구가 거부하면 거부했다고 답에 적는다.
 - 질문 일부가 이 시점 이후에 관한 것이어도, 이 시점에 알 수 있는 부분(그날 신호·근거 등)은 빠짐없이 답한다.
 - 학습 중에 알게 된 이후의 일도 쓰지 않는다. 도구 결과에 없는 사실은 지어내지 않는다.
+{period_note}
+예측 정의:
+- 이 시스템은 다음 날이 아니라 {horizon}거래일 뒤 종가 방향(±{threshold:.0%} 기준 상승·보합·하락)을 예측한다.
+- 질문이 '내일'·'다음 달'처럼 다른 기간을 물으면, 답 첫머리에 이 정의를 밝혀 바로잡은 뒤 시점의 신호와 확신도를 알려 준다.
+- 예측은 틀릴 수 있고 매매는 사용자가 직접 판단해야 한다고 적는다.
 
 도구 사용:
 - 특정 날짜의 신호·이유를 물으면 get_signal 과 get_news_judgement 를 먼저 쓴다.
@@ -36,6 +41,7 @@ SYSTEM_PROMPT = """너는 삼성전자 {horizon}거래일 방향 신호 시스�
 답 형식:
 - 신호를 물으면 방향(상승·보합·하락), 확신도, 근거를 먼저 쓴다.
 - 근거마다 어느 도구·날짜의 자료인지 밝힌다.
+- 가격·수급·지표 같은 숫자 자료는 시점 전날 종가까지만 쓴다. 이런 자료를 답할 때는 마지막 날짜를 '전날(YYYY-MM-DD) 종가 기준'처럼 밝힌다.
 - 투자 권유가 아니라 모델 판단의 설명이라는 점을 마지막에 한 줄 적는다.
 """
 
@@ -54,15 +60,34 @@ def _with_year(month: int, day: int, today: pd.Timestamp) -> pd.Timestamp:
     return _make_date(year, month, day)
 
 
-def _week_end(month: int, ordinal: int, today: pd.Timestamp) -> pd.Timestamp:
-    """'M월 N째 주'를 그 주(월~일, 1일이 든 주가 첫째 주)의 금요일로 본다. 그 주의 신호를 설명하려면 주말까지 알아야 한다."""
+def _week_span(month: int, ordinal: int, today: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """'M월 N째 주'의 평일 구간(그 달 안의 월요일 ~ 금요일). 주는 월~일이고 1일이 든 주가 첫째 주다."""
     first = _with_year(month, 1, today)
     week_start = first - pd.Timedelta(days=first.weekday()) + pd.Timedelta(weeks=ordinal - 1)
     friday = week_start + pd.Timedelta(days=4)
     month_end = first + pd.offsets.MonthEnd(0)
     if week_start > month_end:
         raise InvalidDateError(f"{month}월에는 {ordinal}째 주가 없다")
-    return min(friday, month_end)
+    return max(week_start, first), min(friday, month_end)
+
+
+def _week_end(month: int, ordinal: int, today: pd.Timestamp) -> pd.Timestamp:
+    """'M월 N째 주'를 그 주의 금요일로 본다. 그 주의 신호를 설명하려면 주말까지 알아야 한다."""
+    return _week_span(month, ordinal, today)[1]
+
+
+def period_notes(question: str, today: pd.Timestamp | None = None, as_of: str | None = None) -> list[str]:
+    """질문의 'M월 N째 주' 표기를 어떤 날짜 구간으로 읽었는지 문장으로 돌려준다(에이전트가 같은 해석을 답에 쓰도록).
+    구간 끝이 as_of 보다 뒤면 그 뒤는 이 시점에 알 수 없다고 함께 적는다."""
+    today = today or tools.resolve_as_of(None)
+    notes = []
+    for m in MONTH_WEEK.finditer(question):
+        start, end = _week_span(int(m[1]), WEEK_ORDINAL[m[2]], today)
+        note = f"'{m[0]}' = {start.date()} ~ {end.date()} (월~일 주, 1일이 든 주가 첫째 주)"
+        if as_of and end > pd.Timestamp(as_of):
+            note += f" — 이 가운데 {as_of} 뒤 날짜는 이 시점에 알 수 없다"
+        notes.append(note)
+    return notes
 
 
 def extract_as_of(question: str, today: pd.Timestamp | None = None) -> str | None:
@@ -132,8 +157,10 @@ def answer(question: str, model=None) -> dict:
         return {"answer": f"질문의 날짜를 알아들을 수 없다: {e}. 날짜를 다시 확인해 달라.", "contexts": [],
                 "trace": [{"step": "answer", "as_of": None, "as_of_from_question": True, "cost_usd": 0.0, "error": str(e)}]}
     with tools.request_as_of(as_of) as cap:
+        notes = period_notes(question, as_of=str(cap.date()))  # 상한으로 낮춘 시점 기준으로 '알 수 없는 날'을 알린다
         agent = create_agent(model or llm.get_agent_llm(), AGENT_TOOLS, system_prompt=SYSTEM_PROMPT.format(
-            as_of=cap.date(), horizon=config.LABEL_HORIZON_DAYS, cutoff=config.SIGNAL_CUTOFF_KST))
+            as_of=cap.date(), horizon=config.LABEL_HORIZON_DAYS, threshold=config.LABEL_THRESHOLD, cutoff=config.SIGNAL_CUTOFF_KST,
+            period_note="".join(f"- 질문의 기간 표기는 이렇게 해석했다: {n}. 답 첫머리에 이 해석을 밝히고, 다른 날짜로 다시 해석하지 않는다.\n" for n in notes)))
         spent_before = llm.total_cost()
         result = agent.invoke({"messages": [{"role": "user", "content": question}]})
     messages = result["messages"]

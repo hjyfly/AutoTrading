@@ -1,7 +1,8 @@
 # AutoTrading 2 — 다종목 확장 분석과 분야별 알고리즘 (반도체·우주항공·로봇)
 
-> 작성 2026-10-22 · 브랜치 `day7-multi-ticker`(main 에 합치지 않음) · 계획 [DAY7_PLAN.md](DAY7_PLAN.md)·[DAY8_PLAN.md](DAY8_PLAN.md) · 기준 문서 [SERVICE.md](SERVICE.md) · 리포트 [day7_multi_ticker.md](evaluation/reports/day7_multi_ticker.md)·[day8_sector_models.md](evaluation/reports/day8_sector_models.md) · 장부 [preregistration.md](evaluation/reports/preregistration.md)
+> 작성 2026-10-22 · 2026-10-23 main 에 합침 · 계획 [DAY7_PLAN.md](DAY7_PLAN.md)·[DAY8_PLAN.md](DAY8_PLAN.md) · 기준 문서 [SERVICE.md](SERVICE.md) · 리포트 [day7_multi_ticker.md](evaluation/reports/day7_multi_ticker.md)·[day8_sector_models.md](evaluation/reports/day8_sector_models.md) · 장부 [preregistration.md](evaluation/reports/preregistration.md)
 > SERVICE.md 의 운영(삼성전자 신호·매매 규칙·성공 기준)은 바꾸지 않는다. 이 문서는 그 위에 얹은 **분석용 확장**만 정리한다.
+> **2026-10-23 사용자 결정:** 세 종목 신호를 정식 신호로 올렸다. 지금의 정의·성공 기준은 [SERVICE.md](SERVICE.md) 3·4절과 5.6 이 기준이고, 이 문서는 7·8일차 분석 과정과 결과 기록으로 남긴다. 아래 "참고 신호"는 그날 이전 표현이다.
 
 ## 1. 한눈에 보기
 

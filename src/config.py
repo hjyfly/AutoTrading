@@ -431,7 +431,7 @@ KIS_MAX_ORDERS_PER_DAY = 1
 KIS_MAX_ORDER_KRW = 1_000_000                 # 한 번 주문 금액 상한(기본값)
 ACCOUNT_LIVE_PATH = "data/kis/account_live.parquet"  # 매일 읽은 계좌 잔고 기록(git 제외)
 
-# ---- 7일차: 다종목 분석 (DAY7_PLAN.md, 브랜치 day7-multi-ticker). 분석용 신호만, 매매 대상은 삼성전자뿐 ----
+# ---- 7일차: 다종목 분석 (DAY7_PLAN.md). 2026-10-23 부터 정식 신호(SERVICE.md 5.6), 매매·주문 대상은 삼성전자뿐 ----
 MULTI_TICKERS = {  # 코드: (이름, 분야, 분야 ETF 이름 또는 None)
     "005930": ("삼성전자", "반도체", None),
     "000660": ("SK하이닉스", "반도체", None),
@@ -444,7 +444,8 @@ MULTI_DATA_START = "2019-01-02"               # 확장 원본과 같은 시작�
 TICKER_RAW_DIR = "data/raw/tickers"           # 종목별 일봉·수급·분야 ETF 원본(기존 원본과 따로)
 MULTI_SIGNALS_DIR = "data/processed/tickers"  # 종목별 특징·정답·신호
 DAY7_REPORT_PATH = "evaluation/reports/day7_multi_ticker.md"
-MULTI_LIVE_PATH = "data/processed/tickers/signals_live_tickers.parquet"  # 다른 종목 실시간 참고 신호(git 제외)
+MULTI_LIVE_PATH = "data/processed/tickers/signals_live_tickers.parquet"  # 다른 종목 실시간 신호 기록(성적표 판정, git 제외)
+TICKER_DOWN_ACTION = "cash"  # 다른 종목 성적표의 하락 행동(SERVICE.md 5.6·장부 M1 고정. 인버스 ETF 가 없으므로 운영 규칙이 바뀌어도 현금)
 MULTI_POOLED_MIN_BETTER = 3   # Q2 사전 등록: 공동 학습이 단독보다 나은 종목이 이 수 이상이면 채택 후보
 
 # 8일차 분야별 알고리즘 (DAY8_PLAN.md, 2026-10-22 사전 등록. 결과를 본 뒤 바꾸지 않는다)
@@ -469,7 +470,7 @@ SECTOR_SELECT_PERIOD = (DEV_START, EXT_VALID_END)     # 고르는 구간 2022-03
 SECTOR_CONFIRM_START = VALID_START                    # 확인 구간 2025-04-23 ~ 데이터 끝
 SECTOR_DIR = "data/processed/sectors"                 # 후보 신호·결과 표(재생성 가능, git 제외)
 DAY8_REPORT_PATH = "evaluation/reports/day8_sector_models.md"
-SECTOR_ADOPTED = {"로봇": "S4"}  # 확인까지 통과한 분야 알고리즘(장부 R3, 2026-10-22). 그 분야 종목 참고 신호만 이 알고리즘으로 만든다
+SECTOR_ADOPTED = {"로봇": "S4"}  # 확인까지 통과한 분야 알고리즘(장부 R3, 2026-10-22). 그 분야 종목 신호만 이 알고리즘으로 만든다
 
 # LLM 비용 한도 (SERVICE.md 15절). 채점과 judge 호출을 합산한다
 COST_LIMIT_POC_USD = 150.0  # 개발 단계 한도 (2026-10-22 $80 → $150, 사용자 결정)

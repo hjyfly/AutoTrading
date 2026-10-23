@@ -3,6 +3,8 @@
 - 정답: t 종가 → t+5거래일 종가 ±3%. 5거래일 뒤 종가가 확정된 신호만 채점한다.
 - 모의 매매: 첫 기록일 현금 시작, 기록이 빠진 거래일은 '보합'(포지션 유지)으로 본다. 규칙은 backtest.simulate 와 같다.
 - 성능 저하 경고: 최근 DRIFT_WINDOW 개 확정 신호의 정확도가 같은 기간 '항상 가장 많은 정답' 비율보다 낮으면 경고한다.
+- 다른 종목(config.MULTI_TICKERS, SERVICE.md 5.6): signals_live_tickers.parquet 를 (종목, 알고리즘)마다 같은 규칙으로 채점한다.
+  비교 대상은 그 종목 들고 있기이고, 정답·모의 매매 가격은 그 종목 저장 원본(전날까지 덧붙인 확정 종가)이다. 주문과는 연결하지 않는다.
 """
 import json
 from pathlib import Path
@@ -28,6 +30,48 @@ def load_live() -> pd.DataFrame:
     return live
 
 
+def load_ticker_live() -> pd.DataFrame:
+    """다른 종목 실시간 기록. 알고리즘 열이 비어 있으면 단독 모델(S0)로 본다(SERVICE2.md 10.7)."""
+    from src.pipeline.multi_ticker import SINGLE_MODEL_TAG
+    path = Path(config.MULTI_LIVE_PATH)
+    if not path.exists():
+        return pd.DataFrame(columns=["code", "model", "signal", "confidence"])
+    live = pd.read_parquet(path)
+    live["model"] = live["model"].fillna(SINGLE_MODEL_TAG) if "model" in live.columns else SINGLE_MODEL_TAG
+    return live
+
+
+def ticker_close(code: str, until: pd.Timestamp) -> pd.Series:
+    """until 전날까지 확정된 그 종목 종가(data/raw/tickers 저장 원본)."""
+    from src.pipeline.multi_ticker import raw_path
+    close = pd.read_parquet(raw_path(f"{code}_ohlcv"))["Close"].astype(float).dropna()
+    return close[close.index < until.normalize()]
+
+
+def score_tickers(until: pd.Timestamp) -> dict:
+    """다른 종목 성적표: (종목, 알고리즘)마다 운영 모델과 같은 성공 기준 A·B·C·성능 저하 경고. 하락 행동은 현금만 계산한다."""
+    live = load_ticker_live()
+    out = {}
+    for (code, model), rows in live.groupby(["code", "model"], sort=True):
+        rows = rows.drop(columns=["code", "model"])
+        rows = rows[rows.index < until.normalize()]  # 기준일 뒤 기록은 세지 않는다(날짜 지정 재계산)
+        realtime = rows[realtime_mask(rows)]
+        entry = {"title": f"{config.MULTI_TICKERS.get(code, (code,))[0]}({code}) · {model}", "code": code, "algorithm": model,
+                 "n_backfilled": int(len(rows) - len(realtime))}
+        if realtime.empty:
+            entry.update(n_signals=0, n_matured=0, accuracy=None, drift={"status": "실시간 기록 없음"})
+        else:
+            try:
+                close = ticker_close(code, until)
+                entry.update(score_model(realtime["signal"], close, pd.Series(dtype=float), down_action=config.TICKER_DOWN_ACTION),
+                             price_last_date=str(close.index.max().date()))
+            except Exception as e:  # 한 종목 원본 문제로 성적표 전체가 멈추지 않게 한다. 판정(criteria)은 만들지 않는다
+                entry.update(n_signals=int(len(realtime)), n_matured=None, accuracy=None,
+                             drift={"status": f"채점 실패({type(e).__name__}: {str(e)[:80]})"})
+        out[f"{code}|{model}"] = entry
+    return out
+
+
 def load_prices(until: pd.Timestamp) -> tuple[pd.Series, pd.Series]:
     """until 전날까지 확정된 삼성전자·인버스 종가(저장본 + 실시간으로 이어 붙인 값)."""
     samsung = tools.series_until("prices", "samsung_ohlcv", until)[0]["Close"].astype(float)
@@ -44,8 +88,9 @@ def realtime_mask(rows: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(rows["created_at"]) <= deadline
 
 
-def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series) -> dict:
-    """한 모델의 기록을 채점한다. signals 는 날짜별 신호(상승·보합·하락)."""
+def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down_action: str | None = None) -> dict:
+    """한 모델의 기록을 채점한다. signals 는 날짜별 신호(상승·보합·하락). down_action 은 판정에 쓰는 하락 행동(기본 config.DOWN_ACTION)."""
+    down_action = down_action or config.DOWN_ACTION
     signals = signals.sort_index()
     labels = make_labels(samsung)["label"]
     matured = signals[signals.index.isin(labels.index)]
@@ -65,15 +110,15 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series) -> d
                 by_rule[rule] = backtest.summary(curves[rule])
             except ValueError:
                 continue
-        out.update(by_rule=by_rule, down_action=config.DOWN_ACTION,
+        out.update(by_rule=by_rule, down_action=down_action,
                    hold=backtest.summary(backtest.buy_and_hold(samsung, days)), trading_days=int(len(days)))
-        if config.DOWN_ACTION in curves:
-            out.update(model=by_rule[config.DOWN_ACTION],
-                       equity={str(d.date()): round(float(v), 6) for d, v in curves[config.DOWN_ACTION].items()})
+        if down_action in curves:
+            out.update(model=by_rule[down_action],
+                       equity={str(d.date()): round(float(v), 6) for d, v in curves[down_action].items()})
             known = labels.reindex(matured.index)
             down = matured == DOWN
-            held = (sims[config.DOWN_ACTION]["position"] == backtest.LONG).astype(float)
-            out["criteria"] = criteria(len(matured), curves[config.DOWN_ACTION], backtest.buy_and_hold(samsung, days), held, samsung,
+            held = (sims[down_action]["position"] == backtest.LONG).astype(float)
+            out["criteria"] = criteria(len(matured), curves[down_action], backtest.buy_and_hold(samsung, days), held, samsung,
                                        hit=float((known[down] == DOWN).mean()) if down.any() else None,
                                        base=float((known == DOWN).mean()) if len(known) else None, kind="하락 신호 적중")
         else:
@@ -189,6 +234,11 @@ def build(today: pd.Timestamp | None = None) -> dict:
         for model, entry in board["models"].items():
             if model not in ("base", "base_v1"):
                 entry["promotion"] = promotion(entry, base, model)
+    try:  # 다른 종목 기록 문제로 삼성전자 성적표·알림이 멈추지 않게 한다
+        board["tickers"] = score_tickers(today)
+    except Exception as e:
+        board["tickers"] = {}
+        board["tickers_error"] = f"{type(e).__name__}: {str(e)[:120]}"
     path = Path(config.SCOREBOARD_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(board, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -196,34 +246,44 @@ def build(today: pd.Timestamp | None = None) -> dict:
 
 
 def summary_lines(board: dict) -> list[str]:
-    """알림·화면용 한 줄 요약들."""
-    lines = []
-    for model, s in board.get("models", {}).items():
-        part = f"{s['title']}: 실시간 기록 {s['n_signals']}일, 정답 확정 {s['n_matured']}일"
-        if s.get("n_backfilled"):
-            part += f" (사후 기록 {s['n_backfilled']}일 제외)"
-        if s["accuracy"] is not None:
-            part += f", 정확도 {s['accuracy']:.0%}"
-        if "model" in s:
-            other = {r: v for r, v in s.get("by_rule", {}).items() if r != s.get("down_action")}
-            name = config.DOWN_ACTION_LABELS.get
-            part += f", 모의 수익 {s['model']['total_return']:+.1%} (하락={name(s['down_action'])} 규칙, 들고 있기 {s['hold']['total_return']:+.1%}"
-            part += "".join(f", 하락={name(r)} 규칙 {v['total_return']:+.1%}" for r, v in other.items()) + ")"
-        drift = s["drift"]
-        part += f" · {drift['status']}" + (f": {drift['message']}" if "message" in drift else "")
-        if "criteria" in s:
-            c = s["criteria"]
-            mark = lambda v: "-" if v is None else ("통과" if v else "실패")
-            part += f" · 성공 기준[{c['status']}] A {mark(c['A']['passed'])}, B {mark(c['B']['passed'])}, C {mark(c['C']['passed'])}"
-        if "promotion" in s:
-            p = s["promotion"]
-            part += (" · 승격 검토 대상" if p["eligible"] else
-                     " · 승격 조건 " + ("장부 미등록" if not p["registered"] else "미충족(표본 부족)" if not p["ready"]
-                                     else f"보류({p['note']})" if "note" in p else "미충족(운영보다 낫지 않음)"))
-        lines.append(part)
+    """알림·화면용 한 줄 요약들(삼성전자 운영·비교 모델)."""
+    lines = [entry_line(s) for s in board.get("models", {}).values()]
     if lines and board.get("price_last_date"):
         lines.append(f"(가격 마지막 날 {board['price_last_date']} 기준)")
     return lines or [board.get("note", "기록 없음")]
+
+
+def ticker_lines(board: dict) -> list[str]:
+    """다른 종목 성적표 요약(종목·알고리즘마다 한 줄)."""
+    if board.get("tickers_error"):
+        return [f"다른 종목 성적표 계산 실패: {board['tickers_error']}"]
+    return [entry_line(s) for s in board.get("tickers", {}).values()] or ["아직 실시간 기록이 없다"]
+
+
+def entry_line(s: dict) -> str:
+    """성적표 항목 하나의 한 줄 요약."""
+    part = f"{s['title']}: 실시간 기록 {s['n_signals']}일, 정답 확정 {'-' if s['n_matured'] is None else s['n_matured']}일"
+    if s.get("n_backfilled"):
+        part += f" (사후 기록 {s['n_backfilled']}일 제외)"
+    if s["accuracy"] is not None:
+        part += f", 정확도 {s['accuracy']:.0%}"
+    if "model" in s:
+        other = {r: v for r, v in s.get("by_rule", {}).items() if r != s.get("down_action")}
+        name = config.DOWN_ACTION_LABELS.get
+        part += f", 모의 수익 {s['model']['total_return']:+.1%} (하락={name(s['down_action'])} 규칙, 들고 있기 {s['hold']['total_return']:+.1%}"
+        part += "".join(f", 하락={name(r)} 규칙 {v['total_return']:+.1%}" for r, v in other.items()) + ")"
+    drift = s["drift"]
+    part += f" · {drift['status']}" + (f": {drift['message']}" if "message" in drift else "")
+    if "criteria" in s:
+        c = s["criteria"]
+        mark = lambda v: "-" if v is None else ("통과" if v else "실패")
+        part += f" · 성공 기준[{c['status']}] A {mark(c['A']['passed'])}, B {mark(c['B']['passed'])}, C {mark(c['C']['passed'])}"
+    if "promotion" in s:
+        p = s["promotion"]
+        part += (" · 승격 검토 대상" if p["eligible"] else
+                 " · 승격 조건 " + ("장부 미등록" if not p["registered"] else "미충족(표본 부족)" if not p["ready"]
+                                 else f"보류({p['note']})" if "note" in p else "미충족(운영보다 낫지 않음)"))
+    return part
 
 
 def main():
@@ -231,6 +291,7 @@ def main():
     board = build()
     print(config.SCOREBOARD_PATH)
     print("\n".join(summary_lines(board)))
+    print("\n".join(ticker_lines(board)))
 
 
 if __name__ == "__main__":

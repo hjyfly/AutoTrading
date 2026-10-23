@@ -1,4 +1,4 @@
-"""8일차 분야별 알고리즘 (DAY8_PLAN.md, SERVICE2.md). 분석·참고 신호만 만들고 매매·주문 경로와 연결하지 않는다.
+"""8일차 분야별 알고리즘 (DAY8_PLAN.md, SERVICE2.md). 분석과 채택 분야 신호(2026-10-23 부터 정식 신호, SERVICE.md 5.6)를 만들고 매매·주문 경로와 연결하지 않는다.
 
 - 분야(반도체·우주항공·로봇)마다 종목 3개로 후보 S0 ~ S5 를 같은 규칙(매주 재학습, 정답 간격)으로 워크포워드한다.
 - 고르는 구간에서 분야마다 후보를 하나 고르고(select), 확인 구간에서 한 번 확인한다(confirm). 규칙은 사전 등록 그대로.
@@ -322,7 +322,7 @@ def confirm() -> dict:
 
 
 def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
-    """채택된 분야 알고리즘(config.SECTOR_ADOPTED)으로 t 일 15:15 참고 신호를 만든다.
+    """채택된 분야 알고리즘(config.SECTOR_ADOPTED)으로 t 일 15:15 신호를 만든다.
     과거 검증(build_sector_tables·run_candidates)과 같은 지표·정답·학습 규칙: 원본은 t 전날까지, 재학습은 그 주 첫 거래일,
     재학습일 전에 정답 기간이 끝난 행만 학습. S4 는 같은 분야 종목 행을 합쳐 학습한다."""
     from src import tools

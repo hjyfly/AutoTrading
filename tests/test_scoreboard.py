@@ -10,9 +10,10 @@ DAYS = pd.bdate_range("2026-10-21", periods=40)
 
 
 @pytest.fixture(autouse=True)
-def fee(monkeypatch):
+def fee(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "FEE_RATE", 0.001)
     monkeypatch.setattr(config, "DRIFT_WINDOW", 10)
+    monkeypatch.setattr(config, "MULTI_LIVE_PATH", str(tmp_path / "no_tickers.parquet"))  # 실제 다른 종목 기록을 읽지 않는다
 
 
 def prices(n=40, seed=0):
@@ -133,3 +134,66 @@ def test_승격은_시작일이_다르면_보류한다():
     later = {"first_date": "2026-10-23", "n_matured": 50, "model": {"calmar": 2.0, "mdd": -0.1}}
     p = sb.promotion(later, base, "candidate")
     assert not p["eligible"] and "보류" in p["note"]
+
+
+def test_다른_종목은_종목_알고리즘마다_그_종목_가격으로_채점한다(tmp_path, monkeypatch):
+    samsung, inverse = prices(30)
+    other, _ = prices(30, seed=1)
+    live = pd.DataFrame({"model": ["base"] * 20}, index=DAYS[:20]).assign(signal=UP, confidence=0.5)
+    live["created_at"] = live.index + pd.Timedelta(hours=15, minutes=20)
+    live.to_parquet(tmp_path / "live.parquet")
+    tickers = pd.DataFrame({"code": ["277810"] * 20 + ["000660"] * 20,
+                            "model": [None] * 5 + ["S4 분야 공동 학습"] * 15 + ["S0 단독"] * 20,
+                            "signal": [UP] * 40, "confidence": 0.5}, index=list(DAYS[:20]) * 2)
+    tickers["created_at"] = tickers.index + pd.Timedelta(hours=15, minutes=20)
+    tickers.iloc[0, tickers.columns.get_loc("created_at")] += pd.Timedelta(hours=6)  # 장 마감 뒤 사후 기록 1건
+    tickers.to_parquet(tmp_path / "tickers.parquet")
+    monkeypatch.setattr(sb, "LIVE_PATH", tmp_path / "live.parquet")
+    monkeypatch.setattr(config, "MULTI_LIVE_PATH", str(tmp_path / "tickers.parquet"))
+    monkeypatch.setattr(sb, "load_prices", lambda until: (samsung, inverse))
+    monkeypatch.setattr(sb, "ticker_close", lambda code, until: other)
+    monkeypatch.setattr(config, "SCOREBOARD_PATH", str(tmp_path / "board.json"))
+    board = sb.build(DAYS[-1])
+    t = board["tickers"]
+    assert set(t) == {"277810|S0 단독", "277810|S4 분야 공동 학습", "000660|S0 단독"}  # 빈 알고리즘은 S0 단독
+    assert t["277810|S0 단독"]["n_signals"] == 4 and t["277810|S0 단독"]["n_backfilled"] == 1
+    assert t["000660|S0 단독"]["n_matured"] == 20 and "criteria" in t["000660|S0 단독"]
+    assert set(t["000660|S0 단독"]["by_rule"]) == {"cash"}  # 인버스 가격이 없으니 현금 규칙만
+    hold = other[other.index >= DAYS[0]]
+    assert t["000660|S0 단독"]["hold"]["total_return"] == pytest.approx(hold.iloc[-1] / hold.iloc[0] * (1 - config.FEE_RATE) - 1)  # 그 종목 들고 있기(매수 수수료 포함)
+    assert len(sb.ticker_lines(board)) == 3 and "promotion" not in t["000660|S0 단독"]
+
+
+def test_다른_종목_채점이_실패해도_삼성전자_성적표는_만든다(tmp_path, monkeypatch):
+    samsung, inverse = prices(30)
+    live = pd.DataFrame({"model": ["base"] * 20}, index=DAYS[:20]).assign(signal=UP, confidence=0.5)
+    live["created_at"] = live.index + pd.Timedelta(hours=15, minutes=20)
+    live.to_parquet(tmp_path / "live.parquet")
+    pd.DataFrame({"signal": [UP]}, index=DAYS[:1]).to_parquet(tmp_path / "broken.parquet")  # code 열이 없는 깨진 기록
+    monkeypatch.setattr(sb, "LIVE_PATH", tmp_path / "live.parquet")
+    monkeypatch.setattr(config, "MULTI_LIVE_PATH", str(tmp_path / "broken.parquet"))
+    monkeypatch.setattr(sb, "load_prices", lambda until: (samsung, inverse))
+    monkeypatch.setattr(config, "SCOREBOARD_PATH", str(tmp_path / "board.json"))
+    board = sb.build(DAYS[-1])
+    assert board["models"]["base"]["n_matured"] == 20 and board["tickers"] == {}
+    assert sb.ticker_lines(board)[0].startswith("다른 종목 성적표 계산 실패")
+
+
+def test_다른_종목은_운영_규칙이_바뀌어도_현금으로_판정하고_한_종목_실패는_그_줄만(tmp_path, monkeypatch):
+    other, _ = prices(30, seed=1)
+    tickers = pd.DataFrame({"code": ["000660"] * 10 + ["012450"] * 10, "model": "S0 단독",
+                            "signal": [UP, DOWN] * 10, "confidence": 0.5}, index=list(DAYS[:10]) * 2)
+    tickers["created_at"] = tickers.index + pd.Timedelta(hours=15, minutes=20)
+    tickers.to_parquet(tmp_path / "tickers.parquet")
+    monkeypatch.setattr(config, "MULTI_LIVE_PATH", str(tmp_path / "tickers.parquet"))
+    monkeypatch.setattr(config, "DOWN_ACTION", "inverse")
+    def close(code, until):
+        if code == "012450":
+            raise ValueError("원본 없음")
+        return other
+    monkeypatch.setattr(sb, "ticker_close", close)
+    t = sb.score_tickers(DAYS[-1])
+    assert t["000660|S0 단독"]["down_action"] == "cash" and "criteria" in t["000660|S0 단독"]
+    assert "criteria" not in t["012450|S0 단독"] and t["012450|S0 단독"]["n_matured"] is None
+    assert "원본 없음" in t["012450|S0 단독"]["drift"]["status"]
+    assert sb.score_tickers(DAYS[5])["000660|S0 단독"]["n_signals"] == 5  # 기준일 뒤 기록은 세지 않는다

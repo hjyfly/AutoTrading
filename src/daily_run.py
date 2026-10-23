@@ -2,8 +2,8 @@
 
 1. 오늘이 거래일인지 확인한다(주말·공휴일이면 아무것도 하지 않는다).
 2. 오늘 신호를 만든다: 운영 모델(최종, 뉴스 채점은 참고용), 후보 모델·비교 묶음·하락 위험 비교 조건(비교용).
-   다른 종목(config.MULTI_TICKERS)은 참고 신호만 만든다(매매 대상 아님).
-3. 실시간 성적표를 다시 계산한다. 금요일에는 저장 데이터를 갱신(config.REFRESH_WEEKDAY)한 뒤 조건 모니터링 리포트(config.MONITOR_WEEKDAY)를 다시 만든다.
+   다른 종목(config.MULTI_TICKERS)도 정식 신호를 만든다(성적표로 판정, 매매·주문 대상 아님).
+3. 실시간 성적표(삼성전자·다른 종목)를 다시 계산한다. 금요일에는 저장 데이터를 갱신(config.REFRESH_WEEKDAY)한 뒤 조건 모니터링 리포트(config.MONITOR_WEEKDAY)를 다시 만든다.
 4. Gmail 로 결과를 보낸다. 실패하면 원인을 담은 메일을 보낸다.
 실행: .venv\\Scripts\\python -m src.daily_run [--no-email] [--no-news] [YYYY-MM-DD]
 """
@@ -60,9 +60,10 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
     if "candidate" in sig:
         c = sig["candidate"]
         lines += ["", f"■ 비교용 후보 모델(A+B+D): {c['signal']} (확신도 {c['confidence']:.0%}) — 최종 신호 아님"]
+    scheduled = board_until is None  # 날짜를 지정한 재실행에서는 갱신·모니터링을 하지 않는다(그 날짜 뒤 정보가 섞이므로)
+    others = other_ticker_lines(today) if scheduled else None  # 성적표보다 먼저 만들어 오늘 기록이 함께 세어지게 한다
     board = scoreboard.build(board_until)
     lines += ["", "■ 실시간 성적표"] + [f"  {x}" for x in scoreboard.summary_lines(board)]
-    scheduled = board_until is None  # 날짜를 지정한 재실행에서는 갱신·모니터링을 하지 않는다(그 날짜 뒤 정보가 섞이므로)
     if scheduled and today.weekday() == config.REFRESH_WEEKDAY:
         try:  # 주 1회 저장 데이터 갱신(새 확정 날짜만 덧붙임). 실패해도 신호 알림은 보낸다
             lines += ["", "■ 저장 데이터 주간 갱신"] + [f"  {x}" for x in refresh_data.summary_lines(refresh_data.run())]
@@ -76,7 +77,8 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
             lines += ["", f"■ 조건 모니터링 실패: {type(e).__name__}: {e}"]
     if scheduled:
         lines += ["", "■ 실제 계좌(한국투자증권, 읽기 전용)"] + [f"  {x}" for x in account_lines()]
-        lines += ["", "■ 다른 종목(참고, 매매 대상 아님 · 줄 끝은 쓴 알고리즘)"] + [f"  {x}" for x in other_ticker_lines(today)]
+        lines += ["", "■ 다른 종목 신호(매매·주문 대상 아님 · 줄 끝은 쓴 알고리즘)"] + [f"  {x}" for x in others]
+        lines += ["", "■ 다른 종목 실시간 성적표(SERVICE.md 5.6)"] + [f"  {x}" for x in scoreboard.ticker_lines(board)]
     warnings = [f"{k}: {v['note']}" for k, v in out.get("data_sources", {}).items() if "실패" in v["note"]]
     if warnings:
         lines += ["", "■ 데이터 경고"] + [f"  {w}" for w in warnings]
@@ -111,7 +113,7 @@ def account_lines() -> list[str]:
 
 
 def other_ticker_lines(today: pd.Timestamp) -> list[str]:
-    """다른 종목(SK하이닉스·우주항공·로봇) 원본에 어제까지 새 날짜만 덧붙이고 오늘 참고 신호를 만든다(DAY7 D7-07).
+    """다른 종목(SK하이닉스·우주항공·로봇) 원본에 어제까지 새 날짜만 덧붙이고 오늘 신호를 만든다(DAY7 D7-07, SERVICE.md 5.6).
     실패해도 알림은 보낸다. 주문과 연결하지 않는다."""
     from src.pipeline import multi_ticker
     try:

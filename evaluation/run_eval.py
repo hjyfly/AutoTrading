@@ -1,7 +1,7 @@
 """test_queries.csv 로 /query 에이전트를 평가한다. 자동 검사(도구·금지 표현·유출)와 judge 채점을 함께 한다.
 
 test_queries.csv 열: id, category(positive·negative·edge·guardrail), input, expected_traits(;로 구분),
-forbidden(;로 구분, 답에 그대로 나오면 자동 실패이고 judge 는 뜻으로도 본다), expected_tools(;로 구분, 비우면 검사 안 함), note.
+forbidden(;로 구분, 답에 그대로 나오면(날짜는 'M월 D일' 표기도) 자동 실패이고 judge 는 뜻으로도 본다), expected_tools(;로 구분, 비우면 검사 안 함), note.
 
 통과 = 기대 도구를 모두 불렀고(지정한 문항만) forbidden 표현이 답에 하나도 없다. expected_traits 는 자동 채점하지 않고
 답변과 나란히 사람 검토 파일(REVIEW)에 남긴다. 분류별·전체 통과율을 출력하고 리포트(REPORT)에 쓴다.
@@ -96,6 +96,16 @@ def violations(result, as_of: str) -> list[str]:
     return found
 
 
+def forbidden_hit(item: str, answer: str) -> bool:
+    """금지 표현이 답에 있나. YYYY-MM-DD 날짜는 'M월 D일'로 써도 같은 날짜로 본다(숫자 경계를 지켜 3월 1일이 3월 11일에 걸리지 않게)."""
+    if item in answer:
+        return True
+    if not DATE_RE.fullmatch(item):
+        return False
+    t = pd.Timestamp(item)
+    return re.search(rf"(?<!\d){t.month}월\s?{t.day}일", answer) is not None
+
+
 def _dates_in(result) -> list[str]:
     """(하위 호환) 결과에서 날짜 문자열을 모두 모은다."""
     return DATE_RE.findall(json.dumps(result, ensure_ascii=False, default=str)) if not (isinstance(result, dict) and "refused" in result) else []
@@ -107,7 +117,7 @@ def auto_checks(row: pd.Series, result: dict) -> dict:
     as_of = final.get("as_of") or str(tools.resolve_as_of(None).date())
     called = {s["tool"] for s in result["trace"] if s["step"] == "tool_call"}
     expected_tools = split(row["expected_tools"])
-    hits = [f for f in split(row["forbidden"]) if f in result["answer"]]
+    hits = [f for f in split(row["forbidden"]) if forbidden_hit(f, result["answer"])]
     late = [f"{c['tool']}: {v}" for c in result["contexts"] for v in violations(c["result"], as_of)]
     tools_ok = None if not expected_tools else set(expected_tools) <= called
     return {

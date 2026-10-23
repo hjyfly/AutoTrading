@@ -335,6 +335,31 @@ with tab_data:
             curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
             if curves:
                 st.line_chart(pd.DataFrame(curves))
+            st.subheader("다른 종목 (SERVICE.md 5.6, 매매·주문 대상 아님)")
+            st.caption("종목마다 쓰는 알고리즘(S0 단독·S4 분야 공동 학습)으로 매일 기록한 신호를 그 종목 들고 있기와 같은 기준 A·B·C 로 채점한다.")
+            ticker_path = Path(config.MULTI_LIVE_PATH)
+            if ticker_path.exists():
+                recent = scoreboard.load_ticker_live()
+                recent = recent[recent.index == recent.index.max()]
+                in_time = scoreboard.realtime_mask(recent)
+                st.markdown(f"**최근 신호 ({recent.index.max().date()})**")
+                st.dataframe(pd.DataFrame({
+                    "종목": [f"{config.MULTI_TICKERS.get(c, (c,))[0]}({c})" for c in recent["code"]],
+                    "신호": recent["signal"].values, "확신도": [f"{v:.0%}" for v in recent["confidence"]],
+                    "알고리즘": recent["model"].values,
+                    "기록": ["실시간" if ok else "사후(성적 제외)" for ok in in_time]}), width="stretch", hide_index=True)
+            for line in scoreboard.ticker_lines(board):
+                (st.warning if "경고" in line else st.write)(line)
+            mark = lambda v: "-" if v is None else ("통과" if v else "실패")
+            rows = [{"종목·알고리즘": s["title"], "정답 확정": s["n_matured"],
+                     "정확도": "-" if s["accuracy"] is None else f"{s['accuracy']:.0%}",
+                     "판정 상태": s["criteria"]["status"] if "criteria" in s else "-",
+                     "A": mark(s["criteria"]["A"]["passed"]) if "criteria" in s else "-",
+                     "B": mark(s["criteria"]["B"]["passed"]) if "criteria" in s else "-",
+                     "C": mark(s["criteria"]["C"]["passed"]) if "criteria" in s else "-"}
+                    for s in board.get("tickers", {}).values()]
+            if rows:
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 # ---- 질의응답 ----
 with tab_ask:

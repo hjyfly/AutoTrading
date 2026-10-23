@@ -60,14 +60,14 @@ src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로
 src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(재학습 주기 config.RETRAIN_FREQ 안의 첫 거래일 재학습 — 지금 매주, 정답 기간 간격)
                                  뉴스 채점은 15:15 이후 요청할 때만(LLM 7회). 2026-10-22 부터 뉴스는 참고용(config.NEWS_ADJUST_IN_SIGNAL). 결과는 data/processed/signals_live.parquet
 src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
-src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고
-src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점은 참고용) → 성적표 → Gmail 알림
+src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고. 다른 종목도 (종목, 알고리즘)마다 같은 기준(SERVICE.md 5.6)
+src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점은 참고용) → 다른 종목 신호 → 성적표 → Gmail 알림
 src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_PASSWORD·NOTIFY_TO)
 src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시세·수급·계좌 잔고). 시세·수급은 연결 확인과 예비 출처용이고 운영 수집은 지금 출처 그대로(2026-10-22 사용자 결정)
 src/broker.py                    한국투자증권 주문. 사람이 직접 실행할 때만 쓰고 신호로 자동 주문하지 않는다. 기본 모의투자·주문 꺼짐(2026-10-22 사용자 결정)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
-src/pipeline/multi_ticker.py     7일차 다종목 분석(SK하이닉스·한화에어로스페이스·레인보우로보틱스, 2026-10-22 사용자 요청). 8일차부터 채택 분야 동료 종목도 매일 덧붙임. 분석·참고 신호만, 매매·주문과 연결하지 않음. 정리 SERVICE2.md
-src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우주항공·로봇 각 3종목, 후보 S0 ~ S5 고르기·확인, 채택된 분야의 참고 신호. 2026-10-22 사용자 요청). 매매·주문과 연결하지 않음. 정리 SERVICE2.md 10절
+src/pipeline/multi_ticker.py     7일차 다종목 분석(SK하이닉스·한화에어로스페이스·레인보우로보틱스, 2026-10-22 사용자 요청). 8일차부터 채택 분야 동료 종목도 매일 덧붙임. 2026-10-23 부터 정식 신호(성적표 판정, SERVICE.md 5.6, 사용자 결정). 매매·주문과 연결하지 않음. 분석 기록 SERVICE2.md
+src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우주항공·로봇 각 3종목, 후보 S0 ~ S5 고르기·확인, 채택된 분야의 신호. 2026-10-22 사용자 요청). 매매·주문과 연결하지 않음. 정리 SERVICE2.md 10절
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
                                  조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
 tests/                           위 모듈의 테스트
@@ -85,7 +85,7 @@ evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*
 data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 git 제외)
 data/kis/            한국투자증권 토큰·계좌 잔고 기록·주문 기록(git 제외)
 data/raw/tickers/    7·8일차 다른 종목 일봉·수급·분야 ETF·국내 지수(kr_*) 원본(새 날짜만 덧붙임)
-data/processed/tickers/  7일차 다른 종목 신호·실시간 참고 기록(재생성 가능해 git 제외)
+data/processed/tickers/  다른 종목 신호 표·실시간 신호 기록(signals_live_tickers.parquet, git 제외)
 data/processed/sectors/  8일차 분야별 후보 신호·고르기·확인 결과 표(재생성 가능해 git 제외)
 
 ## 주고받는 형식 (제출 규약)
