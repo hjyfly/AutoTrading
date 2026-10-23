@@ -1,4 +1,4 @@
-"""8일차 분야별 알고리즘 (DAY8_PLAN.md, SERVICE2.md). 분석과 채택 분야 신호(2026-10-23 부터 정식 신호, SERVICE.md 5.6)를 만들고 매매·주문 경로와 연결하지 않는다.
+"""8일차 분야별 알고리즘 (DAY8_PLAN.md, SERVICE.md 11.7). 분석과 채택 분야 신호(2026-10-23 부터 정식 신호, SERVICE.md 5.6)를 만들고 매매·주문 경로와 연결하지 않는다.
 
 - 분야(반도체·우주항공·로봇)마다 종목 3개로 후보 S0 ~ S5 를 같은 규칙(매주 재학습, 정답 간격)으로 워크포워드한다.
 - 고르는 구간에서 분야마다 후보를 하나 고르고(select), 확인 구간에서 한 번 확인한다(confirm). 규칙은 사전 등록 그대로.
@@ -248,7 +248,7 @@ def write_report(sel_ev: pd.DataFrame, sel: dict, conf_ev: pd.DataFrame | None =
     """8일차 리포트를 쓴다. 확인 전이면 고르기 결과만 싣는다."""
     lines = ["# 8일차 분야별 알고리즘", "",
              f"계산 시각 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} (KST) · 계획 [DAY8_PLAN.md](../../DAY8_PLAN.md) · "
-             "정리 [SERVICE2.md](../../SERVICE2.md) · 장부 [preregistration.md](preregistration.md)", "",
+             "정리 [SERVICE.md](../../SERVICE.md) 11.7 · 장부 [preregistration.md](preregistration.md)", "",
              "- 주 지표 **초과 정확도** = 정확도 − 그 구간 '늘 가장 많은 정답' 비율(그 후보의 정답 기준). S5 는 변동성 맞춤 정답 기준이다",
              f"- 운영 규칙 그대로: 매주 재학습, 정답 간격, 하락 = 현금, 수수료 {config.FEE_RATE:.1%}. 거래량 0 인 날은 모든 후보에서 뺐다",
              "- 분석용이며 매매 대상이 아니다. 삼성전자 운영 신호는 바꾸지 않는다", "",

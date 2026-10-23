@@ -106,9 +106,9 @@ def series_until(kind: str, name: str, cut: pd.Timestamp) -> tuple[pd.DataFrame,
 
 
 def ticker_code(code: str | None) -> str:
-    """종목 이름이나 코드를 6자리 코드로 바꾼다. 비우면 삼성전자. 신호를 내는 종목(config.MULTI_TICKERS)이 아니면 ValueError."""
+    """종목 이름이나 코드를 6자리 코드로 바꾼다. 비우면 운영 종목(config.MAIN_TICKER). 종목 레지스트리(config.MULTI_TICKERS)에 없으면 ValueError."""
     if not code:
-        return config.SAMSUNG_CODE
+        return config.MAIN_TICKER
     text = str(code).strip()
     for c, info in config.MULTI_TICKERS.items():
         if text in (c, info[0]):
@@ -121,9 +121,20 @@ def ticker_name(code: str) -> str:
     return config.MULTI_TICKERS[code][0]
 
 
+def role_names(codes) -> str:
+    """종목 코드 목록을 '삼성전자·SK하이닉스' 같은 이름 줄로."""
+    return "·".join(ticker_name(c) for c in codes)
+
+
+# 에이전트 도구 설명에 넣는 종목 안내(종목 레지스트리·역할 설정에서 만든다. 종목을 더해도 고칠 필요 없음)
+CODE_DOC = (f"code 는 종목 코드나 이름(비우면 {ticker_name(config.MAIN_TICKER)}. "
+            f"지원: {role_names(config.MULTI_TICKERS)}).")
+NEWS_DOC = f"{role_names(config.NEWS_TICKERS)}만 있다."
+
+
 def ticker_series(code: str, part: str, cut: pd.Timestamp) -> tuple[pd.DataFrame, str]:
-    """종목 일봉(part='ohlcv')·수급(part='flows') 원본을 cut 전까지. 삼성전자는 기존 원본, 다른 종목은 data/raw/tickers."""
-    if code == config.SAMSUNG_CODE:
+    """종목 일봉(part='ohlcv')·수급(part='flows') 원본을 cut 전까지. 운영 종목은 기존 원본, 다른 종목은 data/raw/tickers."""
+    if code == config.MAIN_TICKER:
         return series_until("prices", {"ohlcv": "samsung_ohlcv", "flows": "samsung_investor_flows"}[part], cut)
     return series_until("tickers", f"{code}_{part}", cut)
 
@@ -135,7 +146,7 @@ def _records(df: pd.DataFrame, cols: list[str], digits: int = 4) -> list[dict]:
 
 
 def price_history(as_of: str | None = None, days: int = 20, code: str | None = None) -> dict:
-    """as_of 전까지 최근 days 거래일의 종목 일봉과 일간 수익률(code 를 비우면 삼성전자)."""
+    """as_of 전까지 최근 days 거래일의 종목 일봉과 일간 수익률(code 를 비우면 운영 종목)."""
     cut, code = resolve_as_of(as_of), ticker_code(code)
     df, note = ticker_series(code, "ohlcv", cut)
     df = df.assign(ret_1d=df["Close"].astype(float).pct_change()).tail(days)
@@ -145,7 +156,7 @@ def price_history(as_of: str | None = None, days: int = 20, code: str | None = N
 
 
 def investor_flows(as_of: str | None = None, days: int = 20, code: str | None = None) -> dict:
-    """as_of 전까지 최근 days 거래일의 외국인·기관·개인 순매수(주)와 외국인 보유비율(code 를 비우면 삼성전자)."""
+    """as_of 전까지 최근 days 거래일의 외국인·기관·개인 순매수(주)와 외국인 보유비율(code 를 비우면 운영 종목)."""
     cut, code = resolve_as_of(as_of), ticker_code(code)
     df, note = ticker_series(code, "flows", cut)
     cols = ["foreign_net", "institution_net", "individual_net", "foreign_hold_ratio"]
@@ -191,7 +202,7 @@ def indicators(as_of: str | None = None, code: str | None = None) -> dict:
     다른 종목(code)은 국내 일봉·수급만 그 종목 원본으로 바꿔 같은 계산을 한다(분야 알고리즘 S4 의 동료·분야 지수 지표는 넣지 않는다)."""
     cut, code = resolve_as_of(as_of), ticker_code(code)
     raw, sources = raw_until(cut)
-    if code != config.SAMSUNG_CODE:
+    if code != config.MAIN_TICKER:
         for part in ("ohlcv", "flows"):
             df, note = ticker_series(code, part, cut)
             raw[part] = df
@@ -295,7 +306,8 @@ def ticker_signal(date: str, code: str) -> dict:
     t = resolve_as_of(date)
     alg = ticker_algorithm(code)
     out = {"date": str(t.date()), "code": code, "name": ticker_name(code),
-           "note": "다른 종목은 숫자 모델 신호만 있다(뉴스 채점·판단 기록·공시는 삼성전자만). 매매·주문 대상이 아니다"}
+           "note": (f"다른 종목은 숫자 모델 신호만 있다(뉴스 채점·판단 기록·공시는 {role_names(config.NEWS_TICKERS)}만). "
+                    + ("매매 종목이다" if code in config.TRADE_TICKERS else "매매·주문 대상이 아니다"))}
     live_path = Path(config.MULTI_LIVE_PATH)
     stored_path = Path(config.SECTOR_DIR) / f"signals_{alg}_{code}.parquet"
     row = None
@@ -327,7 +339,7 @@ def ticker_signal(date: str, code: str) -> dict:
 def signal_for(date: str, code: str | None = None) -> dict:
     """그날 숫자 모델 신호와 확률, 뉴스 합의(참고용, 운영 신호는 보정하지 않는다). code 가 다른 종목이면 ticker_signal."""
     code = ticker_code(code)
-    if code != config.SAMSUNG_CODE:
+    if code != config.MAIN_TICKER:
         return ticker_signal(date, code)
     t = resolve_as_of(date)
     out = {"date": str(t.date())}
@@ -397,7 +409,7 @@ def news_judgement(date: str) -> dict:
 
 
 def news_features(date: str) -> dict:
-    """그날(삼성전자) 기사별 추출 결과와 그날 하락 위험 경보 기록(9일차). 그날 15:15 신호 시점에 만든 것만 돌려준다."""
+    """그날(뉴스 종목) 기사별 추출 결과와 그날 하락 위험 경보 기록(9일차). 그날 15:15 신호 시점에 만든 것만 돌려준다."""
     t = resolve_as_of(date)
     path = Path(config.FEATURES_DIR) / f"{t.date()}.json"
     if not path.exists():
@@ -493,16 +505,15 @@ def _refuse_after_cap(date: str) -> dict | None:
     return None
 
 
-@tool
+@tool(description=f"종목 일봉(시가·고가·저가·종가·거래량)과 일간 수익률. as_of(YYYY-MM-DD) 전날까지의 최근 days 거래일. as_of 를 비우면 질문 시점 기준. {CODE_DOC}")
 def get_price(as_of: str = "", days: int = 20, code: str = "") -> dict:
-    """종목 일봉(시가·고가·저가·종가·거래량)과 일간 수익률. as_of(YYYY-MM-DD) 전날까지의 최근 days 거래일. as_of 를 비우면 질문 시점 기준.
-    code 는 종목 코드나 이름(비우면 삼성전자. 지원: 삼성전자·SK하이닉스·한화에어로스페이스·레인보우로보틱스)."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     return _call(price_history, as_of, days, code or None)
 
 
-@tool
+@tool(description=f"종목 외국인·기관·개인 순매수(주)와 외국인 보유비율. as_of 전날까지의 최근 days 거래일. {CODE_DOC}")
 def get_investor_flows(as_of: str = "", days: int = 20, code: str = "") -> dict:
-    """종목 외국인·기관·개인 순매수(주)와 외국인 보유비율. as_of 전날까지의 최근 days 거래일. code 는 종목 코드나 이름(비우면 삼성전자. 지원: 삼성전자·SK하이닉스·한화에어로스페이스·레인보우로보틱스)."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     return _call(investor_flows, as_of, days, code or None)
 
 
@@ -512,29 +523,27 @@ def get_macro(as_of: str = "", days: int = 5) -> dict:
     return _call(macro_snapshot, as_of, days)
 
 
-@tool
+@tool(description=f"as_of 신호 시점의 차트 지표(이동평균 괴리, 볼린저, 일목, 파라볼릭 SAR, 거래량)와 수급·해외 지표. 모델 학습에 쓰는 계산과 같다. {CODE_DOC}")
 def get_indicators(as_of: str = "", code: str = "") -> dict:
-    """as_of 신호 시점의 차트 지표(이동평균 괴리, 볼린저, 일목, 파라볼릭 SAR, 거래량)와 수급·해외 지표. 모델 학습에 쓰는 계산과 같다.
-    code 는 종목 코드나 이름(비우면 삼성전자. 지원: 삼성전자·SK하이닉스·한화에어로스페이스·레인보우로보틱스)."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     return _call(indicators, as_of, code or None)
 
 
-@tool
+@tool(description=f"as_of 보다 먼저 공시된 가장 최근 정기보고서의 사업 개요(DART). {NEWS_DOC}")
 def get_company_report(as_of: str = "") -> dict:
-    """as_of 보다 먼저 공시된 가장 최근 삼성전자 정기보고서의 사업 개요(DART). 삼성전자만 있다."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     return _call(company_report, as_of)
 
 
-@tool
+@tool(description=f"신호일 as_of 의 뉴스 제목(전 거래일 15:15 ~ 당일 15:15 KST). keyword 로 제목을 거를 수 있다. {NEWS_DOC}")
 def search_news(as_of: str = "", keyword: str = "", limit: int = 20) -> dict:
-    """신호일 as_of 의 삼성전자 관련 뉴스 제목(전 거래일 15:15 ~ 당일 15:15 KST). keyword 로 제목을 거를 수 있다. 다른 종목 뉴스는 모으지 않는다."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     return _call(news_for_signal, as_of, keyword or None, limit)
 
 
-@tool
+@tool(description=f"그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(뉴스 종목만, 참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다. {CODE_DOC} 운영 종목 밖은 숫자 모델 신호와 쓴 알고리즘만 있다. 매매 종목: {role_names(config.TRADE_TICKERS)}")
 def get_signal(date: str, code: str = "") -> dict:
-    """그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(삼성전자만, 참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다.
-    code 는 종목 코드나 이름(비우면 삼성전자. 지원: 삼성전자·SK하이닉스·한화에어로스페이스·레인보우로보틱스). 다른 종목은 숫자 모델 신호와 쓴 알고리즘만 있고 매매·주문 대상이 아니다."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     refused = _refuse_after_cap(date)
     if refused:
         return refused
@@ -544,17 +553,15 @@ def get_signal(date: str, code: str = "") -> dict:
         return {"date": date, "error": str(e)}
 
 
-@tool
+@tool(description=f"그날 뉴스 채점의 판단 기록: 채점자 3명(단기 트레이더·가치투자자·리스크 관리자) 의견, 중재자 정리, 핵심 기사. 질문 시점보다 뒤 날짜는 조회하지 않는다. {NEWS_DOC}")
 def get_news_judgement(date: str) -> dict:
-    """그날 삼성전자 뉴스 채점의 판단 기록: 채점자 3명(단기 트레이더·가치투자자·리스크 관리자) 의견, 중재자 정리, 핵심 기사.
-    질문 시점보다 뒤 날짜는 조회하지 않는다. 삼성전자만 있다(다른 종목은 뉴스를 채점하지 않는다)."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     return _refuse_after_cap(date) or news_judgement(date)
 
 
-@tool
+@tool(description=f"{ticker_name(config.MAIN_TICKER)} 검증 구간 전체의 모의 매매 성과(기준 A 판정, 수익률, MDD, 방향 적중률). 사후 평가다. 다른 종목 성과는 없다. 모델 성과를 묻는 질문에만 쓰고, 특정 날짜의 판단 근거로 쓰지 않는다. 질문 시점이 검증 구간 끝 이전이면 제공하지 않는다.")
 def get_backtest_summary() -> dict:
-    """삼성전자 검증 구간 전체의 모의 매매 성과(기준 A 판정, 수익률, MDD, 방향 적중률). 사후 평가다. 다른 종목 성과는 없다.
-    모델 성과를 묻는 질문에만 쓰고, 특정 날짜의 판단 근거로 쓰지 않는다. 질문 시점이 검증 구간 끝 이전이면 제공하지 않는다."""
+    """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     cap = _REQUEST_CAP.get()
     available = pd.Timestamp(config.OFFICIAL_VALID_END) + pd.Timedelta(days=1)  # 공식 판정 구간의 마지막 종가가 확정된 다음 날
     if cap is not None and cap < available:

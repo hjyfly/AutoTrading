@@ -1,6 +1,6 @@
 # 7일차 개발 계획 — 다종목 분석(SK하이닉스·우주항공·로봇)
 
-> 작성일: 2026-10-22 · 브랜치 `day7-multi-ticker`(main 과 분리) · 정리 문서 [SERVICE2.md](SERVICE2.md) · 근거 [SERVICE.md](SERVICE.md)
+> 작성일: 2026-10-22 · 브랜치 `day7-multi-ticker`(main 과 분리) · 정리 문서 [SERVICE.md](SERVICE.md) 11.6 (2026-10-23 SERVICE2.md 를 통합) · 근거 [SERVICE.md](SERVICE.md)
 > 표기: **(기본값)** = 사용자가 정하지 않아 임시로 채운 값.
 
 ## 1. 왜 하는가
@@ -38,7 +38,7 @@
 
 | ID | 작업 | 파일 |
 |---|---|---|
-| D7-01 | 브랜치·계획·SERVICE2.md, 사전 등록 장부에 Q1 ~ Q3 등록 | 문서 |
+| D7-01 | 브랜치·계획·SERVICE2.md(10일차에 SERVICE.md 로 통합), 사전 등록 장부에 Q1 ~ Q3 등록 | 문서 |
 | D7-02 | 종목별 일봉·수급, 분야 ETF 수집(2019-01-02 ~ 저장 끝날). `data/raw/tickers/` 에 따로 저장(기존 원본 불변) | `src/pipeline/multi_ticker.py`(새 파일) |
 | D7-03 | 종목별 특징 표: 국내 지표는 그 종목, 거시·해외·지수는 기존 원본(시점 규칙 그대로). 분야 ETF 지표는 Q3 에서만 | 같음 |
 | D7-04 | 종목별 단독 워크포워드(운영 설정 그대로)와 구간별 성과·성공 기준 A·B·C | 같음, `backtest.py` 함수 재사용 |

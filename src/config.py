@@ -88,6 +88,10 @@ RSS_LOOKBACK_DAYS = 4
 
 # 종목
 SAMSUNG_CODE = "005930"
+# 종목 역할 (10일차, DAY10_PLAN.md 2.1). 코드 곳곳에서 "삼성전자인가" 대신 이 역할로 판단한다. 종목 목록 자체는 MULTI_TICKERS(종목 레지스트리)
+MAIN_TICKER = SAMSUNG_CODE          # 운영 모델 종목: 숫자 모델 운영 신호·비교 줄·과거 공식 판정·확장 원본이 있는 종목
+TRADE_TICKERS = [SAMSUNG_CODE]      # 매매·주문 대상. 사용자 결정으로만 바꾼다(주문 모듈 KIS_ORDER_CODES 가 따른다)
+NEWS_TICKERS = [SAMSUNG_CODE]       # 뉴스 채점·판단 기록·공시·문서 검색이 있는 종목
 INVERSE_ETF_CANDIDATES = {"114800": "KODEX 인버스", "123310": "TIGER 인버스"}
 INVERSE_ETF_CODE = "114800"  # D1-03: 삼성전자 수익률과 상관 -0.908 (TIGER 인버스 -0.901)
 # 하락 신호 때 행동 (사용자 결정 2026-10-22): "cash" = 삼성전자 매도 후 현금, "inverse" = 인버스 ETF 로 전환(1~3일차 규칙)
@@ -460,14 +464,15 @@ KIS_TR_IDS = {  # (실전, 모의)
     "buy": ("TTTC0012U", "VTTC0012U"),
     "sell": ("TTTC0011U", "VTTC0011U"),
 }
-# 주문 안전장치: 사람이 broker 를 직접 실행할 때만, 삼성전자만, 지정가만, 하루 횟수·금액 상한
-KIS_ORDER_CODES = [SAMSUNG_CODE]
+# 주문 안전장치: 사람이 broker 를 직접 실행할 때만, 매매 종목(TRADE_TICKERS)만, 지정가만, 하루 횟수·금액 상한
+KIS_ORDER_CODES = list(TRADE_TICKERS)
 KIS_MAX_ORDERS_PER_DAY = 1
 KIS_MAX_ORDER_KRW = 1_000_000                 # 한 번 주문 금액 상한(기본값)
 ACCOUNT_LIVE_PATH = "data/kis/account_live.parquet"  # 매일 읽은 계좌 잔고 기록(git 제외)
 
-# ---- 7일차: 다종목 분석 (DAY7_PLAN.md). 2026-10-23 부터 정식 신호(SERVICE.md 5.6), 매매·주문 대상은 삼성전자뿐 ----
-MULTI_TICKERS = {  # 코드: (이름, 분야, 분야 ETF 이름 또는 None)
+# ---- 종목 레지스트리 (7일차 시작, 10일차 모듈화). 신호를 내는 모든 종목. 2026-10-23 부터 정식 신호(SERVICE.md 5.6) ----
+# 종목을 더하려면 한 줄 넣고 `python -m src.pipeline.multi_ticker add <코드>` 를 실행한다(원본 수집·과거 신호·분석). 매매 대상은 TRADE_TICKERS 로 따로 정한다
+MULTI_TICKERS = {  # 코드: (이름, 분야, 분야 ETF 이름(SECTOR_ETFS 의 열쇠) 또는 None)
     "005930": ("삼성전자", "반도체", None),
     "000660": ("SK하이닉스", "반도체", None),
     "012450": ("한화에어로스페이스", "우주항공·방산", "ita"),

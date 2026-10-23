@@ -1,6 +1,6 @@
 # 7일차 다종목 분석
 
-계산 시각 2026-10-22 18:51 (KST) · 계획 [DAY7_PLAN.md](../../DAY7_PLAN.md) · 정리 [SERVICE2.md](../../SERVICE2.md) · 장부 [preregistration.md](preregistration.md)
+계산 시각 2026-10-22 18:51 (KST) · 계획 [DAY7_PLAN.md](../../DAY7_PLAN.md) · 정리 [SERVICE.md](../../SERVICE.md) 11.6 · 장부 [preregistration.md](preregistration.md)
 
 - 운영 설정 그대로: 지표 46개, 정답 5거래일 ±3%, 재학습 매주, 누적 학습, 하락 = 현금, 수수료 0.1%
 - 판정 구간 2022-03-04 ~ 2025-04-22(한 번만). 삼성전자는 이 구간을 4일차에 본 적이 있다. 검증 구간 2025-04-23 ~ 은 참고

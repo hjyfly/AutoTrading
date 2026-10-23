@@ -31,7 +31,7 @@ def load_live() -> pd.DataFrame:
 
 
 def load_ticker_live() -> pd.DataFrame:
-    """다른 종목 실시간 기록. 알고리즘 열이 비어 있으면 단독 모델(S0)로 본다(SERVICE2.md 10.7)."""
+    """다른 종목 실시간 기록. 알고리즘 열이 비어 있으면 단독 모델(S0)로 본다(SERVICE.md 11.7)."""
     from src.pipeline.multi_ticker import SINGLE_MODEL_TAG
     path = Path(config.MULTI_LIVE_PATH)
     if not path.exists():

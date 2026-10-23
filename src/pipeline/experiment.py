@@ -39,14 +39,27 @@ CHOICES = {  # 고를 수 있는 값이 정해진 조건
 }
 
 
+def ticker_path(path: str, code: str) -> Path:
+    """종목별 리포트·이력 경로. 운영 종목은 원래 경로 그대로, 다른 종목은 파일 이름 끝에 _종목코드 를 붙인다."""
+    p = Path(path)
+    return p if code == config.MAIN_TICKER else p.with_name(f"{p.stem}_{code}{p.suffix}")
+
+
 class Data:
     """실험마다 다시 읽지 않도록 원본 표와 학습 결과를 한 번만 읽고 보관한다.
 
     extended=True 면 4일차 확장 원본·특징 표로 확장 검증 구간(처음 보는 구간)을 비교한다. 뉴스 점수는 쓰지 않는다.
+    code 가 운영 종목이 아니면 그 종목 원본(거래정지일 제외, 8일차와 같은 정리)으로 특징·정답을 만든다. 인버스 ETF·뉴스 점수는 없다
+    (하락 행동은 현금만, 뉴스 조건은 건너뛴다). 속성 이름 samsung 은 옛 이름이고 '그 종목 일봉'이다.
     """
-    extended, valid_start, period_end = False, None, None  # 테스트용 가짜 데이터는 기존 검증 구간을 쓴다
+    extended, valid_start, period_end, code = False, None, None, config.MAIN_TICKER  # 테스트용 가짜 데이터는 기존 검증 구간을 쓴다
 
-    def __init__(self, extended: bool = False):
+    def __init__(self, extended: bool = False, code: str | None = None):
+        self.code = code or config.MAIN_TICKER
+        self._signals = {}
+        if self.code != config.MAIN_TICKER:
+            self._init_ticker(extended)
+            return
         raw = Path(config.RAW_DIR) / "prices"
         self.extended = extended
         self.samsung = pd.read_parquet(raw / "samsung_ohlcv.parquet")
@@ -70,7 +83,25 @@ class Data:
             else:
                 self.features = pd.read_parquet(Path(config.PROCESSED_DIR) / "features.parquet")
             self.scores = pd.read_parquet(config.SCORES_PATH) if Path(config.SCORES_PATH).exists() else None
-        self._signals = {}
+
+    def _init_ticker(self, extended: bool):
+        """다른 종목 원본으로 특징 표·일봉을 만든다. 운영 종목과 같은 특징 계산(features.build_features)과 시점 규칙이다."""
+        from src.pipeline import features
+        from src.pipeline import multi_ticker as mt
+        from src.pipeline.sector_models import clean_raw
+        raw = clean_raw(mt.ticker_raw(self.code))
+        self.extended = extended
+        self.samsung = raw["ohlcv"][["Open", "High", "Low", "Close", "Volume"]].astype(float)
+        self.inverse = pd.DataFrame(columns=["Open", "Close"], dtype=float)  # 인버스 규칙은 계산하지 못한다(오류로 표시)
+        self.features = features.build_features(raw=raw)
+        self.scores = None
+        if extended:
+            self.valid_start = str(train.ext_valid_start(self.features).date())
+            self.period_end = config.EXT_VALID_END
+
+    def name(self) -> str:
+        """종목 이름."""
+        return config.MULTI_TICKERS.get(self.code, (self.code,))[0]
 
     def labels(self, horizon: int, threshold: float) -> pd.DataFrame:
         """정답 기간·기준을 바꾼 정답 표."""
@@ -131,6 +162,10 @@ def run_one(cfg: dict, data: Data) -> dict:
             continue
         if cfg[key] not in allowed:
             raise ValueError(f"{LABELS[key]} 값 '{cfg[key]}' 은 {allowed} 중 하나여야 한다")
+    if cfg["down_action"] == "inverse" and data.inverse.empty:
+        raise ValueError(f"{data.name()} 에는 인버스 ETF 가 없어 '하락 = 인버스' 규칙을 계산하지 못한다(현금 규칙만)")
+    if cfg["news_mode"] == "adjust" and data.scores is None:
+        raise ValueError(f"{data.name()} 에는 뉴스 점수가 없어 뉴스 조건을 계산하지 못한다")
     numeric = data.signals(cfg)
     signals = numeric
     if cfg["news_mode"] == "adjust":
@@ -258,7 +293,7 @@ AXIS_NOTES = {  # 조건마다 무엇을 뜻하고 바꾸면 보통 어떤 득�
     "retrain_freq": "모델을 다시 학습하는 간격이다. 자주 하면 최근 흐름을 빨리 반영하지만 잡음에 흔들리고, 드물게 하면 안정적이지만 국면 변화에 늦다.",
     "execution": "t 종가 체결은 15:15 신호 뒤 장 마감 동시호가에 사는 가정, t+1 시가는 다음 날 아침에 사는 가정이다. 차이는 밤사이 해외 시장과 장 시작 갭의 몫이다.",
     "position_steps": "신호 한 번에 비중을 얼마나 바꿀지다. 단계를 늘리면 틀린 신호 하나의 손실이 줄지만 맞는 신호의 수익도 늦게 따라간다.",
-    "position_floor": "하락 신호가 이어져도 남겨 두는 삼성전자 비중이다. 높이면 들고 있기에 가까워져 오르는 장에서 유리하고, 하락 신호가 맞을 때 덜 피한다.",
+    "position_floor": "하락 신호가 이어져도 남겨 두는 그 종목 비중이다. 높이면 들고 있기에 가까워져 오르는 장에서 유리하고, 하락 신호가 맞을 때 덜 피한다.",
     "down_action": "하락 신호 때 현금으로 나갈지 인버스 ETF 를 살지다. 인버스는 하락이 맞으면 벌지만 틀리면 오르는 장에서 반대로 잃는다.",
     "feature_set": f"운영 {len(config.FEATURE_SET_BASE)}개 지표(1~3일차 지표 + RSI), 1~3일차 {len(config.FEATURE_SET_BASE_V1)}개, 사전 등록한 후보 {len(config.FEATURE_SETS['candidate'])}개 지표(A+B+D), 또는 지표 그룹을 골라 만든 묶음이다. 지표가 많으면 표현력은 늘지만 과적합 위험도 커진다. "
                    "그룹 단위 진단은 experiments_features.md 에 따로 있다.",
@@ -464,10 +499,11 @@ def monitor(data: Data | None = None, save: bool = True) -> dict:
                        f"뉴스 보정 방법을 하나씩 바꿨다. 기준은 지금 기준 B 규칙(합의 ±{config.NEWS_ADJUST_SCORE}, 확신도 {config.NEWS_ADJUST_MIN_CONF})이다. "
                        f"채점 버전 {versions}, 채점일 {len(data.scores)}일. 뉴스 유출 테스트는 {config.CRITERION_B_START}~{config.CRITERION_B_END}에서만 했다.", news_base))
     all_rows = pd.concat([t.assign(group=g) for g, t, *_ in groups], ignore_index=True)
-    history_path = Path(config.MONITOR_HISTORY_PATH)
+    history_path = ticker_path(config.MONITOR_HISTORY_PATH, data.code)
     previous = pd.read_csv(history_path) if history_path.exists() else pd.DataFrame()
     snapshot = all_rows[all_rows["error"].isna()][["group", "name", "start", "end", "days", "total_return", "mdd", "calmar"]].assign(run_at=run_at)
-    lines = ["# 조건 모니터링 리포트", "", f"계산 시각 {run_at} (KST) · 저장 데이터 끝 {config.DATA_END}", "",
+    lines = [f"# 조건 모니터링 리포트 — {data.name()}", "", f"계산 시각 {run_at} (KST) · 저장 데이터 끝 {config.DATA_END}"
+             + ("" if data.code == config.MAIN_TICKER else f" · 운영 설정(S0 단독, 지표 {len(config.FEATURE_SET_BASE)}개) 기준, 분야 알고리즘 지표·뉴스·인버스는 없음"), "",
              "> **탐색 결과**: 검증 구간을 이미 본 뒤 조건을 하나씩 바꿔 다시 계산한 숫자다. 공식 판정(기준 A·B)과 운영 설정을 바꾸지 않는다.",
              f"> **다중 비교 경고**: 조건 {len(all_rows)}개를 같은 구간에서 비교했다. 가장 좋아 보이는 조건에는 운이 섞여 있다. "
              "운영 설정을 바꾸려면 아래 '앞으로의 성과' 처럼 새로 쌓이는 날들로 다시 확인한다.", "",
@@ -493,12 +529,17 @@ def monitor(data: Data | None = None, save: bool = True) -> dict:
               "아래는 매일 장 마감 전에 기록한 실제 신호의 채점 결과다. 위 숫자와 달리 조건을 보고 고를 수 없는 날들이라 가장 믿을 만한 확인 수단이다.", ""]
     board_path = Path(config.SCOREBOARD_PATH)
     if board_path.exists():
-        lines += [f"- {x}" for x in scoreboard.summary_lines(json.loads(board_path.read_text(encoding="utf-8")))]
+        board = json.loads(board_path.read_text(encoding="utf-8"))
+        if data.code == config.MAIN_TICKER:
+            lines += [f"- {x}" for x in scoreboard.summary_lines(board)]
+        else:
+            entries = [s for s in board.get("tickers", {}).values() if s.get("code") == data.code]
+            lines += [f"- {scoreboard.entry_line(s)}" for s in entries] or ["- 아직 이 종목의 실시간 기록이 없다."]
     else:
         lines.append("- 아직 성적표가 없다.")
     report = "\n".join(lines) + "\n"
     if save:
-        Path(config.MONITOR_REPORT_PATH).write_text(report, encoding="utf-8", newline="\n")
+        ticker_path(config.MONITOR_REPORT_PATH, data.code).write_text(report, encoding="utf-8", newline="\n")
         history_path.parent.mkdir(parents=True, exist_ok=True)
         pd.concat([previous, snapshot], ignore_index=True).to_csv(history_path, index=False, encoding="utf-8-sig")
     return {"report": report, "tables": {g: t for g, t, *_ in groups}, "curves": {g: c for g, _, c, *_ in groups},
@@ -532,7 +573,8 @@ def highlights(groups) -> list[str]:
                        + (", ".join(f"{r['name']}({r['mdd']:.1%})" for _, r in safer.iterrows()) or "없음") + ".")
         n_err = int(table["error"].notna().sum())
         if n_err:
-            out.append(f"계산하지 못한 조건 {n_err}개(뉴스 분류별 점수·하락 위험은 채점 버전 2 재채점 뒤에 계산된다).")
+            failed = table[table["error"].notna()]
+            out.append(f"계산하지 못한 조건 {n_err}개: " + ", ".join(f"{r['name']}" for _, r in failed.iterrows()) + " (이유는 아래 조건별 설명).")
     return out
 
 
@@ -611,11 +653,13 @@ def feature_study(data: Data | None = None, save: bool = True) -> dict:
             recommended = {"feature_set": name, "removed": picked["빼기"], "added": picked["더하기"], **row}
     study = pd.DataFrame(rows)
     report = study_report(study, b, recommended)
-    if data.extended:
-        report = report.replace("# 지표 그룹 진단", "# 지표 그룹 진단 (확장 검증 구간: 처음 보는 데이터)", 1)
+    if data.extended:  # 운영 종목은 4일차에 처음 본 구간, 다른 종목은 8일차 고르기·판정 구간과 겹친다
+        label = "확장 검증 구간: 처음 보는 데이터" if data.code == config.MAIN_TICKER else "확장 구간: 8일차 판정 구간과 겹침, 탐색"
+        report = report.replace("# 지표 그룹 진단", f"# 지표 그룹 진단 ({label})", 1)
+    report = report.replace("# 지표 그룹 진단", f"# 지표 그룹 진단 — {data.name()}", 1)
     if save:
         path = config.FEATURE_STUDY_EXT_REPORT_PATH if data.extended else config.FEATURE_STUDY_REPORT_PATH
-        Path(path).write_text(report, encoding="utf-8", newline="\n")
+        ticker_path(path, data.code).write_text(report, encoding="utf-8", newline="\n")
     return {"report": report, "table": study, "base": b, "curves": curves, "recommended": recommended}
 
 
@@ -914,6 +958,8 @@ def main(argv=None):
     parser.add_argument("--features", action="store_true", help="지표 그룹 진단과 추천 리포트를 만든다")
     parser.add_argument("--ext", action="store_true", help="4일차 확장 검증 구간(처음 보는 구간)에서 비교한다")
     parser.add_argument("--news", action="store_true", help="9일차 뉴스 평가 리포트(기사 피처·V1·V2·A1)를 만든다")
+    parser.add_argument("--code", default=None, help="종목 코드(비우면 운영 종목). 조건 비교·모니터링·지표 그룹 진단을 그 종목으로 한다")
+    parser.add_argument("--all", action="store_true", help="--monitor 와 함께: 종목 레지스트리의 모든 종목")
     args = parser.parse_args(argv)
     if args.news:
         result = news_study()
@@ -921,15 +967,17 @@ def main(argv=None):
         print("저장:", config.DAY9_REPORT_PATH)
         return
     if args.features:
-        result = feature_study(Data(extended=args.ext))
+        data = Data(extended=args.ext, code=args.code)
+        result = feature_study(data)
         rec = result["recommended"]
         print("추천 묶음:", rec["feature_set"] if rec else "없음(기존 묶음 유지)")
-        print("저장:", config.FEATURE_STUDY_EXT_REPORT_PATH if args.ext else config.FEATURE_STUDY_REPORT_PATH)
+        print("저장:", ticker_path(config.FEATURE_STUDY_EXT_REPORT_PATH if args.ext else config.FEATURE_STUDY_REPORT_PATH, data.code))
         return
     if args.monitor:
-        result = monitor()
-        print("\n".join(result["summary"]))
-        print("저장:", config.MONITOR_REPORT_PATH, config.MONITOR_HISTORY_PATH)
+        for code in (list(config.MULTI_TICKERS) if args.all else [args.code or config.MAIN_TICKER]):
+            result = monitor(Data(code=code))
+            print(f"[{code}]", "\n".join(result["summary"]))
+            print("저장:", ticker_path(config.MONITOR_REPORT_PATH, code), ticker_path(config.MONITOR_HISTORY_PATH, code))
         return
     base = dict(config.EXPERIMENT_BASE)
     for item in args.set:
@@ -939,11 +987,11 @@ def main(argv=None):
     for item in args.vary:
         key, values = item.split("=", 1)
         vary[key] = [parse_value(key, v) for v in values.split(",")]
-    table, _ = compare(expand(base, vary), Data(extended=args.ext))
+    table, _ = compare(expand(base, vary), Data(extended=args.ext, code=args.code))
     stamp = pd.Timestamp.now(tz=config.KST).strftime("%Y%m%d_%H%M")
     out_dir = Path(config.EXPERIMENT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"experiments_{stamp}" + (f"_{args.name}" if args.name else "")
+    stem = f"experiments_{stamp}" + (f"_{args.name}" if args.name else "") + (f"_{args.code}" if args.code and args.code != config.MAIN_TICKER else "")  # 네이밍 규칙(evaluation/reports/README.md)
     table.to_csv(out_dir / f"{stem}.csv", index=False, encoding="utf-8-sig")
     report = Path(config.EXPERIMENT_REPORT_DIR) / f"{stem}.md"
     report.write_text(f"# 조건 비교 실험 {stamp}\n\n" + to_markdown(table, args.note), encoding="utf-8", newline="\n")

@@ -3,7 +3,8 @@
 1. 오늘이 거래일인지 확인한다(주말·공휴일이면 아무것도 하지 않는다).
 2. 오늘 신호를 만든다: 운영 모델(최종, 뉴스 채점은 참고용), 후보 모델·비교 묶음·하락 위험 비교 조건(비교용).
    다른 종목(config.MULTI_TICKERS)도 정식 신호를 만든다(성적표로 판정, 매매·주문 대상 아님).
-3. 실시간 성적표(삼성전자·다른 종목)를 다시 계산한다. 금요일에는 저장 데이터를 갱신(config.REFRESH_WEEKDAY)한 뒤 조건 모니터링 리포트(config.MONITOR_WEEKDAY)를 다시 만든다.
+3. 실시간 성적표(운영 종목·다른 종목)를 다시 계산한다. 금요일에는 저장 데이터를 갱신(config.REFRESH_WEEKDAY)한 뒤 운영 종목 조건 모니터링 리포트(config.MONITOR_WEEKDAY)를 다시 만든다.
+   다른 종목 모니터링은 알림을 보낸 뒤 종목마다 돈다.
 4. Gmail 로 결과를 보낸다. 실패하면 원인을 담은 메일을 보낸다.
 실행: .venv\\Scripts\\python -m src.daily_run [--no-email] [--no-news] [YYYY-MM-DD]
 """
@@ -26,7 +27,7 @@ def is_trading_day(today: pd.Timestamp) -> tuple[bool, str]:
     if today.weekday() >= 5:
         return False, "주말"
     try:
-        resp = requests.get(config.NAVER_BASIC_URL.format(code=config.SAMSUNG_CODE), headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        resp = requests.get(config.NAVER_BASIC_URL.format(code=config.MAIN_TICKER), headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
         traded = pd.Timestamp(resp.json()["localTradedAt"]).tz_convert(config.KST).tz_localize(None).normalize()
         if traded < today:
             return False, f"오늘 체결이 없다(마지막 체결 {traded.date()}). 공휴일로 본다"
@@ -43,8 +44,9 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
     numeric = sig.get("numeric", {})
     subject = f"[AutoTrading] {today.date()} {final} (확신도 {numeric.get('confidence', 0):.0%})"
     action = config.DOWN_ACTION_LABELS[config.DOWN_ACTION]
-    lines = [f"{today.date()} {config.SIGNAL_CUTOFF_KST} 기준 삼성전자 {config.LABEL_HORIZON_DAYS}거래일 방향 신호",
-             f"(모의 매매 규칙: 상승 = 삼성전자, 보합 = 유지, 하락 = {action})", "",
+    main = tools.ticker_name(config.MAIN_TICKER)
+    lines = [f"{today.date()} {config.SIGNAL_CUTOFF_KST} 기준 종목별 {config.LABEL_HORIZON_DAYS}거래일 방향 신호 — 운영 종목 {main}",
+             f"(모의 매매 규칙: 상승 = {main}, 보합 = 유지, 하락 = {action} · 매매 종목: {tools.role_names(config.TRADE_TICKERS)}, 주문은 사람이 직접)", "",
              f"■ 최종 신호: {final}"]
     if numeric:
         p = numeric["probabilities"]
@@ -133,7 +135,7 @@ def account_lines() -> list[str]:
         return ["키가 없어 읽지 않았다(.env 의 KIS_APP_KEY·KIS_APP_SECRET·KIS_ACCOUNT_NO)"]
     try:
         r = kis_client.record_account()
-        return [f"{r['env']} 계좌 · 삼성전자 {r['samsung_qty']}주 · 보유 비중 {r['samsung_weight']:.0%}"]
+        return [f"{r['env']} 계좌 · {tools.role_names(config.TRADE_TICKERS)} {r['samsung_qty']}주 · 보유 비중 {r['samsung_weight']:.0%}"]  # 계좌 기록 열 이름은 옛 그대로
     except Exception as e:  # 계좌 조회 실패가 신호 알림을 막지 않게 한다. 메시지에 계좌번호가 섞일 수 있어 종류만 남긴다
         return [f"계좌 조회 실패: {type(e).__name__}"]
 
@@ -182,7 +184,22 @@ def run(as_of: str | None = None, with_news: bool = True, email: bool = True) ->
             log.info("Gmail 알림 보냄")
         except Exception as e:
             log.error(f"Gmail 알림 실패: {type(e).__name__}")  # 예외 메시지에는 메일 주소가 들어갈 수 있어 남기지 않는다
+    if as_of is None and today.weekday() == config.MONITOR_WEEKDAY:
+        for line in other_ticker_monitors():  # 알림을 보낸 뒤에 돈다(종목당 4~5분, 신호·알림을 늦추지 않게)
+            log.info(line)
     return {"ok": ok, "subject": subject, "body": body}
+
+
+def other_ticker_monitors() -> list[str]:
+    """운영 종목 밖의 레지스트리 종목마다 조건 모니터링 리포트를 다시 만든다(LLM 없음). 한 종목이 실패해도 나머지는 계속한다."""
+    out = []
+    for code in [c for c in config.MULTI_TICKERS if c != config.MAIN_TICKER]:
+        try:
+            summary = experiment.monitor(experiment.Data(code=code))["summary"]
+            out.append(f"조건 모니터링 {code}: " + " / ".join(summary))
+        except Exception as e:
+            out.append(f"조건 모니터링 {code} 실패: {type(e).__name__}: {str(e)[:120]}")
+    return out
 
 
 def main(args: list[str]):

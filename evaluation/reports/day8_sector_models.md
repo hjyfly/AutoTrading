@@ -1,6 +1,6 @@
 # 8일차 분야별 알고리즘
 
-계산 시각 2026-10-22 21:01 (KST) · 계획 [DAY8_PLAN.md](../../DAY8_PLAN.md) · 정리 [SERVICE2.md](../../SERVICE2.md) · 장부 [preregistration.md](preregistration.md)
+계산 시각 2026-10-22 21:01 (KST) · 계획 [DAY8_PLAN.md](../../DAY8_PLAN.md) · 정리 [SERVICE.md](../../SERVICE.md) 11.7 · 장부 [preregistration.md](preregistration.md)
 
 - 주 지표 **초과 정확도** = 정확도 − 그 구간 '늘 가장 많은 정답' 비율(그 후보의 정답 기준). S5 는 변동성 맞춤 정답 기준이다
 - 운영 규칙 그대로: 매주 재학습, 정답 간격, 하락 = 현금, 수수료 0.1%. 거래량 0 인 날은 모든 후보에서 뺐다

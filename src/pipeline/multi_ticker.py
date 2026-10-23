@@ -1,4 +1,8 @@
-"""7일차 다종목 분석 (DAY7_PLAN.md, SERVICE2.md). 분석용 신호만 만들고 매매·주문 경로와 연결하지 않는다.
+"""종목 레지스트리(config.MULTI_TICKERS) 종목의 수집·신호·분석. 7일차 다종목 분석에서 시작해 10일차에 종목 추가 명령(add)으로 모듈화했다
+(DAY7_PLAN.md, DAY10_PLAN.md, SERVICE.md 13절). 매매·주문 경로와 연결하지 않는다.
+
+- 종목 추가: config.MULTI_TICKERS 에 한 줄 넣고 `python -m src.pipeline.multi_ticker add <코드>` → 원본 수집 → 과거 신호(backfill) → 종목 분석.
+  그 뒤 실시간 신호·성적표·메일·도구·화면은 레지스트리를 따라 자동으로 포함된다.
 
 - 수집: 종목별 일봉(FinanceDataReader)·수급(네이버)과 분야 ETF(yfinance)를 data/raw/tickers/ 에 따로 둔다.
   이미 저장한 행은 바꾸지 않고, 갱신은 새 확정 날짜만 덧붙인다.
@@ -6,7 +10,7 @@
 - 학습: 운영 설정(지표 묶음 base, 5거래일 ±3%, 매주 재학습, 누적)으로 종목별 단독 워크포워드와 4종목 공동 워크포워드.
 - 판정: 사전 등록 Q1 ~ Q3(evaluation/reports/preregistration.md)을 확장 구간에서 한 번 계산해 리포트로 남긴다.
 
-명령줄: python -m src.pipeline.multi_ticker collect | study | analysis | live [YYYY-MM-DD]
+명령줄: python -m src.pipeline.multi_ticker collect | study | analysis | add <코드> | backfill <코드> | live [YYYY-MM-DD]
 """
 import sys
 from pathlib import Path
@@ -47,7 +51,7 @@ def collect(end: str | None = None, tickers=None) -> pd.DataFrame:
     """종목별 일봉·수급과 분야 ETF 를 받아 덧붙인다. 삼성전자는 기존 원본을 쓰므로 받지 않는다."""
     end = end or config.DATA_END
     rows = []
-    for code in tickers or [c for c in config.MULTI_TICKERS if c != config.SAMSUNG_CODE]:
+    for code in tickers or [c for c in config.MULTI_TICKERS if c != config.MAIN_TICKER]:
         for kind, fetch in [("ohlcv", collect_prices.fetch_ohlcv), ("flows", collect_prices.fetch_foreign_net)]:
             path = raw_path(f"{code}_{kind}")
             start = config.MULTI_DATA_START if not path.exists() else str((pd.read_parquet(path).index.max() + pd.Timedelta(days=1)).date())
@@ -79,7 +83,7 @@ def base_raw() -> dict:
 def ticker_raw(code: str, shared: dict | None = None) -> dict:
     """그 종목의 원본 묶음. 삼성전자는 기존(확장) 원본 그대로."""
     raw = dict(shared or base_raw())
-    if code != config.SAMSUNG_CODE:
+    if code != config.MAIN_TICKER:
         raw["ohlcv"] = pd.read_parquet(raw_path(f"{code}_ohlcv"))
         raw["flows"] = pd.read_parquet(raw_path(f"{code}_flows"))
     return raw
@@ -250,7 +254,7 @@ def report(result: pd.DataFrame, v: dict) -> str:
         "보유일": result["hold_days"].map(pct)})
     names = {c: v_[0] for c, v_ in config.MULTI_TICKERS.items()}
     lines = ["# 7일차 다종목 분석", "", f"계산 시각 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} (KST) · 계획 [DAY7_PLAN.md](../../DAY7_PLAN.md) · "
-             "정리 [SERVICE2.md](../../SERVICE2.md) · 장부 [preregistration.md](preregistration.md)", "",
+             "정리 [SERVICE.md](../../SERVICE.md) 11.6 · 장부 [preregistration.md](preregistration.md)", "",
              f"- 운영 설정 그대로: 지표 {len(config.FEATURE_SET_BASE)}개, 정답 {config.LABEL_HORIZON_DAYS}거래일 ±{config.LABEL_THRESHOLD:.0%}, "
              f"재학습 {config.RETRAIN_FREQS[config.RETRAIN_FREQ]}, 누적 학습, 하락 = 현금, 수수료 {config.FEE_RATE:.1%}",
              f"- 판정 구간 {EXT[0]} ~ {EXT[1]}(한 번만). 삼성전자는 이 구간을 4일차에 본 적이 있다. 검증 구간 {VALID[0]} ~ 은 참고",
@@ -358,7 +362,7 @@ def analysis(save: bool = True) -> dict:
                      "periods": periods, "yearly": yearly_report(sig["signal"], close, labels), "calibration": calib,
                      "ic": ic, "equity": equity, "last": str(sig.index.max().date())}
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)["signal"]
-    _, samsung = selected_signals(config.SAMSUNG_CODE)
+    _, samsung = selected_signals(config.MAIN_TICKER)
     both = samsung["signal"].to_frame().join(numeric.rename("op"), how="inner")
     match = (int((both["signal"] == both["op"]).sum()), len(both))  # 삼성전자 선정 신호(S0)와 운영 신호가 같은 날 수
     report = analysis_report(out, match)
@@ -382,7 +386,7 @@ def analysis_report(out: dict, samsung_match: tuple[int, int] | None = None) -> 
     mark = lambda v: "-" if v is None else ("통과" if v else "실패")
     last = max(r["last"] for r in out.values())
     lines = ["# 종목별 분석·비교 (뉴스 제외)", "",
-             f"> 작성 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} · 신호 끝 {last} · 2026-10-23 사용자 요청 · 기준 [SERVICE.md](../../SERVICE.md) 5.6 · 다종목 기록 [SERVICE2.md](../../SERVICE2.md)",
+             f"> 작성 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} · 신호 끝 {last} · 2026-10-23 사용자 요청 · 기준 [SERVICE.md](../../SERVICE.md) 5.6 · 종목 확장 기록 [SERVICE.md](../../SERVICE.md) 11.6 ~ 11.8",
              f"> 각 종목의 **선정 알고리즘**(8일차 확인 결과) 워크포워드 신호로, 삼성전자와 같은 규칙({config.RETRAIN_FREQS[config.RETRAIN_FREQ]} 재학습, "
              f"{config.LABEL_HORIZON_DAYS}거래일 ±{config.LABEL_THRESHOLD:.0%}, 하락 = 현금, 수수료 {config.FEE_RATE:.1%}, 구간마다 현금에서 시작)으로 계산했다."
              + (f" 삼성전자 S0 신호는 운영 신호와 겹치는 {samsung_match[1]}일 중 {samsung_match[0]}일 같다." if samsung_match else ""),
@@ -438,6 +442,46 @@ def analysis_report(out: dict, samsung_match: tuple[int, int] | None = None) -> 
     return "\n".join(lines) + "\n"
 
 
+# ---- 종목 추가 (10일차 모듈화) ----
+
+def backfill(code: str, save: bool = True) -> pd.DataFrame:
+    """레지스트리 종목의 과거 워크포워드 신호를 만든다(분석·화면·도구용). 분야 채택이 없는 종목은 S0 단독
+    (운영 지표 46개, 거래정지일 제외, 매주 재학습, 정답 간격) — 8일차 S0 와 같은 계산이다.
+    분야 알고리즘이 채택된 분야(예: 로봇 S4)는 같은 분야 종목을 함께 학습하므로 sector_models 로 만든다."""
+    from src import tools
+    from src.pipeline.sector_models import clean_raw
+    if code not in config.MULTI_TICKERS:
+        raise ValueError(f"{code} 는 종목 레지스트리에 없다. 먼저 config.MULTI_TICKERS 에 한 줄 넣는다")
+    alg = tools.ticker_algorithm(code)
+    if alg != "S0":
+        raise ValueError(f"{code} 는 분야 알고리즘 {alg} 종목이다. python -m src.pipeline.sector_models run 으로 분야 전체를 만든다")
+    raw = clean_raw(ticker_raw(code))
+    table = features.build_features(raw=raw)
+    labels = make_labels(raw["ohlcv"]["Close"].dropna().astype(float))
+    sig = pooled_walk_forward({code: {"features": table, "labels": labels}}, list(config.FEATURE_SET_BASE), config.SECTOR_SELECT_PERIOD[0])[code]
+    if save:
+        path = Path(config.SECTOR_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        sig.to_parquet(path / f"signals_S0_{code}.parquet")
+    return sig
+
+
+def add(code: str) -> dict:
+    """새 종목을 시스템에 넣는다: 원본 수집(어제까지) → 과거 신호(backfill) → 종목 분석·비교 다시 계산.
+    실시간 신호·성적표·메일·도구·화면은 레지스트리를 따라 다음 실행부터 포함된다. 매매 대상은 config.TRADE_TICKERS 로 따로 정한다."""
+    if code not in config.MULTI_TICKERS:
+        raise ValueError(f"{code} 는 종목 레지스트리에 없다. 먼저 config.MULTI_TICKERS 에 (이름, 분야, 분야 ETF 또는 None) 한 줄을 넣는다")
+    if code == config.MAIN_TICKER:
+        raise ValueError("운영 종목은 기존 원본·운영 파이프라인을 쓴다")
+    yesterday = str((pd.Timestamp.now(tz=config.KST).tz_localize(None).normalize() - pd.Timedelta(days=1)).date())
+    collected = collect(end=yesterday, tickers=[code])
+    sig = backfill(code)
+    analysis()
+    return {"code": code, "name": config.MULTI_TICKERS[code][0], "collected": collected,
+            "signals": len(sig), "first": str(sig.index.min().date()), "last": str(sig.index.max().date()),
+            "next": "다음 평일 15:20 자동 실행부터 실시간 신호·성적표·메일에 포함된다. 화면·/query 에서는 바로 조회된다"}
+
+
 def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
     """다른 종목 원본에 어제까지의 새 확정 날짜만 덧붙인다(오늘 장중 값은 저장하지 않는다)."""
     today = (pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz=config.KST).tz_localize(None)).normalize()
@@ -447,10 +491,10 @@ def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
 def live_tickers() -> list[str]:
     """매일 덧붙일 종목: 다른 종목과, 채택된 분야 알고리즘이 함께 쓰는 같은 분야 종목(삼성전자 제외)."""
     from src.pipeline.sector_models import sector_of
-    codes = [c for c in config.MULTI_TICKERS if c != config.SAMSUNG_CODE]
+    codes = [c for c in config.MULTI_TICKERS if c != config.MAIN_TICKER]
     peers = [p for c in config.MULTI_TICKERS if c in config.SECTOR_TICKER_NAMES and sector_of(c) in config.SECTOR_ADOPTED
              for p in config.SECTOR_UNIVERSE[sector_of(c)]]
-    return list(dict.fromkeys(codes + [p for p in peers if p != config.SAMSUNG_CODE]))
+    return list(dict.fromkeys(codes + [p for p in peers if p != config.MAIN_TICKER]))
 
 
 def _live_one(code: str, as_of: str | None) -> dict:
@@ -472,7 +516,7 @@ def live_shared(t: pd.Timestamp) -> dict:
 def live_raw(code: str, t: pd.Timestamp, shared: dict) -> dict:
     """t 일 신호용 종목 원본: t 전 값만 두고 t 행을 만들 빈 행을 덧붙인다. 원본이 직전 거래일까지 없으면 멈춘다."""
     raw = ticker_raw(code, shared)
-    if code != config.SAMSUNG_CODE:
+    if code != config.MAIN_TICKER:
         before = lambda df: df[df.index < t]
         prev_day = shared["ohlcv"].index[shared["ohlcv"].index < t].max()  # 공통 원본의 t 직전 거래일
         for kind in ("ohlcv", "flows"):  # 종목 원본이 그날까지 없으면 과거 검증과 다른 t 행이 되므로 만들지 않는다
@@ -515,7 +559,7 @@ def live_signal(code: str, as_of: str | None = None, valid_start=None) -> dict:
 def live_signals(as_of: str | None = None) -> list[dict]:
     """다른 종목 오늘 신호를 만들어 MULTI_LIVE_PATH 에 (날짜, 종목) 기준으로 남긴다. 한 종목이 실패해도 나머지는 만든다."""
     out = []
-    for code in [c for c in config.MULTI_TICKERS if c != config.SAMSUNG_CODE]:
+    for code in [c for c in config.MULTI_TICKERS if c != config.MAIN_TICKER]:
         try:
             out.append(_live_one(code, as_of))
         except Exception as e:
@@ -553,6 +597,11 @@ if __name__ == "__main__":
         res = study()
         print(res["verdicts"])
         print("저장:", config.DAY7_REPORT_PATH)
+    elif cmd in ("add", "backfill") and len(sys.argv) > 2:
+        if cmd == "add":
+            print(add(sys.argv[2]))
+        else:
+            print(len(backfill(sys.argv[2])), "일 신호 저장:", config.SECTOR_DIR)
     elif cmd == "analysis":
         analysis()
         print("저장:", config.TICKER_ANALYSIS_REPORT_PATH, config.TICKER_ANALYSIS_DIR)

@@ -42,7 +42,7 @@ evaluation/        test_queries.csv 와 평가 리포트
 - src/retriever.py  판단 기록·기사·DART 공시 검색(RAG). 모든 검색은 as_of 날짜 이후 문서를 제외한다
 
 ### 추가로 허용하는 파일 (이 목록 밖의 파일은 만들기 전에 묻는다)
-src/config.py               기간, ±3% 임계값, 수수료 0.1%, 랜덤 시드, 비용 한도 등 모든 설정값
+src/config.py               기간, ±3% 임계값, 수수료 0.1%, 랜덤 시드, 비용 한도 등 모든 설정값. 종목 레지스트리(MULTI_TICKERS)와 종목 역할(MAIN_TICKER·TRADE_TICKERS·NEWS_TICKERS)
 src/llm.py                  LLM·임베딩 생성, 토큰·비용 기록, 비용 한도 도달 시 중단
 src/server.py               FastAPI, POST /query
 src/pipeline/collect_prices.py   삼성전자·인버스 ETF 일봉 (FinanceDataReader, 예비 pykrx), 순매수 (네이버 증권 모바일 API), 확장 지표용 국내 종가(코스피·코스피200·SK하이닉스)
@@ -68,9 +68,10 @@ src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_
 src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시세·수급·계좌 잔고). 시세·수급은 연결 확인과 예비 출처용이고 운영 수집은 지금 출처 그대로(2026-10-22 사용자 결정)
 src/broker.py                    한국투자증권 주문. 사람이 직접 실행할 때만 쓰고 신호로 자동 주문하지 않는다. 기본 모의투자·주문 꺼짐(2026-10-22 사용자 결정)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
-src/pipeline/multi_ticker.py     7일차 다종목 분석(SK하이닉스·한화에어로스페이스·레인보우로보틱스, 2026-10-22 사용자 요청). 8일차부터 채택 분야 동료 종목도 매일 덧붙임. 2026-10-23 부터 정식 신호(성적표 판정, SERVICE.md 5.6, 사용자 결정). 매매·주문과 연결하지 않음. 분석 기록 SERVICE2.md
+src/pipeline/multi_ticker.py     종목 레지스트리 종목의 수집·신호·분석(7일차 시작, 10일차 모듈화). 채택 분야 동료 종목도 매일 덧붙임. 2026-10-23 부터 정식 신호(성적표 판정, SERVICE.md 5.6, 사용자 결정). 매매·주문과 연결하지 않음. 기록 SERVICE.md 11.6 ~ 11.8
+                                 종목 추가(add <코드>: 원본 수집 → backfill 과거 신호 → 분석, SERVICE.md 13절)
                                  4종목 분석·비교(analysis: 선정 알고리즘 신호, 뉴스 제외, 탐색 → evaluation/reports/tickers_analysis.md, 화면 표 data/processed/tickers/analysis)
-src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우주항공·로봇 각 3종목, 후보 S0 ~ S5 고르기·확인, 채택된 분야의 신호. 2026-10-22 사용자 요청). 매매·주문과 연결하지 않음. 정리 SERVICE2.md 10절
+src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우주항공·로봇 각 3종목, 후보 S0 ~ S5 고르기·확인, 채택된 분야의 신호. 2026-10-22 사용자 요청). 매매·주문과 연결하지 않음. 정리 SERVICE.md 11.7
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
                                  9일차 뉴스 평가(--news: IC·Newey-West·기준선·LLM 지식 기준 전후 분리, 장부 V1·V2·A1 확인 판정 1회)
                                  조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
@@ -85,7 +86,7 @@ data/backup/     주간 갱신 전 원본 복사본(git 제외)
 data/processed/  지표·학습용 표·정답 데이터
 data/scores/     뉴스 채점 결과(news_scores.parquet)와 판단 기록(traces/<날짜>.json), 기사별 피처(features/<날짜>.json), 경보 기록(alerts/alerts.jsonl). 기사 제목이 있어 traces·features·alerts 는 git 제외
 data/index/      Chroma 색인
-evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*.md)
+evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*.md). 목록과 네이밍 규칙은 evaluation/reports/README.md
 data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 git 제외)
 data/kis/            한국투자증권 토큰·계좌 잔고 기록·주문 기록(git 제외)
 data/raw/tickers/    7·8일차 다른 종목 일봉·수급·분야 ETF·국내 지수(kr_*) 원본(새 날짜만 덧붙임)
@@ -123,7 +124,10 @@ data/processed/sectors/  8일차 분야별 후보 신호·고르기·확인 결�
 - 비용 한도: LLM 호출은 모두 src/llm.py 를 거치고, 호출마다 토큰과 비용을 data/scores/cost_log.csv 에 남긴다
   - PoC(개발 단계) 누적 $150(2026-10-22 $80 에서 상향, 사용자 결정), 운영 월 $100 에 도달하면 예외를 던지고 멈춘다
 - 더미 데이터를 쓰면 데이터와 보고서에 is_dummy 표시를 붙인다
+- 산출물 이름은 evaluation/reports/README.md 1절 네이밍 규칙을 따른다(일차 계획 DAY<N>_PLAN.md, 일차 리포트 day<N>_<주제>.md, 상시 리포트 <종류>[_<구간>][_<종목코드>].md, 일회성 비교 experiments_<YYYYMMDD>_<HHMM>_<이름>[_<종목코드>].md, 점검 data_probe_<YYYYMMDD>[_<범위>].md). 새 산출물을 만들면 그 목록에 한 줄 더한다(2026-10-23)
 - 설정값은 src/config.py 에만 두고 코드 곳곳에 숫자를 적지 않는다
+- 종목에 따라 달라지는 기능은 종목 역할(config.MAIN_TICKER·TRADE_TICKERS·NEWS_TICKERS)로 판단하고, 종목 목록·이름은 config.MULTI_TICKERS 에서 만든다(2026-10-23 10일차). 코드에 종목 코드·이름을 직접 적지 않는다(운영 종목 원본 파일 이름과 지난 판정 기록은 예외)
+  - 매매 종목(TRADE_TICKERS)은 사용자 결정으로만 바꾼다. 종목 추가는 SERVICE.md 13절 절차(config 한 줄 + multi_ticker add)로 한다
 - 지표 묶음은 config.FEATURE_SETS 로 고른다. base_v1(1~3일차 45개)은 이름으로 고정했고, candidate(A+B+D)는 사전 등록 목록이라 결과를 본 뒤 바꾸지 않는다
   - 운영 base 는 base_v1 + RSI(rsi14) 46개다(2026-10-22 사용자 결정). 운영 base 를 바꾸는 것은 사용자 결정으로만 한다
   - 탐색·실시간 비교용으로 config.FEATURE_GROUPS 의 그룹을 이은 'groups:' 묶음도 쓸 수 있다

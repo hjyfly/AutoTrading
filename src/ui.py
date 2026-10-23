@@ -1,9 +1,10 @@
 """Streamlit 화면. 실행: .venv\\Scripts\\streamlit run src/ui.py
 
-사이드바에서 종목(삼성전자·SK하이닉스·한화에어로스페이스·레인보우로보틱스)과 기준 날짜를 고른다.
-탭은 질의응답(에이전트), 고른 종목·날짜의 신호·차트·지표(뉴스·판단 기록은 삼성전자만), 리포트·조건 비교다.
+사이드바에서 종목(config.MULTI_TICKERS 종목 레지스트리)과 기준 날짜를 고른다.
+탭은 질의응답(에이전트), 고른 종목·날짜의 신호·차트·지표(뉴스·판단 기록은 config.NEWS_TICKERS 종목만), 고른 종목의 리포트·조건 비교다.
 데이터는 모두 도구 함수(src/tools.py)로 읽으므로, 선택한 날짜 시점에 알 수 있던 정보만 보인다.
-매매·주문 대상은 삼성전자뿐이고, 다른 종목은 성적표로 판정하는 신호만 보여 준다(SERVICE.md 5.6).
+매매·주문 대상은 config.TRADE_TICKERS 뿐이고, 나머지 종목은 성적표로 판정하는 신호만 보여 준다(SERVICE.md 5.6).
+"운영 종목인가"·"뉴스가 있는 종목인가"·"매매 종목인가"는 config 의 역할 설정(MAIN_TICKER·NEWS_TICKERS·TRADE_TICKERS)으로만 판단한다.
 """
 import sys
 from pathlib import Path
@@ -19,14 +20,18 @@ import streamlit as st
 from src import agent, config, llm, tools
 from src.pipeline import experiment, live_signal, news_signal, scoreboard
 
-st.set_page_config(page_title=f"AutoTrading {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
+st.set_page_config(page_title=f"AutoTrading 종목별 {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
+MAIN = config.MAIN_TICKER                       # 운영 모델 종목
+MAIN_NAME = config.MULTI_TICKERS[MAIN][0]
+NEWS_NAMES = "·".join(config.MULTI_TICKERS[c][0] for c in config.NEWS_TICKERS)
+TRADE_NAMES = "·".join(config.MULTI_TICKERS[c][0] for c in config.TRADE_TICKERS)
 
 
 @st.cache_data(ttl=600)
-def load_signals(code: str = config.SAMSUNG_CODE) -> pd.DataFrame:
+def load_signals(code: str = config.MAIN_TICKER) -> pd.DataFrame:
     """검증 구간 신호와 실시간으로 만든 신호를 합친다(뉴스 보정은 config.NEWS_ADJUST_IN_SIGNAL 일 때만 반영).
     다른 종목은 그 종목 알고리즘의 워크포워드 신호(8일차)에 실시간 기록을 덮어 쓴다."""
-    if code != config.SAMSUNG_CODE:
+    if code != config.MAIN_TICKER:
         path = Path(config.SECTOR_DIR) / f"signals_{tools.ticker_algorithm(code)}_{code}.parquet"
         stored = pd.read_parquet(path)[["signal", "confidence"]] if path.exists() else pd.DataFrame(columns=["signal", "confidence"])
         if Path(config.MULTI_LIVE_PATH).exists():
@@ -49,31 +54,34 @@ def load_signals(code: str = config.SAMSUNG_CODE) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
-def load_prices(code: str = config.SAMSUNG_CODE) -> pd.Series:
-    """저장된 종가(삼성전자는 기존 원본, 다른 종목은 data/raw/tickers)."""
-    path = (Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet" if code == config.SAMSUNG_CODE
+def load_prices(code: str = config.MAIN_TICKER) -> pd.Series:
+    """저장된 종가(운영 종목은 기존 원본, 다른 종목은 data/raw/tickers)."""
+    path = (Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet" if code == config.MAIN_TICKER
             else Path(config.TICKER_RAW_DIR) / f"{code}_ohlcv.parquet")
     return pd.read_parquet(path)["Close"].astype(float)
 
 
 @st.cache_resource
-def _experiment_data(extended: bool) -> experiment.Data:
-    """조건 비교 실험용 원본 표와 학습 결과 보관소(같은 학습 조건은 한 번만 학습한다). 구간마다 따로 둔다."""
-    return experiment.Data(extended=extended)
+def _experiment_data(extended: bool, code: str) -> experiment.Data:
+    """조건 비교 실험용 원본 표와 학습 결과 보관소(같은 학습 조건은 한 번만 학습한다). 구간·종목마다 따로 둔다."""
+    return experiment.Data(extended=extended, code=code)
 
 
-def experiment_data() -> experiment.Data:
-    """화면의 조건 비교 실험 데이터. 운영 기준 하나(기존 검증 구간)로만 계산한다(확장 검증은 리포트 파일로만 남긴다)."""
-    return _experiment_data(False)
+def experiment_data(code: str) -> experiment.Data:
+    """화면의 조건 비교 실험 데이터(고른 종목). 기존 검증 구간 하나로만 계산한다(확장 검증은 리포트 파일로만 남긴다)."""
+    return _experiment_data(False, code)
 
 
-def experiment_tab():
-    """모니터링 리포트 보기와 조건 조회를 하위 탭으로 나눠 보여 준다. 결과는 모두 탐색이다."""
-    sub_report, sub_query, sub_features, sub_tickers = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단", "종목 비교"])
+def experiment_tab(code: str):
+    """고른 종목의 모니터링 리포트·조건 조회·지표 그룹 진단과 전 종목 비교를 하위 탭으로 보여 준다. 결과는 모두 탐색이다."""
+    name = config.MULTI_TICKERS[code][0]
+    st.caption(f"**{name}** 기준(사이드바에서 종목을 바꾼다)."
+               + ("" if code == MAIN else f" 운영 종목과 같은 설정(S0 단독, 지표 {len(config.FEATURE_SET_BASE)}개)으로 계산하며, 분야 알고리즘의 추가 지표·뉴스 조건·인버스 규칙은 이 종목에 없다."))
+    sub_report, sub_query, sub_features, sub_tickers = st.tabs([f"모니터링 리포트 · {name}", f"조건 조회 · {name}", f"지표 그룹 진단 · {name}", "종목 비교(전체)"])
     with sub_tickers:
         path = Path(config.TICKER_ANALYSIS_REPORT_PATH)
         if st.button("종목 비교 다시 계산 (1~2분, LLM 없음)"):
-            with st.spinner("4종목 분석 중"):
+            with st.spinner(f"{len(config.MULTI_TICKERS)}종목 분석 중"):
                 from src.pipeline import multi_ticker
                 multi_ticker.analysis()
                 st.cache_data.clear()
@@ -82,23 +90,24 @@ def experiment_tab():
         else:
             st.info("아직 종목 비교 리포트가 없다. 위 버튼으로 만든다.")
     with sub_report:
-        monitor_report_view()
+        monitor_report_view(code)
     with sub_query:
-        condition_query_view()
+        condition_query_view(code)
     with sub_features:
-        feature_study_view()
+        feature_study_view(code)
 
 
-def monitor_report_view():
-    """사전 등록한 조건을 하나씩 바꿔 본 민감도 분석 리포트를 보여 주고, 버튼으로 다시 계산한다."""
+def monitor_report_view(code: str):
+    """고른 종목의 사전 등록 조건을 하나씩 바꿔 본 민감도 분석 리포트를 보여 주고, 버튼으로 다시 계산한다."""
     st.caption("사전 등록한 조건을 하나씩 바꿔 본 민감도 분석과 해석. 평일 자동 실행이 매주 금요일에 다시 만든다. "
                "고른 날짜와 상관없이 저장된 전체 데이터로 계산한 **탐색 결과**다.")
-    report_path = Path(config.MONITOR_REPORT_PATH)
-    if st.button("모니터링 다시 계산"):
-        with st.spinner("계산 중(조건마다 다시 학습해 몇 분 걸린다)"):
-            st.session_state.monitor = experiment.monitor(experiment_data())
-    if "monitor" in st.session_state:
-        for group, curves in st.session_state.monitor["curves"].items():
+    report_path = experiment.ticker_path(config.MONITOR_REPORT_PATH, code)
+    key = f"monitor_{code}"
+    if st.button("모니터링 다시 계산", key=f"btn_{key}"):
+        with st.spinner("계산 중(조건마다 다시 학습해 종목당 4~5분 걸린다)"):
+            st.session_state[key] = experiment.monitor(experiment_data(code))
+    if key in st.session_state:
+        for group, curves in st.session_state[key]["curves"].items():
             st.markdown(f"**{group} 자산 곡선**")
             st.line_chart(pd.DataFrame(curves))
     if report_path.exists():
@@ -107,8 +116,8 @@ def monitor_report_view():
         st.info("아직 리포트가 없다. 위 버튼으로 만든다.")
 
 
-def condition_query_view():
-    """조건 조합을 골라 '조회' 를 누르면 다시 계산해 비교 표와 자산 곡선을 보여 준다."""
+def condition_query_view(code: str):
+    """고른 종목으로 조건 조합을 골라 '조회' 를 누르면 다시 계산해 비교 표와 자산 곡선을 보여 준다."""
     st.caption("선택한 날짜와 상관없이 저장된 전체 데이터로 다시 계산한다. 검증 구간을 본 뒤의 비교라 **탐색 결과**이며 공식 판정(기준 A·B)을 바꾸지 않는다. "
                "신호 시각(15:15)과 기사 수집 구간은 뉴스를 다시 채점해야 바뀌므로 여기서는 고를 수 없다.")
     base = config.EXPERIMENT_BASE
@@ -136,31 +145,32 @@ def condition_query_view():
         else:
             try:
                 with st.spinner(f"조합 {len(cfgs)}개 계산 중"):
-                    table, curves = experiment.compare(cfgs, experiment_data())
-                st.session_state.experiment = (table, curves)
+                    table, curves = experiment.compare(cfgs, experiment_data(code))
+                st.session_state[f"experiment_{code}"] = (table, curves)
             except ValueError as e:
                 st.warning(str(e))
-    if "experiment" in st.session_state:
-        table, curves = st.session_state.experiment
+    if f"experiment_{code}" in st.session_state:
+        table, curves = st.session_state[f"experiment_{code}"]
         st.markdown(experiment.to_markdown(table))
         st.line_chart(pd.DataFrame(curves))
         if st.button("보고서로 저장"):
             stamp = pd.Timestamp.now(tz=config.KST).strftime("%Y%m%d_%H%M")
-            path = Path(config.EXPERIMENT_REPORT_DIR) / f"experiments_{stamp}_ui.md"
-            path.write_text(f"# 조건 비교 실험 {stamp}\n\n" + experiment.to_markdown(table), encoding="utf-8", newline="\n")
+            path = Path(config.EXPERIMENT_REPORT_DIR) / f"experiments_{stamp}_ui{'' if code == MAIN else '_' + code}.md"
+            path.write_text(f"# 조건 비교 실험 {stamp} — {config.MULTI_TICKERS[code][0]}\n\n" + experiment.to_markdown(table), encoding="utf-8", newline="\n")
             st.success(f"저장: {path}")
 
 
-def feature_study_view():
-    """지표 그룹을 빼고 더해 본 진단·추천 리포트와, 그룹을 직접 골라 기존 지표와 비교하는 폼."""
+def feature_study_view(code: str):
+    """고른 종목으로 지표 그룹을 빼고 더해 본 진단·추천 리포트와, 그룹을 직접 골라 기존 지표와 비교하는 폼."""
     st.caption("기존 지표를 그룹 단위로 하나씩 빼고 후보 그룹을 하나씩 더해 다시 학습한 **탐색 결과**다. 추천 묶음도 운영 신호를 바꾸지 않고, "
                "config.LIVE_EXTRA_FEATURE_SETS 에 넣으면 실시간 성적표에서 앞으로의 날로 함께 채점된다.")
-    report_path = Path(config.FEATURE_STUDY_REPORT_PATH)
-    if st.button("지표 그룹 진단 다시 계산"):
+    report_path = experiment.ticker_path(config.FEATURE_STUDY_REPORT_PATH, code)
+    key = f"feature_study_{code}"
+    if st.button("지표 그룹 진단 다시 계산", key=f"btn_{key}"):
         with st.spinner("계산 중(그룹마다 다시 학습해 몇 분 걸린다)"):
-            st.session_state.feature_study = experiment.feature_study(experiment_data())
-    if "feature_study" in st.session_state:
-        st.line_chart(pd.DataFrame(st.session_state.feature_study["curves"]))
+            st.session_state[key] = experiment.feature_study(experiment_data(code))
+    if key in st.session_state:
+        st.line_chart(pd.DataFrame(st.session_state[key]["curves"]))
     with st.form("feature_group_form"):
         groups = st.multiselect("직접 고를 지표 그룹", list(config.FEATURE_GROUPS), default=config.FEATURE_GROUPS_BASE,
                                 format_func=lambda g: f"{config.FEATURE_GROUP_LABELS[g]} ({len(config.FEATURE_GROUPS[g])}개)")
@@ -172,7 +182,7 @@ def feature_study_view():
             name = experiment.train.group_set_name(groups)
             with st.spinner("계산 중"):
                 table, curves = experiment.compare(experiment.expand(dict(config.EXPERIMENT_BASE), {"feature_set": ["base", name]}),
-                                                   experiment_data())
+                                                   experiment_data(code))
             st.markdown(experiment.to_markdown(table))
             st.line_chart(pd.DataFrame(curves))
             st.caption(f"이 묶음 이름: `{name}`")
@@ -196,7 +206,7 @@ def ticker_performance_view(code: str, as_of: pd.Timestamp):
         st.info("아직 종목 분석이 없다. '리포트·조건 비교 → 종목 비교'에서 계산한다.")
         return
     mine = periods[periods["code"] == code]
-    st.caption(f"선정 알고리즘 {mine['algorithm'].iloc[0]} 의 워크포워드 신호로 삼성전자와 같은 규칙(하락 = 현금, 수수료 0.1%)에서 계산했다. "
+    st.caption(f"선정 알고리즘 {mine['algorithm'].iloc[0]} 의 워크포워드 신호로 운영 종목({MAIN_NAME})과 같은 규칙(하락 = 현금, 수수료 {config.FEE_RATE:.1%})에서 계산했다. "
                "7·8일차에 이미 본 구간이라 모두 탐색이고, 판정은 실시간 성적표로만 한다. 뉴스는 쓰지 않았다. "
                "자산 곡선은 고른 날짜 전까지만 그리고, 아래 표는 고른 날짜와 관계없이 데이터 끝까지의 사후 성적이다.")
     eq = load_ticker_analysis("equity")
@@ -236,7 +246,7 @@ def load_equity() -> pd.DataFrame:
     return pd.read_parquet(Path(config.PROCESSED_DIR) / f"equity_numeric_{config.DOWN_ACTION}.parquet")
 
 
-def price_chart(as_of: pd.Timestamp, days: int, code: str = config.SAMSUNG_CODE) -> alt.Chart:
+def price_chart(as_of: pd.Timestamp, days: int, code: str = config.MAIN_TICKER) -> alt.Chart:
     """선택한 날짜 전날까지의 종가와 그 기간의 신호 표시."""
     close = load_prices(code)
     close = close[close.index < as_of].tail(days)
@@ -269,8 +279,8 @@ def _mark(v) -> str:
 
 
 def samsung_board_view(board: dict):
-    """삼성전자 운영·비교 모델 성적표(요약 줄, 기준 표, 자산 곡선)."""
-    st.markdown("**삼성전자 운영·비교 모델**")
+    """운영 종목의 운영·비교 모델 성적표(요약 줄, 기준 표, 자산 곡선)."""
+    st.markdown(f"**{MAIN_NAME} 운영·비교 모델**")
     for line in scoreboard.summary_lines(board):
         (st.warning if "경고" in line else st.write)(line)
     rows = [{"모델": s["title"], "판정 상태": s["criteria"]["status"], "A 위험 대비 수익": _mark(s["criteria"]["A"]["passed"]),
@@ -324,18 +334,20 @@ def tickers_board_view(board: dict, only: str | None = None):
 with st.sidebar:
     st.header("종목")
     code = st.selectbox("신호를 볼 종목", list(config.MULTI_TICKERS),
-                        format_func=lambda c: f"{config.MULTI_TICKERS[c][0]} ({c})" + (" · 운영·매매" if c == config.SAMSUNG_CODE else ""))
+                        format_func=lambda c: f"{config.MULTI_TICKERS[c][0]} ({c})" + "".join(
+                            f" · {label}" for label, on in (("운영", c == MAIN), ("매매", c in config.TRADE_TICKERS)) if on))
     name = tools.ticker_name(code)
-    is_samsung = code == config.SAMSUNG_CODE
+    is_main = code == MAIN                       # 운영 모델(숫자 모델 운영 신호·비교 줄·과거 공식 판정)이 있는 종목
+    has_news = code in config.NEWS_TICKERS       # 뉴스 채점·판단 기록·공시가 있는 종목
     st.header("기준 날짜")
     picked = st.date_input(f"이 날짜 {config.SIGNAL_CUTOFF_KST} 시점으로 봄", value=tools.resolve_as_of(None).date())
     as_of = pd.Timestamp(picked)
     use_date_in_chat = st.checkbox("질문에 날짜가 없으면 이 날짜로 묻기", value=True)
     st.divider()
     st.header("신호 만들기")
-    st.caption(f"삼성전자 저장 신호는 {config.DATA_END} 까지. 그 뒤 날짜는 실시간 데이터로 만든다. "
-               "평일 15:20 자동 실행이 네 종목 신호를 모두 기록하므로 보통은 누르지 않아도 된다.")
-    if not is_samsung and st.button("다른 종목 신호 만들기 (3종목)"):
+    st.caption(f"{MAIN_NAME} 저장 신호는 {config.DATA_END} 까지. 그 뒤 날짜는 실시간 데이터로 만든다. "
+               f"평일 15:20 자동 실행이 {len(config.MULTI_TICKERS)}개 종목 신호를 모두 기록하므로 보통은 누르지 않아도 된다.")
+    if not is_main and st.button(f"다른 종목 신호 만들기 ({len(config.MULTI_TICKERS) - 1}종목)"):
         with st.spinner("다른 종목 원본을 덧붙이고 신호를 만드는 중"):
             try:
                 from src.pipeline import multi_ticker
@@ -344,7 +356,7 @@ with st.sidebar:
                 st.cache_data.clear()
             except Exception as e:
                 st.error(f"실패: {e}")
-    if is_samsung and st.button("숫자 모델 신호 만들기"):
+    if is_main and st.button("숫자 모델 신호 만들기"):
         with st.spinner("실시간 데이터로 학습·예측 중"):
             try:
                 live_signal.make_signal(str(as_of.date()))
@@ -352,7 +364,7 @@ with st.sidebar:
                 st.success("완료")
             except Exception as e:
                 st.error(f"실패: {e}")
-    if is_samsung and st.button("뉴스 채점까지, 참고용 (약 $0.15, 2~3분)"):
+    if is_main and has_news and st.button("뉴스 채점까지, 참고용 (약 $0.27, 3~4분)"):  # 뉴스 채점·추출은 지금 운영 종목 파이프라인 전용
         with st.spinner("뉴스 수집·채점 중"):
             try:
                 out = live_signal.make_signal(str(as_of.date()), with_news=True)
@@ -364,18 +376,18 @@ with st.sidebar:
     spent = llm.total_cost()
     st.metric("LLM 누적 비용", f"${spent:.2f}", help=f"한도 ${config.COST_LIMIT_POC_USD:.0f}")
     st.progress(min(spent / config.COST_LIMIT_POC_USD, 1.0))
-    st.caption(f"모의 매매 규칙: 하락 신호 = {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}. 주문은 삼성전자만, 사람이 직접 한다.")
+    st.caption(f"모의 매매 규칙: 하락 신호 = {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}. 주문은 {TRADE_NAMES}만, 사람이 직접 한다.")
     st.caption("투자 권유가 아니라 모델 판단의 설명이다.")
 
 st.title(f"{name} {config.LABEL_HORIZON_DAYS}거래일 방향 신호 · {as_of.date()} {config.SIGNAL_CUTOFF_KST} 기준")
-if not is_samsung:
-    st.caption(f"정식 신호(실시간 성적표로 판정) · 매매·주문 대상 아님 · 알고리즘 {tools.ticker_algorithm(code)} "
-               "· 뉴스 채점·판단 기록·공시는 삼성전자만 있다")
+if not is_main:
+    st.caption(f"정식 신호(실시간 성적표로 판정) · {'매매 종목' if code in config.TRADE_TICKERS else '매매·주문 대상 아님'} · 알고리즘 {tools.ticker_algorithm(code)} "
+               + ("" if has_news else f"· 뉴스 채점·판단 기록·공시는 {NEWS_NAMES}만 있다"))
 tab_ask, tab_data, tab_report = st.tabs(["질의응답", "신호·데이터", "리포트·조건 비교"])
 
 # ---- 리포트·조건 비교 (고른 날짜와 상관없는 탐색) ----
 with tab_report:
-    experiment_tab()
+    experiment_tab(code)
 
 # ---- 신호·데이터 (고른 날짜 시점) ----
 with tab_data:
@@ -383,11 +395,11 @@ with tab_data:
     c1, c2, c3 = st.columns(3)
     final = sig.get("with_news", {}).get("signal") or sig.get("numeric", {}).get("signal")
     c1.metric("최종 신호", final or "없음")
-    if not is_samsung and "numeric" in sig:
+    if not is_main and "numeric" in sig:
         c2.metric("확신도", f"{sig['numeric']['confidence']:.0%}")
         c3.metric("알고리즘", sig["numeric"]["algorithm"])
         st.caption(f"출처: {sig['numeric']['source']}")
-    if is_samsung and "numeric" in sig:
+    if is_main and "numeric" in sig:
         c2.metric("숫자 모델", sig["numeric"]["signal"], f"확신도 {sig['numeric']['confidence']:.0%}", delta_color="off")
     if "with_news" in sig:
         news_note = ("보정됨" if sig["with_news"]["adjusted"] else "보정 없음") if config.NEWS_ADJUST_IN_SIGNAL else "참고용"
@@ -396,7 +408,7 @@ with tab_data:
         st.caption(f"비교용 후보 모델(A+B+D 지표 추가): **{sig['candidate']['signal']}** (확신도 {sig['candidate']['confidence']:.0%}) "
                    "— 최종 신호가 아니며 앞으로의 성과로 기존 모델과 비교 중")
     live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
-    if is_samsung and live_path.exists():  # 그날 실시간으로 기록한 비교 줄(최종 신호 아님). 그날 기록이라 고른 날짜 시점 규칙을 지킨다
+    if is_main and live_path.exists():  # 그날 실시간으로 기록한 비교 줄(최종 신호 아님). 그날 기록이라 고른 날짜 시점 규칙을 지킨다
         live = pd.read_parquet(live_path)
         today_rows = live[(live.index == as_of.normalize()) & live["model"].isin([*config.LIVE_EXTRA_FEATURE_SETS, config.LIVE_RISK_MODEL])]
         for model, r in today_rows.set_index("model").iterrows():
@@ -405,7 +417,7 @@ with tab_data:
                            f"(위험 확률 {float(r['p_risk']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
             else:
                 st.caption(f"비교용 지표 묶음 `{model}`: **{r['signal']}** (확신도 {float(r['confidence']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
-    if "note" in sig and (is_samsung or "numeric" not in sig):
+    if "note" in sig and (is_main or "numeric" not in sig):
         st.info(sig["note"])
 
     tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live = st.tabs(
@@ -426,7 +438,7 @@ with tab_data:
         except Exception as e:
             st.warning(f"지표를 계산하지 못했다: {e}")
     with tab_judge:
-        j = tools.news_judgement(str(as_of.date())) if is_samsung else {"note": "뉴스 채점·판단 기록은 삼성전자만 있다. 다른 종목은 숫자 모델 신호만 낸다"}
+        j = tools.news_judgement(str(as_of.date())) if is_main and has_news else {"note": f"뉴스 채점·판단 기록은 {NEWS_NAMES}만 있다. 이 종목은 숫자 모델 신호만 낸다"}
         if "final" not in j:
             st.info(j.get("note", "판단 기록 없음"))
         else:
@@ -442,7 +454,7 @@ with tab_data:
                 with st.expander(f"{name}: {o['score']:+d} (확신도 {o['confidence']:.2f})"):
                     st.write(o["rationale"])
                     st.caption(f"토론 뒤: {o['change_reason']}")
-        if is_samsung:
+        if is_main and has_news:  # 판단 기록·기사 피처는 지금 운영 종목 파이프라인 전용
             feats = tools.news_features(str(as_of.date()))
             st.markdown("**기사별 추출 (9일차, 참고)**")
             if "articles" not in feats:
@@ -458,20 +470,20 @@ with tab_data:
                 st.caption(f"회사명을 익명(A사)으로 바꿔 기사마다 뽑았다 · 그날 모은 기사 {feats['n_collected']}건 · 프롬프트 버전 {feats['prompt_version']}")
                 table = pd.DataFrame(feats["articles"])
                 if len(table):
-                    table["one_line_summary"] = table["one_line_summary"].str.replace(config.ANONYMIZED_NAME, "삼성전자")
+                    table["one_line_summary"] = table["one_line_summary"].str.replace(config.ANONYMIZED_NAME, MAIN_NAME)
                     st.dataframe(table.rename(columns={"published_kst": "발행(KST)", "title": "제목", "category": "분류", "event_type": "사건",
                                                        "direction": "방향", "magnitude": "크기", "novelty": "새로움", "downside_risk": "하락 위험",
                                                        "relevance": "관련도", "one_line_summary": "한 줄 요약"}), width="stretch", hide_index=True)
     with tab_news:
-        if not is_samsung:
-            st.info("뉴스는 삼성전자 관련 기사만 모은다. 아래는 같은 날 삼성전자 뉴스(시장 전반 참고용)다.")
+        if not has_news:
+            st.info(f"뉴스는 {NEWS_NAMES} 관련 기사만 모은다. 아래는 같은 날 {MAIN_NAME} 뉴스(시장 전반 참고용)다.")
         n = tools.news_for_signal(str(as_of.date()), limit=30)
         st.caption(n["source"])
         if n["articles"]:
             st.dataframe(pd.DataFrame(n["articles"])[["published_kst", "source", "title"]], width="stretch", hide_index=True)
     with tab_perf:
-        chart = equity_chart(as_of) if is_samsung else None
-        if not is_samsung:
+        chart = equity_chart(as_of) if is_main else None
+        if not is_main:
             ticker_performance_view(code, as_of)
         elif chart is None:
             st.info(f"검증 구간({config.VALID_START}~) 이전 날짜다.")
@@ -483,7 +495,7 @@ with tab_data:
             st.altair_chart(chart, width="stretch")
     with tab_live:
         st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다. "
-                   "삼성전자 운영·비교 모델과 다른 종목을 SERVICE.md 5절 성공 기준(A 위험 대비 수익, B 하락 신호 적중, C 반등 지키기)으로 판정한다. "
+                   f"{MAIN_NAME} 운영·비교 모델과 다른 종목을 SERVICE.md 5절 성공 기준(A 위험 대비 수익, B 하락 신호 적중, C 반등 지키기)으로 판정한다. "
                    f"확정 신호 {config.LIVE_PROMOTION_MIN_SIGNALS}개 전까지는 참고 값이다. 장 마감 뒤에 만든 사후 기록은 제외한다.")
         if st.button("성적표 새로 계산"):
             with st.spinner("계산 중"):
@@ -494,14 +506,14 @@ with tab_data:
         else:
             board = json.loads(board_path.read_text(encoding="utf-8"))
             st.caption(f"계산 시각 {board['updated_at']} · 가격 마지막 날 {board.get('price_last_date', '-')}")
-            if is_samsung:
+            if is_main:
                 samsung_board_view(board)
                 st.subheader("다른 종목 (SERVICE.md 5.6, 매매·주문 대상 아님)")
                 tickers_board_view(board)
             else:
                 st.subheader(f"{name} 실시간 성적 (SERVICE.md 5.6, 매매·주문 대상 아님)")
                 tickers_board_view(board, code)
-                with st.expander("삼성전자(운영) · 다른 종목 성적 보기"):
+                with st.expander(f"{MAIN_NAME}(운영) · 다른 종목 성적 보기"):
                     samsung_board_view(board)
                     tickers_board_view(board)
 
@@ -516,12 +528,12 @@ with tab_ask:
             if turn.get("result"):
                 with st.expander(f"근거 {len(turn['result']['contexts'])}건 · 비용 ${turn['result']['trace'][-1].get('cost_usd', 0):.3f}"):
                     st.json({"trace": turn["result"]["trace"], "contexts": turn["result"]["contexts"]}, expanded=False)
-    st.caption("네 종목 신호·가격·수급·지표를 물을 수 있다. 뉴스·판단 기록·공시·성과는 삼성전자만 있다. "
+    st.caption(f"{len(config.MULTI_TICKERS)}개 종목 신호·가격·수급·지표를 물을 수 있다. 뉴스·판단 기록·공시는 {NEWS_NAMES}, 과거 성과 요약은 {MAIN_NAME}만 있다. "
                "질문에 종목이 없으면 사이드바에서 고른 종목으로 묻는다.")
     question = st.chat_input("예: 이날 신호와 이유는? / SK하이닉스 외국인 수급은? / 삼성전자 모델 성과는?")
     if question:
         asked = question
-        if not is_samsung and not any(v[0] in question or c in question for c, v in config.MULTI_TICKERS.items()):
+        if not is_main and not any(v[0] in question or c in question for c, v in config.MULTI_TICKERS.items()):
             asked = f"{name} {asked}"
         if use_date_in_chat and agent.extract_as_of(question) is None:
             asked = f"{as_of.date()} 기준: {asked}"
