@@ -200,6 +200,9 @@ def test_다른_종목은_운영_규칙이_바뀌어도_현금으로_판정하�
 
 
 def test_기간별_모델은_그_기간_정답으로_채점하고_같은_날부터_운영과_비교한다(tmp_path, monkeypatch):
+    import json
+    (tmp_path / "judged.json").write_text(json.dumps({"verdict": {"H1": {"passed": True}, "H4": {"passed": True}}}), encoding="utf-8")
+    monkeypatch.setattr(config, "DAY11_JUDGED_PATH", str(tmp_path / "judged.json"))  # 저장소 판정 기록에 묶이지 않게
     samsung, inverse = prices(40)
     live = pd.DataFrame({"model": ["base"] * 30 + ["h20"] * 20 + ["h1"] * 20,
                          "signal": [UP] * 30 + [UP, DOWN] * 10 + [DOWN] * 20, "confidence": 0.5},
@@ -219,3 +222,61 @@ def test_기간별_모델은_그_기간_정답으로_채점하고_같은_날부�
     assert p["registered"] and "note" not in p  # 첫 기록일이 늦어도 같은 날부터 다시 계산한 운영 모델과 비교한다
     same_base = sb.score_model(live[live["model"] == "base"]["signal"].loc[DAYS[10]:], samsung, inverse)
     assert p["operational_calmar"] == pytest.approx(same_base["model"]["calmar"])
+
+
+def test_기간별_모델은_과거_판정을_통과한_기간만_승격_검토한다(tmp_path, monkeypatch):
+    import json
+    path = tmp_path / "judged.json"
+    monkeypatch.setattr(config, "DAY11_JUDGED_PATH", str(path))
+    entry = {"first_date": "2026-10-23", "n_matured": 50, "model": {"calmar": 2.0, "mdd": -0.1}}
+    base = {"first_date": "2026-10-23", "model": {"calmar": 1.0, "mdd": -0.2}}
+    p = sb.promotion(entry, base, "h10")
+    assert not p["registered"] and "판정 전" in p["registration_note"]
+    path.write_text(json.dumps({"verdict": {"H3": {"passed": False}, "H4": {"passed": True}}}), encoding="utf-8")
+    p = sb.promotion(entry, base, "h10")
+    assert not p["eligible"] and "불통과" in p["registration_note"]
+    assert "불통과" in sb.entry_line({"title": "x", "n_signals": 1, "n_matured": 0, "accuracy": None, "drift": {"status": "표본 부족"}, "promotion": p})
+    assert sb.promotion(entry, base, "h20")["eligible"]
+
+
+def test_승격_비교는_늦게_시작한_쪽부터_둘_다_다시_계산하고_한쪽만_빠진_날이_많으면_보류한다(tmp_path, monkeypatch):
+    samsung, inverse = prices(40)
+    late = list(DAYS[10:30])
+    gappy = list(DAYS[10:20]) + list(DAYS[26:30])  # 20~25 여섯 날 기록이 빠짐(연속 6일)
+    live = pd.DataFrame({"model": ["base"] * 30 + ["candidate"] * 20 + ["groups:price"] * len(gappy),
+                         "signal": [UP, DOWN] * 15 + [UP, DOWN] * 10 + [UP] * len(gappy), "confidence": 0.5},
+                        index=list(DAYS[:30]) + late + gappy)
+    live["created_at"] = live.index + pd.Timedelta(hours=15, minutes=20)
+    live.to_parquet(tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "LIVE_PATH", tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "load_prices", lambda until: (samsung, inverse))
+    monkeypatch.setattr(config, "SCOREBOARD_PATH", str(tmp_path / "board.json"))
+    monkeypatch.setattr(config, "LIVE_EXTRA_FEATURE_SETS", ["groups:price"])
+    board = sb.build(DAYS[-1])
+    p = board["models"]["candidate"]["promotion"]
+    assert "note" not in p and p["compare_from"] == str(DAYS[10].date()) and p["gap"]["one_sided"] == 0
+    same_base = sb.score_model(live[live["model"] == "base"]["signal"].loc[DAYS[10]:], samsung, inverse)
+    assert p["operational_calmar"] == pytest.approx(same_base["model"]["calmar"])
+    g = board["models"]["groups:price"]["promotion"]
+    assert "판정 보류" in g["note"] and g["gap"]["longest_run"] == 6
+
+
+def test_비교_시작일에_운영_기록만_빠져도_보류가_아니라_빠진_날_1일로_센다(tmp_path, monkeypatch):
+    samsung, inverse = prices(40)
+    base_days = [d for d in DAYS[:30] if d != DAYS[10]]
+    live = pd.DataFrame({"model": ["base"] * len(base_days) + ["candidate"] * 20,
+                         "signal": [UP] * len(base_days) + [UP] * 20, "confidence": 0.5}, index=base_days + list(DAYS[10:30]))
+    live["created_at"] = live.index + pd.Timedelta(hours=15, minutes=20)
+    live.to_parquet(tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "LIVE_PATH", tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "load_prices", lambda until: (samsung, inverse))
+    monkeypatch.setattr(config, "SCOREBOARD_PATH", str(tmp_path / "board.json"))
+    p = sb.build(DAYS[-1])["models"]["candidate"]["promotion"]
+    assert "시작일" not in p.get("note", "") and p["gap"]["one_sided"] == 1 and p["compare_from"] == str(DAYS[10].date())
+
+
+def test_판정_기록이_깨져도_성적표는_만든다(tmp_path, monkeypatch):
+    path = tmp_path / "judged.json"
+    path.write_text("{깨짐", encoding="utf-8")
+    monkeypatch.setattr(config, "DAY11_JUDGED_PATH", str(path))
+    assert sb.horizon_registered(20) == (False, "장부 H4 판정 기록 읽기 실패")

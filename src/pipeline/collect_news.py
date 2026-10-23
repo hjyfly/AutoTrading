@@ -197,6 +197,32 @@ def _save_raw(df: pd.DataFrame, path: Path) -> pd.DataFrame:
     return df
 
 
+def save_day(t: pd.Timestamp, gdelt: pd.DataFrame, rss: pd.DataFrame, days: pd.DatetimeIndex) -> pd.DataFrame:
+    """평일 15:20 실시간 채점이 받은 t 일 기사를 남긴다(main 과 같은 형식). 화면·도구가 같은 기사를 다시 받지 않게 한다.
+
+    원본: data/raw/news/<날짜>.parquet(GDELT)·rss_<날짜>.parquet. 이미 있으면 덮어쓰지 않는다.
+    수집본: data/processed/news.parquet 에 신호일이 t 인 행만 덧붙인다. 그날 행이 이미 있거나 다른 날 행은 바꾸지 않는다.
+    15:15 신호 시각 뒤에 받지만 신호일 구간(전 거래일 15:15 ~ t 15:15) 안의 기사만 남긴다(within_window).
+    """
+    raw_dir = Path(config.RAW_DIR) / "news"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    gdelt_path, rss_path = raw_dir / f"{t.date()}.parquet", raw_dir / f"rss_{t.date()}.parquet"
+    gdelt = pd.read_parquet(gdelt_path) if gdelt_path.exists() else _save_raw(gdelt.assign(signal_date=t), gdelt_path)  # 원본이 있으면 원본으로(수집본과 같게)
+    if rss_path.exists():
+        rss = pd.read_parquet(rss_path)
+    elif len(rss):
+        rss = _save_raw(rss, rss_path)
+    path = Path(config.PROCESSED_DIR) / "news.parquet"
+    old = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+    if not old.empty and (old["signal_date"] == t).any():
+        return old[old["signal_date"] == t]
+    day = dedupe(within_window(pd.concat([gdelt, rss], ignore_index=True), days))
+    day = day[day["signal_date"] == t].copy()  # RSS 는 늦게 배정된 다음 신호일 행이 섞일 수 있어 그날 행만
+    day["published_kst"] = pd.to_datetime(day["published_utc"], utc=True).dt.tz_convert(KST)
+    pd.concat([old, day], ignore_index=True).to_parquet(path)
+    return day
+
+
 def main(signal_dates: list[str] | None = None):
     """샘플 신호일마다 GDELT·RSS 기사를 모아 data/raw/news 와 data/processed/news.parquet 에 저장한다.
 
@@ -235,6 +261,9 @@ def main(signal_dates: list[str] | None = None):
     news = dedupe(within_window(pd.concat(frames, ignore_index=True), days))
     news["published_kst"] = pd.to_datetime(news["published_utc"], utc=True).dt.tz_convert(KST)
     path = Path(config.PROCESSED_DIR) / "news.parquet"
+    if path.exists():  # 이번 대상이 아닌 신호일 행(15:20 실시간 채점일 save_day 행 등)은 그대로 둔다
+        old = pd.read_parquet(path)
+        news = pd.concat([old[~old["signal_date"].isin(news["signal_date"].unique())], news], ignore_index=True)
     news.to_parquet(path)
     print(path, len(news))
     print(news.groupby(["signal_date", "provider"]).size().unstack(fill_value=0).to_string())

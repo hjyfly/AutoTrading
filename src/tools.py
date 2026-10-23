@@ -604,7 +604,7 @@ def search_news(as_of: str = "", keyword: str = "", limit: int = 20) -> dict:
     return _call(news_for_signal, as_of, keyword or None, limit)
 
 
-@tool(description=f"그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(뉴스 종목만, 참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다. {CODE_DOC} 운영 종목 밖은 숫자 모델 신호와 쓴 알고리즘만 있다. 매매 종목: {role_names(config.TRADE_TICKERS)}. horizon: 정답 기간(거래일). 비우면 운영 {config.OPERATIONAL_HORIZON}거래일, {ticker_name(config.MAIN_TICKER)}는 참고 신호 {", ".join(str(n) for n in config.HORIZONS if n != config.OPERATIONAL_HORIZON)}거래일도 있다(매매 기준 아님)")
+@tool(description=f"그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(뉴스 종목만, 참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다. {CODE_DOC} 운영 종목 밖은 숫자 모델 신호와 쓴 알고리즘만 있다. 매매 종목: {role_names(config.TRADE_TICKERS)}. horizon: 정답 기간(거래일). 비우면 운영 {config.OPERATIONAL_HORIZON}거래일, {ticker_name(config.MAIN_TICKER)}는 참고 신호 {', '.join(str(n) for n in config.HORIZONS if n != config.OPERATIONAL_HORIZON)}거래일도 있다(매매 기준 아님)")
 def get_signal(date: str, code: str = "", horizon: int = 0) -> dict:
     """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     refused = _refuse_after_cap(date)

@@ -271,7 +271,8 @@ def period_stats(signals: pd.Series, close: pd.Series, labels: pd.DataFrame, sta
             "hold_share": float((sim["position"] == LONG).mean()),  # 실제로 삼성전자를 들고 있던 날 비율
             "down_precision": float((known[has][down_days] == DOWN).mean()) if down_days.any() else float("nan"),
             "actual_down_share": float((known[has] == DOWN).mean()) if has.any() else float("nan"),
-            "cash_share": float((sig != UP).mean())}  # 보합(유지)·하락(현금) 신호 비율
+            "cash_share": float((sig != UP).mean()),  # 보합(유지)·하락(현금) 신호 비율
+            "held": (sim["position"] == LONG).astype(float)}  # 날마다 삼성전자 보유 여부(반등 지키기 C 계산용)
 
 
 def extended_report(save: bool = True) -> dict:

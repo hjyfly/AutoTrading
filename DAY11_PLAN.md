@@ -110,8 +110,11 @@
 | D11-2 | 완료 | `config.HORIZONS`·`HORIZON_LABELS`·`OPERATIONAL_HORIZON`, `horizon` 인자(experiment·live_signal·scoreboard·tools·agent·ui·daily_run). 5거래일은 기존 결과와 같다(테스트) |
 | D11-3 | 완료 | 기간별 워크포워드(검증·확장) `data/processed/horizons/`. leak-guard: 확정 유출 없음, 의심 1건(조건 비교 정답을 구간 끝까지 확정된 것만 쓰게) 고침, 20거래일 학습 간격 불변 테스트 추가 |
 | D11-4 | 완료 | `experiment --horizons` → [day11_horizons.md](evaluation/reports/day11_horizons.md). backtest-auditor: 판정 오류 없음, 권고 5건 반영(리포트 뒤 기록, 구간·날 수 검사, 판정 없음 표시 등). **H1·H2·H4 통과, H3 불통과**(SERVICE.md 11.9). 모든 기간이 확장 구간에서 손실·들고 있기 미만이라 매매 기준은 5거래일 유지 |
-| D11-4b | 진행 | 기간별 조건 모니터링·지표 그룹 진단(검증·확장) `experiments_*_h<N>.md` |
+| D11-4b | 완료 | 기간별 조건 모니터링·지표 그룹 진단(검증·확장) `experiments_*_h<N>.md`. 두 구간에서 함께 나은 지표 묶음 없음 → 바꾸지 않음(SERVICE.md 11.9) |
 | D11-5 | 완료 | 실시간 기록 `h1`·`h3`·`h10`·`h20`(실시간 = 기간별 과거 검증 테스트), 성적표 기간별 채점·같은 날부터 운영과 승격 비교. 2026-10-23 15:20 실행부터 기록 |
 | D11-6 | 완료(평가 실행 전) | 화면 기간별 표·리포트 탭, 메일 "기간별 참고 신호", `get_signal(horizon)`, 지시문, 평가 문항 P08·E03(변경)·E04 |
-| D11-7 | 진행 | 문서 갱신 완료, spec-checker·커밋 |
+| D11-7 | 완료 | 문서 갱신, spec-checker, 브랜치 커밋 `7f2c139` |
+| 리뷰 | 완료 | 코드 리뷰 10건 반영(3.11 문법, 기간별 신호 실패 격리·특징 표 1회, H3 승격 제외, 메일 격리, 다른 PC 재생성 안내, 승격 비교 같은 구간 재계산(사용자 결정), 첫 학습 행 검증, 모의 매매 중복 제거, 모니터 정확도 기준 안내) |
+| 추가 | 완료 | 15:20 배치가 받은 그날 기사 저장(`collect_news.save_day`), 화면 뉴스·지표 10분 저장(다시 그리기 약 10초 → 1초), `/query` 평가 18/18 |
+| D11-9 | 완료 | 사용자 결정으로 main 에 합침 |
 

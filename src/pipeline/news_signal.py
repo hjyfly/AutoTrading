@@ -131,7 +131,7 @@ def daily_features(articles: pd.DataFrame, volume: pd.Series | None = None) -> p
         out["f_mag3"] = a[(a["magnitude"] == 3) & a["rel"] & (a["category"] != "irrelevant")].groupby("signal_date").size().reindex(days).fillna(0)
         out["f_relevant"] = a[a["rel"] & (a["category"] != "irrelevant")].groupby("signal_date").size().reindex(days).fillna(0)
     vol = news_volume(days) if volume is None else volume.reindex(days)
-    if volume is None and "n_collected" in articles:  # 추출 때 남긴 보도량(실시간 채점일은 news.parquet 에 없다)
+    if volume is None and "n_collected" in articles:  # 추출 때 남긴 보도량을 먼저 쓴다(실시간 채점일은 추출 기록의 n_collected 기준)
         recorded = articles.groupby("signal_date")["n_collected"].max().reindex(days)
         vol = recorded.where(recorded.notna(), vol).astype(float)
     roll = vol.rolling(config.NEWS_VOLUME_WINDOW, min_periods=10)

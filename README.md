@@ -115,6 +115,7 @@ KIS_TRADING_ENABLED=false
 | `data/processed/news.parquet`, `selected_news.parquet` | `data/raw` 가 있으면 다시 만든다 | 복사 권장 |
 | `data/index/` (RAG 색인) | `python -m src.retriever` (판단 기록이 있어야 한다, 비용 약 $0.01) | 다시 만들어도 된다 |
 | `data/processed/tickers/`(신호 기록 외), `data/processed/sectors/` | `python -m src.pipeline.sector_models run` → `multi_ticker analysis` | 다시 만들어도 된다 |
+| `data/processed/horizons/` (기간별 과거 신호) | `python -m src.pipeline.experiment --horizons`(약 15분, LLM 없음. H1 ~ H4 판정은 `day11_judged.json` 기록을 그대로 쓰고 다시 하지 않는다) | 없으면 과거 날짜의 기간별 신호 조회·평가 문항 P08 이 '신호 없음' 이 된다 |
 | `data/scores/traces_archive/` | 아니요 — 옛 모델(Sonnet 4.5)·옛 채점 버전 판단 기록 보관본 | 지금 운영에는 쓰지 않는다. 기록을 남기려면 복사 |
 | `data/processed/scoreboard.json`, `data/experiments/`, `data/logs/`, `data/backup/`, `data/kis/`(토큰), `data/scores/eval/`(평가 상세) | 실행하면 다시 생긴다 | 복사하지 않아도 된다 |
 

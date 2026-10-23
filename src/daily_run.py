@@ -65,7 +65,11 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
     if "candidate" in sig:
         c = sig["candidate"]
         lines += ["", f"■ 비교용 후보 모델(A+B+D): {c['signal']} (확신도 {c['confidence']:.0%}) — 최종 신호 아님"]
-    lines += ["", f"■ 기간별 참고 신호(11일차, 매매 기준은 {config.OPERATIONAL_HORIZON}거래일)"] + [f"  {x}" for x in horizon_lines(today)]
+    try:  # 참고 신호라 조회가 실패해도 운영 신호 메일은 보낸다
+        horizon = horizon_lines(today)
+    except Exception as e:
+        horizon = [f"조회 실패: {type(e).__name__}: {str(e)[:120]}"]
+    lines += ["", f"■ 기간별 참고 신호(11일차, 매매 기준은 {config.OPERATIONAL_HORIZON}거래일)"] + [f"  {x}" for x in horizon]
     scheduled = board_until is None  # 날짜를 지정한 재실행에서는 갱신·모니터링·다른 종목 신호·경보·계좌를 하지 않는다(그 날짜 뒤 정보가 섞이므로)
     board = scoreboard.build(board_until)
     lines += ["", "■ 실시간 성적표"] + [f"  {x}" for x in scoreboard.summary_lines(board)]

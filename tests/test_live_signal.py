@@ -174,3 +174,22 @@ def test_기간별_신호는_h_모델로_따로_기록되고_운영_신호를_�
     by_model = dict(zip(saved["model"], saved["signal"]))
     assert by_model["base"] == "상승" and by_model["h1"] == "하락" and by_model["h20"] == "상승" and "h5" not in by_model
     assert saved.set_index("model").loc["h20", "model_config"].startswith("지표 base") and "정답 20거래일 ±6.0%" in saved.set_index("model").loc["h20", "model_config"]
+
+
+def test_기간별_신호가_어떤_오류로_실패해도_운영_신호는_남고_특징_표는_한_번만_만든다(tmp_path, monkeypatch):
+    monkeypatch.setattr(ls, "LIVE_PATH", tmp_path / "live.parquet")
+    t = pd.Timestamp("2026-10-21")
+    prepared = []
+    monkeypatch.setattr(ls, "prepare", lambda as_of: prepared.append(as_of) or ("표",))
+
+    def fake(*a, **k):
+        if k.get("horizon") == 1:
+            raise RuntimeError("네트워크 오류")
+        return {"date": t, "model": tools.horizon_model(k["horizon"]) if k.get("horizon") else k.get("feature_set", "base"),
+                "signal": "상승", "confidence": 0.5, "data_sources": {}}
+    monkeypatch.setattr(ls, "numeric_signal", fake)
+    monkeypatch.setattr(ls, "risk_signal", lambda *a: (_ for _ in ()).throw(ValueError("시험에서는 건너뛴다")))
+    ls.make_signal("2026-10-21")
+    saved = pd.read_parquet(tmp_path / "live.parquet")
+    assert "base" in set(saved["model"]) and "h1" not in set(saved["model"]) and "h20" in set(saved["model"])
+    assert len(prepared) == 1

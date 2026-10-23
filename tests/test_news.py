@@ -93,3 +93,42 @@ def test_수요일이_휴장이면_다음_거래일(monkeypatch):
     monkeypatch.setattr(config, "NEWS_END", "2026-04-30")
     days = pd.DatetimeIndex(pd.bdate_range("2026-02-01", "2026-04-30")).drop(pd.Timestamp("2026-02-18"))
     assert pd.Timestamp("2026-02-19") in cn.sample_signal_dates(days)
+
+
+def test_실시간_채점일_기사는_그날_행만_수집본에_덧붙이고_원본은_덮어쓰지_않는다(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RAW_DIR", str(tmp_path / "raw"))
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    days = pd.bdate_range("2026-10-19", "2026-10-30")
+    t = pd.Timestamp("2026-10-23")
+    old = pd.DataFrame({"signal_date": [pd.Timestamp("2026-10-20")], "provider": ["gdelt_gkg"], "published_utc": ["2026-10-20T01:00:00Z"],
+                        "title": ["옛 기사"], "url": ["u0"], "source": ["s"]})
+    old.to_parquet(tmp_path / "news.parquet")
+    gdelt = pd.DataFrame({"provider": "gdelt_gkg", "published_utc": ["2026-10-23T01:00:00Z", "2026-10-23T07:00:00Z"],  # 10:00 KST(구간 안), 16:00 KST(구간 밖)
+                          "title": ["안", "늦음"], "url": ["u1", "u2"], "source": "s"})
+    rss = pd.DataFrame({"provider": "google_rss", "published_utc": ["2026-10-23T02:00:00Z", "2026-10-23T07:00:00Z"],
+                        "title": ["RSS 안", "RSS 다음날"], "url": ["r1", "r2"], "source": "s",
+                        "signal_date": [t, pd.Timestamp("2026-10-26")]})
+    day = cn.save_day(t, gdelt, rss, days)
+    assert sorted(day["title"]) == ["RSS 안", "안"]
+    news = pd.read_parquet(tmp_path / "news.parquet")
+    assert len(news) == 3 and "옛 기사" in set(news["title"])
+    assert (tmp_path / "raw" / "news" / "2026-10-23.parquet").exists() and (tmp_path / "raw" / "news" / "rss_2026-10-23.parquet").exists()
+    cn.save_day(t, gdelt.assign(title="다시"), rss, days)  # 같은 날 다시 실행해도 원본·수집본을 바꾸지 않는다
+    assert len(pd.read_parquet(tmp_path / "news.parquet")) == 3
+    assert set(pd.read_parquet(tmp_path / "raw" / "news" / "2026-10-23.parquet")["title"]) == {"안", "늦음"}
+
+
+def test_과거_구간을_다시_모아도_실시간_채점일_행은_남는다(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RAW_DIR", str(tmp_path / "raw"))
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    days = pd.bdate_range("2026-10-19", "2026-10-30")
+    monkeypatch.setattr(cn, "trading_days", lambda: days)
+    live_day = pd.DataFrame({"signal_date": [pd.Timestamp("2026-10-23")], "provider": ["gdelt_gkg"], "published_utc": ["2026-10-23T01:00:00Z"],
+                             "title": ["실시간"], "url": ["u9"], "source": ["s"]})
+    live_day.to_parquet(tmp_path / "news.parquet")
+    (tmp_path / "raw" / "news").mkdir(parents=True)
+    pd.DataFrame({"provider": ["gdelt_gkg"], "published_utc": ["2026-10-20T01:00:00Z"], "title": ["과거"], "url": ["u1"], "source": ["s"],
+                  "signal_date": [pd.Timestamp("2026-10-20")]}).to_parquet(tmp_path / "raw" / "news" / "2026-10-20.parquet")
+    pd.DataFrame(columns=["provider", "published_utc", "title", "url", "source", "signal_date"]).to_parquet(tmp_path / "raw" / "news" / "rss_2026-10-20.parquet")
+    cn.main(["2026-10-20"])
+    assert set(pd.read_parquet(tmp_path / "news.parquet")["title"]) == {"실시간", "과거"}

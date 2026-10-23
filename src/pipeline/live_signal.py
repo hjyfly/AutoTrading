@@ -31,11 +31,8 @@ def block_start(t: pd.Timestamp, days: pd.DatetimeIndex, valid_start=None, freq:
     return same_block[0]
 
 
-def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base", horizon: int | None = None) -> dict:
-    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base'·'candidate' 또는 그룹 묶음 이름.
-    horizon 은 정답 기간(거래일, 기본 운영 기간). 다른 기간이면 그 기간 정답(config.HORIZONS 기준)으로 학습하고 모델 이름은 h<N> 이다."""
-    n = horizon or config.OPERATIONAL_HORIZON
-    model_name = feature_set if n == config.OPERATIONAL_HORIZON else tools.horizon_model(n)
+def prepare(as_of: str | None = None) -> tuple:
+    """t 일 15:15 에 알 수 있던 원본과 특징 표: (t, 원본, 출처, 특징 표). 여러 기간 신호가 같은 표를 다시 쓰도록 따로 둔다."""
     t = tools.resolve_as_of(as_of)
     if t.weekday() >= 5:
         raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
@@ -45,6 +42,17 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
     table = features.build_features(as_of=t, raw=raw)
     if table.index[-1] != t:
         raise ValueError(f"{t.date()} 행을 만들지 못했다")
+    return t, raw, sources, table
+
+
+def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base", horizon: int | None = None,
+                   prepared: tuple | None = None) -> dict:
+    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base'·'candidate' 또는 그룹 묶음 이름.
+    horizon 은 정답 기간(거래일, 기본 운영 기간). 다른 기간이면 그 기간 정답(config.HORIZONS 기준)으로 학습하고 모델 이름은 h<N> 이다.
+    prepared 는 같은 날 prepare() 결과(주면 원본·특징 표를 다시 만들지 않는다)."""
+    n = horizon or config.OPERATIONAL_HORIZON
+    model_name = feature_set if n == config.OPERATIONAL_HORIZON else tools.horizon_model(n)
+    t, raw, sources, table = prepared or prepare(as_of)
     cols = feature_columns(table, feature_set)
     features.assert_no_lookahead(table[cols])
     labels = make_labels(raw["ohlcv"]["Close"].dropna(), n, config.HORIZONS[n])  # t 이전 종가만으로 만든 정답(정답 기간이 t 전에 끝난 것만 생긴다)
@@ -127,13 +135,18 @@ def news_ready(t: pd.Timestamp, now: pd.Timestamp | None = None) -> bool:
 
 
 def news_score(t: pd.Timestamp) -> dict:
-    """t 일 뉴스를 실시간으로 받아 선별·채점한다. 원본 기사는 파일로 남기지 않고, 판단 기록만 남긴다."""
+    """t 일 뉴스를 실시간으로 받아 선별·채점한다. 받은 기사는 수집 원본·수집본에 그날 행으로 남기고(collect_news.save_day,
+    2026-10-23 사용자 결정: 화면·도구가 다시 받지 않게), 판단 기록·기사별 추출을 남긴다."""
     days = collect_news.trading_days()
     if t not in days:
         days = days.append(pd.DatetimeIndex([t])).sort_values()
     start, end = collect_news.signal_window(t, days)
     gdelt = collect_news.collect_gdelt(start, end)
     rss = collect_news.collect_rss(t, days)
+    try:  # 저장이 실패해도 채점은 한다
+        collect_news.save_day(t, gdelt, rss, days)
+    except Exception as e:
+        print(f"뉴스 저장 실패: {type(e).__name__}: {e}", flush=True)
     news = pd.concat([gdelt, rss], ignore_index=True).assign(signal_date=t)
     news = collect_news.dedupe(collect_news.within_window(news, days))
     articles = select_news.select_articles(news, t, days)
@@ -165,12 +178,16 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
         extra.update(numeric_signal_label=extra["signal"], news_status="비교용 묶음은 뉴스 보정 안 함",
                      news_consensus=None, news_consensus_conf=None)
         save(extra)
-    for n in config.HORIZONS:  # 11일차 기간별 참고 신호(실패해도 운영 신호는 만든다). 시점 위반(AssertionError)은 그대로 멈춘다
+    prepared = None
+    for n in config.HORIZONS:  # 11일차 기간별 참고 신호(어떤 오류로 실패해도 운영 신호는 만든다). 시점 위반(AssertionError)은 그대로 멈춘다
         if n == config.OPERATIONAL_HORIZON:
             continue
         try:
-            other = numeric_signal(as_of, horizon=n)
-        except (ValueError, KeyError) as e:
+            prepared = prepared or prepare(as_of)  # 원본·특징 표는 한 번만 만들고 기간마다 정답·학습만 다르게 한다
+            other = numeric_signal(as_of, horizon=n, prepared=prepared)
+        except AssertionError:
+            raise
+        except Exception as e:  # 참고 신호라 네트워크·학습 오류도 기록하고 넘어간다
             print(f"{n}거래일 신호 실패: {type(e).__name__}: {e}", flush=True)
             continue
         other.update(numeric_signal_label=other["signal"], news_status="기간별 신호는 뉴스 보정 안 함",

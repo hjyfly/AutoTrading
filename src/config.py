@@ -444,6 +444,10 @@ CALIBRATION_MIN_BIN = 10       # 표본이 이보다 적은 구간은 단조 확
 UP_MONTH_MIN_RETURN = 0.05     # 반등장 확인: 그달 들고 있기 수익이 이 값 이상인 달
 UP_MONTH_MIN_HOLD = 0.70       # 그런 달에 삼성전자 보유일 비율이 이 값 이상이어야 한다
 LIVE_PROMOTION_MIN_SIGNALS = 40  # 운영 변경 검토에 필요한 실시간 확정 신호 수
+# 승격 비교(5.3)는 두 모델 첫 기록일 중 늦은 날부터 둘 다 다시 계산한다(2026-10-23 사용자 결정). 그 구간에서 한쪽만 기록이 빠진 날이
+# 거래일의 이 비율을 넘거나 이 일수 이상 이어지면 판정을 보류한다(빠진 날은 포지션 유지로 채워 비교가 왜곡되므로)
+PROMOTION_MAX_GAP_SHARE = 0.10
+PROMOTION_MAX_GAP_RUN = 5
 # SERVICE.md 5절 성공 기준(2026-10-22 재정의)을 실시간 성적표가 판정한다. 장부에 등록된 비교 모델만 승격을 검토한다
 LIVE_REGISTERED_MODELS = {"candidate": "C1 후보 지표 A+B+D", "groups:price+chart+flow+macro+peer": "G1 비교 묶음 38개",
                           "risk_p2": "P2-L 하락 위험 P2"}  # evaluation/reports/preregistration.md 의 실시간 비교 줄

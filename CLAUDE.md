@@ -62,6 +62,7 @@ src/pipeline/train.py            LightGBM 워크포워드 학습
 src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙). 9일차 일별 뉴스 피처·V1/V2 로지스틱 워크포워드·하락 위험 경보(참고, 운영 신호를 바꾸지 않음)
 src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(재학습 주기 config.RETRAIN_FREQ 안의 첫 거래일 재학습 — 지금 매주, 정답 기간 간격)
                                  11일차부터 기간별 참고 신호(config.HORIZONS)를 모델 h<N> 으로 함께 기록(매매 기준은 OPERATIONAL_HORIZON)
+                                 뉴스 채점 때 받은 그날 기사는 collect_news.save_day 로 data/raw/news 와 news.parquet 에 그날 행만 덧붙인다(2026-10-23)
                                  뉴스 채점·기사별 추출은 15:15 이후 요청할 때만(LLM 8회, 하루 약 $0.27). 2026-10-22 부터 뉴스는 참고용(config.NEWS_ADJUST_IN_SIGNAL). 결과는 data/processed/signals_live.parquet
 src/ui.py                        Streamlit 화면 (종목 선택, 채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
 src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고. 다른 종목도 (종목, 알고리즘)마다 같은 기준(SERVICE.md 5.6). 기간별 모델(h<N>)은 그 기간 정답으로 채점(5.7)

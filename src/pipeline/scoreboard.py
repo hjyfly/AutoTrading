@@ -1,7 +1,8 @@
 """실시간 성적표. 매일 기록한 신호(signals_live.parquet)를 정답이 확정되는 대로 채점하고 모델끼리·들고 있기와 비교한다.
 
 - 정답: t 종가 → t+5거래일 종가 ±3%. 5거래일 뒤 종가가 확정된 신호만 채점한다.
-  11일차 기간별 모델(h<N>)은 그 기간 정답(t+N거래일 ±config.HORIZONS[N])으로 채점하고, 승격 비교(5.3)는 그 모델 첫 기록일부터 다시 계산한 운영 모델과 한다.
+  11일차 기간별 모델(h<N>)은 그 기간 정답(t+N거래일 ±config.HORIZONS[N])으로 채점한다.
+- 승격 비교(5.3)는 두 모델 첫 기록일 중 늦은 날부터 둘 다 현금에서 다시 계산한다(same_period). 한쪽만 기록이 빠진 날이 많으면 보류한다.
 - 모의 매매: 첫 기록일 현금 시작, 기록이 빠진 거래일은 '보합'(포지션 유지)으로 본다. 규칙은 backtest.simulate 와 같다.
 - 성능 저하 경고: 최근 DRIFT_WINDOW 개 확정 신호의 정확도가 같은 기간 '항상 가장 많은 정답' 비율보다 낮으면 경고한다.
 - 다른 종목(config.MULTI_TICKERS, SERVICE.md 5.6): signals_live_tickers.parquet 를 (종목, 알고리즘)마다 같은 규칙으로 채점한다.
@@ -93,10 +94,11 @@ def realtime_mask(rows: pd.DataFrame) -> pd.Series:
 
 
 def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down_action: str | None = None,
-                horizon: int | None = None) -> dict:
+                horizon: int | None = None, start: pd.Timestamp | None = None) -> dict:
     """한 모델의 기록을 채점한다. signals 는 날짜별 신호(상승·보합·하락). down_action 은 판정에 쓰는 하락 행동(기본 config.DOWN_ACTION).
     samsung 은 채점 대상 종목의 종가다(옛 이름. 다른 종목은 그 종목 종가가 들어온다). 인버스 가격이 비면 인버스 규칙은 계산에서 빠진다.
-    horizon 은 정답 기간(기본 운영 기간). 기준은 config.HORIZONS[horizon]."""
+    horizon 은 정답 기간(기본 운영 기간). 기준은 config.HORIZONS[horizon].
+    start 를 주면 그날부터 현금으로 모의 매매를 시작한다(승격 비교용. 그날 기록이 없으면 포지션 유지 = 현금)."""
     down_action = down_action or config.DOWN_ACTION
     n = horizon or config.OPERATIONAL_HORIZON
     signals = signals.sort_index()
@@ -104,10 +106,11 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down
     matured = signals[signals.index.isin(labels.index)]
     correct = matured == labels.reindex(matured.index)
     out = {"n_signals": int(len(signals)), "n_matured": int(len(matured)),
-           "first_date": str(signals.index.min().date()) if len(signals) else None,
+           "first_date": str(pd.Timestamp(start).date()) if start is not None else (str(signals.index.min().date()) if len(signals) else None),
            "accuracy": float(correct.mean()) if len(matured) else None,
            "direction": backtest.direction_hit_rate(matured, labels)}
-    days = samsung.index[(samsung.index >= signals.index.min())] if len(signals) else samsung.index[:0]
+    first = pd.Timestamp(start) if start is not None else (signals.index.min() if len(signals) else None)
+    days = samsung.index[(samsung.index >= first)] if first is not None and len(signals) else samsung.index[:0]
     if len(days) >= 2:
         daily = signals.reindex(days).fillna(FLAT)  # 기록이 빠진 날은 포지션 유지
         by_rule, curves, sims = {}, {}, {}
@@ -135,8 +138,9 @@ def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down
     return out
 
 
-def score_weight_model(rows: pd.DataFrame, samsung: pd.Series) -> dict:
+def score_weight_model(rows: pd.DataFrame, samsung: pd.Series, start: pd.Timestamp | None = None) -> dict:
     """목표 비중 기록(5일차 하락 위험 비교 조건)을 채점한다. 기록이 빠진 날은 앞 비중을 유지한다.
+    start 를 주면 그날부터 계산하고 첫 기록 전 날은 비중 0(현금)이다(승격 비교용).
     위험 적중은 '비중 0%' 날 중 실제로 5거래일 안에 -3% 이하로 내려간 비율이다."""
     from src.pipeline.labels import make_risk_labels
     weights = rows["weight"].astype(float).sort_index()
@@ -144,12 +148,13 @@ def score_weight_model(rows: pd.DataFrame, samsung: pd.Series) -> dict:
     matured = weights[weights.index.isin(labels.index)]
     high = matured[matured == config.RISK_WEIGHTS[2]]  # 위험 높음 비중
     out = {"n_signals": int(len(weights)), "n_matured": int(len(matured)), "accuracy": None,
-           "first_date": str(weights.index.min().date()) if len(weights) else None,
+           "first_date": str(pd.Timestamp(start).date()) if start is not None else (str(weights.index.min().date()) if len(weights) else None),
            "risk_hit": float(labels.loc[high.index, "risk"].mean()) if len(high) else None,
            "drift": {"status": "해당 없음(비중 모델)"}}
-    days = samsung.index[samsung.index >= weights.index.min()] if len(weights) else samsung.index[:0]
+    first = pd.Timestamp(start) if start is not None else (weights.index.min() if len(weights) else None)
+    days = samsung.index[samsung.index >= first] if first is not None and len(weights) else samsung.index[:0]
     if len(days) >= 2:
-        daily = weights.reindex(days).ffill()
+        daily = weights.reindex(days).ffill().fillna(0.0)
         sim = backtest.simulate_target(daily, samsung)
         model = backtest.summary(sim["equity"])
         risk_known = labels["risk"].reindex(matured.index)
@@ -180,22 +185,63 @@ def criteria(n_matured: int, equity: pd.Series, hold: pd.Series, weights: pd.Ser
                   "passed": None if months == 0 else bool(share >= config.UP_MONTH_MIN_HOLD)}}
 
 
-def promotion(entry: dict, base: dict, model: str) -> dict:
+def same_period(model: str, rows: pd.DataFrame, base_rows: pd.DataFrame, samsung: pd.Series, inverse: pd.Series) -> tuple[dict, dict, dict]:
+    """승격 비교용: 두 모델 첫 기록일 중 늦은 날부터 둘 다 현금에서 다시 채점한 (비교 모델, 운영 모델) 결과와 빠진 날 정보.
+    구간 안에서 기록이 빠진 날은 성적표 규칙대로 포지션 유지다. gap 은 한쪽만 기록이 빠진 거래일 수와 가장 긴 연속 일수다."""
+    start = max(rows.index.min(), base_rows.index.min())
+    mine_rows, base_part = rows.loc[start:], base_rows.loc[start:]
+    if model == config.LIVE_RISK_MODEL:
+        mine = score_weight_model(mine_rows, samsung, start=start)
+    else:
+        mine = score_model(mine_rows["signal"], samsung, inverse, horizon=tools.model_horizon(model), start=start)
+    base = score_model(base_part["signal"], samsung, inverse, start=start)  # 둘 다 같은 날 현금에서 시작(시작일 기록이 빠진 쪽은 그날 포지션 유지)
+    days = samsung.index[samsung.index >= start]
+    one_side = pd.Series(days.isin(mine_rows.index) != days.isin(base_part.index), index=days)
+    runs = one_side.groupby((~one_side).cumsum()).sum()
+    gap = {"start": str(start.date()), "days": int(len(days)), "one_sided": int(one_side.sum()),
+           "longest_run": int(runs.max()) if len(runs) else 0}
+    return mine, base, gap
+
+
+def promotion(entry: dict, base: dict, model: str, gap: dict | None = None) -> dict:
     """SERVICE.md 5.3 비교 모델 승격 기준: 장부 등록, 확정 신호 40개 이상, 같은 기간 운영 모델보다 칼마가 높고 MDD 가 더 깊지 않음.
+    entry·base 는 같은 구간(same_period)으로 다시 계산한 결과다. gap 에서 한쪽만 기록이 빠진 날이 많으면 보류한다.
     셋을 모두 만족해도 운영 변경은 사용자가 정한다."""
-    registered = model in config.LIVE_REGISTERED_MODELS or tools.model_horizon(model) in config.DAY11_LEDGER  # 기간별 모델은 장부 H1 ~ H4
+    registered, reg_note = model in config.LIVE_REGISTERED_MODELS, None
+    if tools.model_horizon(model) in config.DAY11_LEDGER:  # 기간별 모델은 장부 H1 ~ H4 를 과거 판정에서 통과했을 때만 승격 검토(SERVICE.md 5.7)
+        registered, reg_note = horizon_registered(tools.model_horizon(model))
     ready = entry.get("n_matured", 0) >= config.LIVE_PROMOTION_MIN_SIGNALS
     if "model" not in entry or "model" not in base:
-        return {"registered": registered, "ready": ready, "eligible": False, "note": "모의 매매 결과가 없다"}
+        return {"registered": registered, "registration_note": reg_note, "ready": ready, "eligible": False, "note": "모의 매매 결과가 없다"}
     if entry.get("first_date") != base.get("first_date"):  # 같은 기간이 아니면 비교하지 않는다
-        return {"registered": registered, "ready": ready, "eligible": False,
+        return {"registered": registered, "registration_note": reg_note, "ready": ready, "eligible": False,
                 "note": f"시작일이 운영 모델과 달라({entry.get('first_date')} vs {base.get('first_date')}) 판정 보류"}
+    if gap and (gap["one_sided"] > config.PROMOTION_MAX_GAP_SHARE * gap["days"] or gap["longest_run"] >= config.PROMOTION_MAX_GAP_RUN):
+        return {"registered": registered, "registration_note": reg_note, "ready": ready, "eligible": False, "gap": gap,
+                "note": f"{gap['start']} 부터 한쪽만 기록이 빠진 날 {gap['one_sided']}일(가장 긴 연속 {gap['longest_run']}일)이라 판정 보류"}
     if pd.isna(entry["model"]["calmar"]) or pd.isna(base["model"]["calmar"]):
-        return {"registered": registered, "ready": ready, "eligible": False, "note": "MDD 가 0 이라 칼마를 비교할 수 없다(판정 불가)"}
-    better = entry["model"]["calmar"] > base["model"]["calmar"] and abs(entry["model"]["mdd"]) <= abs(base["model"]["mdd"])
-    return {"registered": registered, "ready": ready, "better_than_operational": bool(better),
+        return {"registered": registered, "registration_note": reg_note, "ready": ready, "eligible": False, "note": "MDD 가 0 이라 칼마를 비교할 수 없다(판정 불가)"}
+    better = (entry["model"]["calmar"] > base["model"]["calmar"] + backtest.EPS
+              and abs(entry["model"]["mdd"]) <= abs(base["model"]["mdd"]) + backtest.EPS)  # judge_day11 과 같은 오차 허용
+    return {"registered": registered, "registration_note": reg_note, "ready": ready, "better_than_operational": bool(better),
             "eligible": bool(registered and ready and better),
-            "calmar": entry["model"]["calmar"], "operational_calmar": base["model"]["calmar"]}
+            "calmar": entry["model"]["calmar"], "operational_calmar": base["model"]["calmar"], "gap": gap,
+            "compare_from": entry.get("first_date"), "n_matured_same_period": entry.get("n_matured")}
+
+
+def horizon_registered(n: int) -> tuple[bool, str | None]:
+    """기간 N 이 과거 판정(장부 H1 ~ H4, config.DAY11_JUDGED_PATH)을 통과했는지와, 아니면 그 이유."""
+    hid = config.DAY11_LEDGER[n]
+    path = Path(config.DAY11_JUDGED_PATH)
+    if not path.exists():
+        return False, f"장부 {hid} 판정 전"
+    try:  # 기록이 깨져도 성적표·메일은 만든다
+        verdict = json.loads(path.read_text(encoding="utf-8")).get("verdict", {}).get(hid)
+    except (OSError, ValueError, AttributeError):
+        return False, f"장부 {hid} 판정 기록 읽기 실패"
+    if not verdict or not verdict.get("passed"):
+        return False, f"장부 {hid} 과거 판정 불통과"
+    return True, None
 
 
 def drift_check(matured: pd.Series, labels: pd.Series) -> dict:
@@ -240,17 +286,18 @@ def build(today: pd.Timestamp | None = None) -> dict:
             else:
                 entry.update(score_model(realtime["signal"], samsung, inverse, horizon=tools.model_horizon(model)))
             board["models"][model] = entry
-        base = board["models"].get("base", {})
         base_rows = live[live["model"] == "base"]
         base_rows = base_rows[realtime_mask(base_rows)]
         for model, entry in board["models"].items():
             if model in ("base", "base_v1"):
                 continue
-            same = base
-            if tools.model_horizon(model) != config.OPERATIONAL_HORIZON and entry.get("first_date"):  # 기간별 모델은 기록을 늦게 시작해 같은 날부터 다시 계산한다
-                part = base_rows.loc[entry["first_date"]:]
-                same = score_model(part["signal"], samsung, inverse) if len(part) else {}
-            entry["promotion"] = promotion(entry, same, model)
+            rows = live[live["model"] == model]
+            rows = rows[realtime_mask(rows)]
+            if rows.empty or base_rows.empty:
+                entry["promotion"] = promotion(entry, {}, model)
+                continue
+            mine, same, gap = same_period(model, rows, base_rows, samsung, inverse)  # 두 모델 모두 기록이 있는 첫날부터 다시 계산
+            entry["promotion"] = promotion(mine, same, model, gap)
     try:  # 다른 종목 기록 문제로 삼성전자 성적표·알림이 멈추지 않게 한다
         board["tickers"] = score_tickers(today)
     except Exception as e:
@@ -298,7 +345,7 @@ def entry_line(s: dict) -> str:
     if "promotion" in s:
         p = s["promotion"]
         part += (" · 승격 검토 대상" if p["eligible"] else
-                 " · 승격 조건 " + ("장부 미등록" if not p["registered"] else "미충족(표본 부족)" if not p["ready"]
+                 " · 승격 조건 " + ((p.get("registration_note") or "장부 미등록") if not p["registered"] else "미충족(표본 부족)" if not p["ready"]
                                  else f"보류({p['note']})" if "note" in p else "미충족(운영보다 낫지 않음)"))
     return part
 

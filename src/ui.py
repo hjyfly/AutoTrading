@@ -54,6 +54,18 @@ def load_signals(code: str = config.MAIN_TICKER) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
+def news_list(date: str) -> dict:
+    """그날 뉴스 목록(10분 저장). 저장 수집본 밖이면 RSS 를 실시간으로 받으므로 다시 그릴 때마다 받지 않게 한다."""
+    return tools.news_for_signal(date, limit=30)
+
+
+@st.cache_data(ttl=600)
+def indicator_values(date: str, code: str) -> dict:
+    """그날 지표(10분 저장). 저장 범위를 넘는 해외 지표는 실시간으로 받는다."""
+    return tools.indicators(date, code)
+
+
+@st.cache_data(ttl=600)
 def load_prices(code: str = config.MAIN_TICKER) -> pd.Series:
     """저장된 종가(운영 종목은 기존 원본, 다른 종목은 data/raw/tickers)."""
     path = (Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet" if code == config.MAIN_TICKER
@@ -463,7 +475,7 @@ with tab_data:
         st.altair_chart(price_chart(as_of, days, code), width="stretch")
     with tab_ind:
         try:
-            ind = tools.indicators(str(as_of.date()), code)
+            ind = indicator_values(str(as_of.date()), code)
             left, right = st.columns(2)
             left.subheader("차트·수급 (전날 종가 기준)")
             left.dataframe(pd.Series(ind["chart_and_flow"], name="값"), width="stretch")
@@ -513,7 +525,7 @@ with tab_data:
     with tab_news:
         if not has_news:
             st.info(f"뉴스는 {NEWS_NAMES} 관련 기사만 모은다. 아래는 같은 날 {MAIN_NAME} 뉴스(시장 전반 참고용)다.")
-        n = tools.news_for_signal(str(as_of.date()), limit=30)
+        n = news_list(str(as_of.date()))
         st.caption(n["source"])
         if n["articles"]:
             st.dataframe(pd.DataFrame(n["articles"])[["published_kst", "source", "title"]], width="stretch", hide_index=True)

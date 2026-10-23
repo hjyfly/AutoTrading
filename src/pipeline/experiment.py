@@ -539,7 +539,9 @@ def monitor(data: Data | None = None, save: bool = True, horizon: int | None = N
     lines += ["## 한눈에 보기", ""] + [f"- {x}" for x in highlights(groups)] + [""]
     for title, table, curves, note, base_cfg in groups:
         lines += group_section(title, table, curves, note, base_cfg)
-    lines += ["## 지난 실행과 비교", ""]
+    lines += ["## 지난 실행과 비교", "",
+              "수익·MDD 만 비교한다. 정확도·적중률은 2026-10-23 부터 구간 끝까지 확정된 정답만 채점하도록 바뀌어(조건 비교 run_one), "
+              "그 전 실행 리포트와 정확도 숫자가 조금 다를 수 있다.", ""]
     if previous.empty:
         lines += ["첫 실행이라 비교할 이력이 없다.", ""]
     else:
@@ -996,8 +998,8 @@ def horizon_period(sig: pd.DataFrame, close: pd.Series, labels: pd.DataFrame, st
     part = sig.loc[start:end]
     daily = bt.period_stats(part["signal"], close, labels, start, end)
     every = bt.period_stats(every_n(part["signal"], n), close, labels, start, end)
-    sim = bt.simulate(part["signal"], close, pd.Series(dtype=float), "cash")
-    up_hold, up_months = bt.up_month_hold((sim["position"] == bt.LONG).astype(float), close)
+    up_hold, up_months = bt.up_month_hold(daily.pop("held"), close)  # period_stats 의 매일 방식 모의 매매 보유 여부
+    every.pop("held")
     known = labels[labels["future_date"] <= pd.Timestamp(part.index.max())].reindex(part.index)
     has = known["label"].notna()
     s, k = part.loc[has, "signal"], known.loc[has, "label"]
@@ -1100,8 +1102,13 @@ def horizon_study(save: bool = True) -> dict:
         periods = [("확장 구간(판정)", "ext", ext_start, ext_end), *[(name, "ext", s, e) for name, s, e in years_of(ext_start, ext_end)],
                    ("검증 구간(참고, 이미 본 구간)", "valid", v_start, v_end), *[(f"{name} · 참고", "valid", s, e) for name, s, e in years_of(v_start, v_end)]]
         rows = [{"name": name, "source": src, **horizon_period(sig[src], close, labels, s, e, n)} for name, src, s, e in periods]
-        first_train = labels[labels["future_date"] < sig["ext"]["retrained_on"].iloc[0]]
-        first_train = first_train[first_train.index.isin(ext.features[train.feature_columns(ext.features, "base")].dropna().index)]  # 확장 구간 첫 재학습의 실제 학습 행
+        first_retrain = sig["ext"]["retrained_on"].iloc[0]
+        first_train = labels[labels["future_date"] < first_retrain]  # 확장 구간 첫 재학습의 학습 행(walk_forward 와 같은 규칙)
+        first_train = first_train[first_train.index.isin(ext.features[train.feature_columns(ext.features, "base")].dropna().index)]
+        if config.TRAIN_WINDOW_YEARS:
+            first_train = first_train[first_train.index >= first_retrain - pd.DateOffset(years=config.TRAIN_WINDOW_YEARS)]
+        if len(first_train) != int(sig["ext"]["train_rows"].iloc[0]):  # 학습 규칙이 바뀌어 리포트 숫자가 실제 학습과 어긋나면 멈춘다
+            raise AssertionError(f"{n}거래일 첫 학습 행 {len(first_train)} ≠ 워크포워드 {int(sig['ext']['train_rows'].iloc[0])}")
         result[n] = {"rows": rows, "train_label_shares": first_train["label"].value_counts(normalize=True).to_dict(),
                      "first_train_rows": int(len(first_train)),
                      "last_retrained_on": str(pd.Timestamp(sig["valid"]["retrained_on"].iloc[-1]).date()),
