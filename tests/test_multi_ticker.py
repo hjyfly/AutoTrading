@@ -185,3 +185,29 @@ def test_장_마감_전_기록은_다시_실행해도_덮어쓰지_않는다(tmp
     saved = pd.read_parquet(path).set_index("code")["signal"]
     assert saved["000660"] == "상승"  # 15:20 실시간 기록 유지
     assert saved["012450"] == "보합"  # 사후 기록은 새 값으로 바뀜
+
+
+def test_종목_분석_데이터_개요와_연도별_성적_손계산():
+    days = pd.bdate_range("2023-01-02", "2024-12-31")
+    close = pd.Series(100.0, index=days)
+    close[days >= pd.Timestamp("2024-01-01")] = 150.0  # 2024 첫날 50% 오름, 그 뒤 평평
+    labels = make_labels(close)
+    prof = mt.data_profile(close, labels, "2023-01-02", "2023-12-29")
+    assert prof["hold"] == pytest.approx(0.0)
+    assert prof["label_상승"] == pytest.approx(5 / prof["days"])  # 2023 마지막 5일만 5일 뒤가 2024 급등 구간이라 '상승'
+    sig = pd.Series("상승", index=days)
+    years = mt.yearly_report(sig, close, labels).set_index("year")
+    assert set(years.index) == {2023, 2024}
+    assert years.loc[2023, "hold_return"] == pytest.approx(0.999 - 1)  # 매수 수수료만
+    assert years.loc[2024, "regime"] == "횡보장"  # 2024 안에서는 평평
+
+
+def test_지표_IC_는_t_시점_값과_5일_뒤_수익률로_계산한다():
+    days = pd.bdate_range("2023-01-02", periods=120)
+    rng = np.random.default_rng(0)
+    close = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.02, 120))), index=days)
+    fwd = close.shift(-5) / close - 1
+    table = pd.DataFrame({"ma5_gap": fwd.fillna(0), "rsi14": -fwd.fillna(0)}, index=days)
+    ic = mt.feature_ic(table, close, ["ma5_gap", "rsi14"], days[0], days[-1]).set_index("feature")
+    assert ic.loc["ma5_gap", "ic"] == pytest.approx(1.0) and ic.loc["rsi14", "ic"] == pytest.approx(-1.0)
+    assert ic.loc["rsi14", "group"] == "rsi"

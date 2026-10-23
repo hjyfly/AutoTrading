@@ -69,6 +69,7 @@ src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시�
 src/broker.py                    한국투자증권 주문. 사람이 직접 실행할 때만 쓰고 신호로 자동 주문하지 않는다. 기본 모의투자·주문 꺼짐(2026-10-22 사용자 결정)
 src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
 src/pipeline/multi_ticker.py     7일차 다종목 분석(SK하이닉스·한화에어로스페이스·레인보우로보틱스, 2026-10-22 사용자 요청). 8일차부터 채택 분야 동료 종목도 매일 덧붙임. 2026-10-23 부터 정식 신호(성적표 판정, SERVICE.md 5.6, 사용자 결정). 매매·주문과 연결하지 않음. 분석 기록 SERVICE2.md
+                                 4종목 분석·비교(analysis: 선정 알고리즘 신호, 뉴스 제외, 탐색 → evaluation/reports/tickers_analysis.md, 화면 표 data/processed/tickers/analysis)
 src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우주항공·로봇 각 3종목, 후보 S0 ~ S5 고르기·확인, 채택된 분야의 신호. 2026-10-22 사용자 요청). 매매·주문과 연결하지 않음. 정리 SERVICE2.md 10절
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
                                  9일차 뉴스 평가(--news: IC·Newey-West·기준선·LLM 지식 기준 전후 분리, 장부 V1·V2·A1 확인 판정 1회)

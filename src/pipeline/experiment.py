@@ -688,7 +688,7 @@ def parse_value(key: str, text: str):
 def newey_west_t(score: pd.Series, ret: pd.Series, lag: int) -> float:
     """수익률을 표준화 점수에 회귀한 기울기의 Newey-West t 값(지연 lag, Bartlett 가중). 기간이 겹치는 수익률의 자기상관을 보정한다."""
     import numpy as np
-    d = pd.concat([score, ret], axis=1).dropna()
+    d = pd.concat([score, ret], axis=1).replace([np.inf, -np.inf], np.nan).dropna()  # 무한대(0 으로 나눈 지표)는 뺀다
     if len(d) < 10 or d.iloc[:, 0].std() == 0:
         return float("nan")
     x = (d.iloc[:, 0] - d.iloc[:, 0].mean()) / d.iloc[:, 0].std()
@@ -709,11 +709,11 @@ def newey_west_t(score: pd.Series, ret: pd.Series, lag: int) -> float:
 
 def score_metrics(score: pd.Series, ret: pd.Series, lag: int) -> dict:
     """IC(스피어만), 방향 적중률(점수 0 제외), 상하위 20% 수익 차, Newey-West t, 표본 수."""
-    d = pd.concat([score.rename("s"), ret.rename("r")], axis=1).dropna()
+    d = pd.concat([score.rename("s"), ret.rename("r")], axis=1).replace([float("inf"), float("-inf")], float("nan")).dropna()
     if len(d) < 10:
         return {"n": len(d), "ic": float("nan"), "hit": float("nan"), "spread": float("nan"), "nw_t": float("nan")}
     nz = d[d["s"] != 0]
-    q_hi, q_lo = d["s"].quantile(0.8), d["s"].quantile(0.2)
+    q_hi, q_lo = d["s"].quantile(1 - config.QUANTILE_SPREAD), d["s"].quantile(config.QUANTILE_SPREAD)
     top, bottom = d[d["s"] >= q_hi]["r"], d[d["s"] <= q_lo]["r"]
     spread = top.mean() - bottom.mean() if q_hi > q_lo else float("nan")
     return {"n": len(d), "ic": float(d["s"].corr(d["r"], method="spearman")),

@@ -479,6 +479,13 @@ MULTI_DATA_START = "2019-01-02"               # 확장 원본과 같은 시작�
 TICKER_RAW_DIR = "data/raw/tickers"           # 종목별 일봉·수급·분야 ETF 원본(기존 원본과 따로)
 MULTI_SIGNALS_DIR = "data/processed/tickers"  # 종목별 특징·정답·신호
 DAY7_REPORT_PATH = "evaluation/reports/day7_multi_ticker.md"
+# 종목별 분석·비교(2026-10-23 사용자 요청, 뉴스 제외, 탐색). 이미 본 구간이라 판정에 쓰지 않는다
+TICKER_ANALYSIS_REPORT_PATH = "evaluation/reports/tickers_analysis.md"
+TICKER_ANALYSIS_DIR = "data/processed/tickers/analysis"   # 화면용 표(재생성 가능, git 제외)
+TICKER_ANALYSIS_PERIODS = {"확장 구간": (DEV_START, EXT_VALID_END), "검증 구간": (VALID_START, None), "전체": (DEV_START, None)}
+TICKER_ANALYSIS_TOP_FEATURES = 8                          # 종목마다 보여 줄 지표 수(5일 수익률과의 |IC| 순)
+QUANTILE_SPREAD = 0.2                                     # 상하위 몇 % 의 수익 차를 볼지(9일차 뉴스 평가와 함께 쓴다)
+TICKER_ANALYSIS_MIN_DAYS = 20                             # 구간·연도 성적을 계산할 최소 거래일
 MULTI_LIVE_PATH = "data/processed/tickers/signals_live_tickers.parquet"  # 다른 종목 실시간 신호 기록(성적표 판정, git 제외)
 TICKER_DOWN_ACTION = "cash"  # 다른 종목 성적표의 하락 행동(SERVICE.md 5.6·장부 M1 고정. 인버스 ETF 가 없으므로 운영 규칙이 바뀌어도 현금)
 MULTI_POOLED_MIN_BETTER = 3   # Q2 사전 등록: 공동 학습이 단독보다 나은 종목이 이 수 이상이면 채택 후보

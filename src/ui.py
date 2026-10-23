@@ -69,7 +69,18 @@ def experiment_data() -> experiment.Data:
 
 def experiment_tab():
     """모니터링 리포트 보기와 조건 조회를 하위 탭으로 나눠 보여 준다. 결과는 모두 탐색이다."""
-    sub_report, sub_query, sub_features = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단"])
+    sub_report, sub_query, sub_features, sub_tickers = st.tabs(["모니터링 리포트", "조건 조회", "지표 그룹 진단", "종목 비교"])
+    with sub_tickers:
+        path = Path(config.TICKER_ANALYSIS_REPORT_PATH)
+        if st.button("종목 비교 다시 계산 (1~2분, LLM 없음)"):
+            with st.spinner("4종목 분석 중"):
+                from src.pipeline import multi_ticker
+                multi_ticker.analysis()
+                st.cache_data.clear()
+        if path.exists():
+            st.markdown(path.read_text(encoding="utf-8").replace("../../", ""))
+        else:
+            st.info("아직 종목 비교 리포트가 없다. 위 버튼으로 만든다.")
     with sub_report:
         monitor_report_view()
     with sub_query:
@@ -169,6 +180,54 @@ def feature_study_view():
         st.markdown(report_path.read_text(encoding="utf-8"))
     else:
         st.info("아직 진단 리포트가 없다. 위 버튼으로 만든다.")
+
+
+@st.cache_data(ttl=600)
+def load_ticker_analysis(name: str) -> pd.DataFrame:
+    """종목별 분석 표(multi_ticker.analysis 결과). 없으면 빈 표."""
+    path = Path(config.TICKER_ANALYSIS_DIR) / f"{name}.parquet"
+    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+
+def ticker_performance_view(code: str, as_of: pd.Timestamp):
+    """다른 종목 성과: 검증 구간 자산 곡선(고른 날짜 전까지), 구간별·연도별 성적, 5일 수익률과 관련 큰 지표. 모두 탐색이다."""
+    periods = load_ticker_analysis("periods")
+    if periods.empty:
+        st.info("아직 종목 분석이 없다. '리포트·조건 비교 → 종목 비교'에서 계산한다.")
+        return
+    mine = periods[periods["code"] == code]
+    st.caption(f"선정 알고리즘 {mine['algorithm'].iloc[0]} 의 워크포워드 신호로 삼성전자와 같은 규칙(하락 = 현금, 수수료 0.1%)에서 계산했다. "
+               "7·8일차에 이미 본 구간이라 모두 탐색이고, 판정은 실시간 성적표로만 한다. 뉴스는 쓰지 않았다. "
+               "자산 곡선은 고른 날짜 전까지만 그리고, 아래 표는 고른 날짜와 관계없이 데이터 끝까지의 사후 성적이다.")
+    eq = load_ticker_analysis("equity")
+    eq = eq[(eq["code"] == code) & (eq.index < as_of)]
+    if eq.empty:
+        st.info(f"검증 구간({config.VALID_START}~) 이전 날짜라 자산 곡선이 없다.")
+    else:
+        long = eq[["model", "hold"]].reset_index(names="date").melt("date", var_name="전략", value_name="자산")
+        long["전략"] = long["전략"].map({"model": "모델(하락 = 현금)", "hold": "그냥 들고 있기"})
+        st.altair_chart(alt.Chart(long).mark_line().encode(x=alt.X("date:T", title=None), y=alt.Y("자산:Q", title="자산(시작 1.0)"),
+                                                            color="전략:N").properties(height=260), width="stretch")
+    pct = lambda v: "-" if pd.isna(v) else f"{v:.1%}"
+    mark = lambda v: "-" if v is None or pd.isna(v) else ("통과" if v else "실패")
+    st.dataframe(pd.DataFrame([{"구간": r["period"], "일수": r["days"], "모델 수익": pct(r["return"]), "모델 MDD": pct(r["mdd"]),
+                                "들고 있기": pct(r["hold_return"]), "들고 있기 MDD": pct(r["hold_mdd"]), "정확도": pct(r["accuracy"]),
+                                "늘 최빈 정답": pct(r["most_common"]), "하락 신호 적중": pct(r["hit_하락"]), "보유일": pct(r["hold_days"]),
+                                "A": mark(r["A"]), "B": mark(r["B"]), "C": mark(r["C"])} for _, r in mine.iterrows()]),
+                 width="stretch", hide_index=True)
+    years = load_ticker_analysis("yearly")
+    years = years[years["code"] == code]
+    if len(years):
+        st.markdown("**연도별 장세 (각 연도 현금에서 시작)**")
+        st.dataframe(pd.DataFrame([{"연도": int(y["year"]), "장세": y["regime"], "모델 수익": pct(y["return"]), "모델 MDD": pct(y["mdd"]),
+                                    "들고 있기": pct(y["hold_return"]), "들고 있기 MDD": pct(y["hold_mdd"]), "정확도": pct(y["accuracy"])}
+                                   for _, y in years.iterrows()]), width="stretch", hide_index=True)
+    ic = load_ticker_analysis("feature_ic")
+    ic = ic[ic["code"] == code].assign(abs_ic=lambda d: d["ic"].abs()).sort_values("abs_ic", ascending=False).head(config.TICKER_ANALYSIS_TOP_FEATURES)
+    if len(ic):
+        st.markdown("**5일 수익률과 관련이 큰 지표 (IC, 겹침 보정 t)**")
+        st.dataframe(ic[["feature", "group", "ic", "nw_t"]].rename(columns={"feature": "지표", "group": "그룹", "ic": "IC", "nw_t": "NW t"}).round(3),
+                     width="stretch", hide_index=True)
 
 
 @st.cache_data(ttl=600)
@@ -413,8 +472,7 @@ with tab_data:
     with tab_perf:
         chart = equity_chart(as_of) if is_samsung else None
         if not is_samsung:
-            st.info("과거 검증 구간 자산 곡선은 삼성전자만 있다. 다른 종목의 과거 비교는 7·8일차 리포트"
-                    "(day7_multi_ticker.md·day8_sector_models.md), 앞으로의 성적은 '실시간 성적' 탭에서 본다.")
+            ticker_performance_view(code, as_of)
         elif chart is None:
             st.info(f"검증 구간({config.VALID_START}~) 이전 날짜다.")
         else:

@@ -6,7 +6,7 @@
 - 학습: 운영 설정(지표 묶음 base, 5거래일 ±3%, 매주 재학습, 누적)으로 종목별 단독 워크포워드와 4종목 공동 워크포워드.
 - 판정: 사전 등록 Q1 ~ Q3(evaluation/reports/preregistration.md)을 확장 구간에서 한 번 계산해 리포트로 남긴다.
 
-명령줄: python -m src.pipeline.multi_ticker collect | study | live [YYYY-MM-DD]
+명령줄: python -m src.pipeline.multi_ticker collect | study | analysis | live [YYYY-MM-DD]
 """
 import sys
 from pathlib import Path
@@ -275,6 +275,169 @@ def report(result: pd.DataFrame, v: dict) -> str:
 
 # ---- 실시간 신호 (D7-07, 2026-10-23 부터 정식 신호·SERVICE.md 5.6): 다른 종목의 오늘 신호. 매매·주문과 연결하지 않는다 ----
 
+# ---- 종목별 분석·비교 (2026-10-23 사용자 요청, 뉴스 제외). 각 종목의 선정 알고리즘 워크포워드 신호로 계산하며 모두 탐색이다 ----
+
+def selected_signals(code: str) -> tuple[str, pd.DataFrame]:
+    """그 종목의 선정 알고리즘(확인까지 통과한 분야면 그 후보, 아니면 S0)과 8일차 워크포워드 신호."""
+    from src import tools
+    alg = tools.ticker_algorithm(code)
+    path = Path(config.SECTOR_DIR) / f"signals_{alg}_{code}.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} 가 없다. python -m src.pipeline.sector_models run 으로 다시 만든다")
+    return alg, pd.read_parquet(path)
+
+
+def data_profile(close: pd.Series, labels: pd.DataFrame, start, end) -> dict:
+    """구간의 데이터 특성: 거래일, 연 환산 변동성, 들고 있기 수익, 정답 분포, 거래정지(거래량 0)는 원본에서 이미 뺐다."""
+    c = close.loc[start:end].dropna()
+    lab = labels["label"].loc[start:end].dropna()
+    dist = lab.value_counts(normalize=True)
+    return {"days": len(c), "vol": float(c.pct_change().std() * np.sqrt(bt.TRADING_DAYS_PER_YEAR)), "hold": float(c.iloc[-1] / c.iloc[0] - 1) if len(c) > 1 else float("nan"),
+            **{f"label_{k}": float(dist.get(k, 0.0)) for k in CLASSES}}
+
+
+def yearly_report(signal: pd.Series, close: pd.Series, labels: pd.DataFrame) -> pd.DataFrame:
+    """연도마다 현금에서 다시 시작한 모의 매매와 장세(들고 있기 수익 기준)."""
+    rows = []
+    for year, sig in signal.groupby(signal.index.year):
+        if len(sig) < config.TICKER_ANALYSIS_MIN_DAYS:
+            continue
+        r = period_report(signal, close, labels, sig.index.min(), sig.index.max())
+        rows.append({"year": int(year), "regime": bt.regime(r["hold_return"]), **r})
+    return pd.DataFrame(rows)
+
+
+def feature_ic(table: pd.DataFrame, close: pd.Series, cols: list[str], start, end) -> pd.DataFrame:
+    """지표마다 5일 뒤 수익률(t 종가 → t+5 종가)과의 순위 상관(IC)과 겹침 보정 t. 지표는 t 에 알 수 있던 값(특징 표 규칙)이다."""
+    from src.pipeline.experiment import score_metrics
+    h = config.LABEL_HORIZON_DAYS
+    fwd = (close.shift(-h) / close - 1).loc[start:end]
+    rows = []
+    for c in cols:
+        if c not in table:
+            continue
+        m = score_metrics(table[c].loc[start:end], fwd, h - 1)
+        group = next((g for g, members in config.FEATURE_GROUPS.items() if c in members), "-")
+        rows.append({"feature": c, "group": group, "ic": m["ic"], "nw_t": m["nw_t"], "n": m["n"]})
+    return pd.DataFrame(rows)
+
+
+def analysis(save: bool = True) -> dict:
+    """4종목(삼성전자 포함)을 각 선정 알고리즘 신호로 같은 규칙(하락 = 현금, 수수료 0.1%)에서 분석·비교한다.
+    데이터 개요, 구간별 성적(A·B·C), 연도별 장세, 방향별 적중, 확신도 구간별 적중, 지표별 5일 IC. 뉴스는 쓰지 않는다."""
+    shared = base_raw()
+    out = {}
+    for code in config.MULTI_TICKERS:
+        alg, sig = selected_signals(code)
+        from src.pipeline.sector_models import clean_raw
+        raw = clean_raw(ticker_raw(code, shared))  # 거래정지일(거래량 0)을 일봉·수급에서 뺀다(8일차 신호와 같은 원본)
+        close = raw["ohlcv"]["Close"].astype(float)
+        labels = make_labels(close)
+        table = features.build_features(raw=raw)
+        periods = {}
+        for name, (start, end) in config.TICKER_ANALYSIS_PERIODS.items():
+            end = end or str(sig.index.max().date())
+            s = sig["signal"].loc[start:end]
+            if len(s) < config.TICKER_ANALYSIS_MIN_DAYS:
+                continue
+            known = labels["label"].reindex(s.index)
+            matured = known.notna() & (labels["future_date"].reindex(s.index) <= pd.Timestamp(end))  # period_report 와 같게 구간 끝까지 확정된 정답만
+            hit = bt.direction_hit_rate(s[matured], known[matured])
+            by_dir = {d: float((known[matured][s[matured] == d] == d).mean()) if (s[matured] == d).any() else float("nan") for d in CLASSES}
+            share = s.value_counts(normalize=True)
+            periods[name] = {"start": start, "end": end, **data_profile(close, labels, start, end),
+                             **period_report(sig["signal"], close, labels, start, end),
+                             "direction_hit": hit["hit_rate"], "critical_error": hit["critical_error_rate"],
+                             **{f"hit_{d}": v for d, v in by_dir.items()}, **{f"share_{d}": float(share.get(d, 0.0)) for d in CLASSES}}
+        correct = (sig["signal"] == labels["label"].reindex(sig.index)).where(labels["label"].reindex(sig.index).notna())
+        calib = bt.calibration(sig["confidence"], correct.dropna().reindex(sig.index))
+        ic = feature_ic(table, close, config.FEATURE_SET_BASE, config.DEV_START, str(sig.index.max().date()))
+        sim = bt.simulate(sig["signal"].loc[config.VALID_START:], close, pd.Series(dtype=float), "cash")
+        equity = pd.DataFrame({"model": sim["equity"], "hold": bt.buy_and_hold(close, sim.index)})
+        out[code] = {"name": config.MULTI_TICKERS[code][0], "sector": config.MULTI_TICKERS[code][1], "algorithm": alg,
+                     "periods": periods, "yearly": yearly_report(sig["signal"], close, labels), "calibration": calib,
+                     "ic": ic, "equity": equity, "last": str(sig.index.max().date())}
+    numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)["signal"]
+    _, samsung = selected_signals(config.SAMSUNG_CODE)
+    both = samsung["signal"].to_frame().join(numeric.rename("op"), how="inner")
+    match = (int((both["signal"] == both["op"]).sum()), len(both))  # 삼성전자 선정 신호(S0)와 운영 신호가 같은 날 수
+    report = analysis_report(out, match)
+    if save:
+        Path(config.TICKER_ANALYSIS_REPORT_PATH).write_text(report, encoding="utf-8", newline="\n")
+        d = Path(config.TICKER_ANALYSIS_DIR)
+        d.mkdir(parents=True, exist_ok=True)
+        rows = [{"code": c, "name": r["name"], "algorithm": r["algorithm"], "period": p, **v} for c, r in out.items() for p, v in r["periods"].items()]
+        pd.DataFrame(rows).to_parquet(d / "periods.parquet")
+        pd.concat([r["yearly"].assign(code=c) for c, r in out.items()]).to_parquet(d / "yearly.parquet")
+        pd.concat([r["ic"].assign(code=c) for c, r in out.items()]).to_parquet(d / "feature_ic.parquet")
+        pd.concat([r["equity"].assign(code=c) for c, r in out.items()]).to_parquet(d / "equity.parquet")
+        pd.concat([r["calibration"].reset_index().assign(bin=lambda x: x["bin"].astype(str), code=c) for c, r in out.items()]).to_parquet(d / "calibration.parquet")
+    return out
+
+
+def analysis_report(out: dict, samsung_match: tuple[int, int] | None = None) -> str:
+    """종목별 분석·비교 리포트 본문. samsung_match 는 (운영 신호와 같은 날, 겹치는 날)."""
+    pct = lambda v: "-" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.1%}"
+    num = lambda v, p=2: "-" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:.{p}f}"
+    mark = lambda v: "-" if v is None else ("통과" if v else "실패")
+    last = max(r["last"] for r in out.values())
+    lines = ["# 종목별 분석·비교 (뉴스 제외)", "",
+             f"> 작성 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} · 신호 끝 {last} · 2026-10-23 사용자 요청 · 기준 [SERVICE.md](../../SERVICE.md) 5.6 · 다종목 기록 [SERVICE2.md](../../SERVICE2.md)",
+             f"> 각 종목의 **선정 알고리즘**(8일차 확인 결과) 워크포워드 신호로, 삼성전자와 같은 규칙({config.RETRAIN_FREQS[config.RETRAIN_FREQ]} 재학습, "
+             f"{config.LABEL_HORIZON_DAYS}거래일 ±{config.LABEL_THRESHOLD:.0%}, 하락 = 현금, 수수료 {config.FEE_RATE:.1%}, 구간마다 현금에서 시작)으로 계산했다."
+             + (f" 삼성전자 S0 신호는 운영 신호와 겹치는 {samsung_match[1]}일 중 {samsung_match[0]}일 같다." if samsung_match else ""),
+             "> **이 구간들은 7·8일차에 이미 본 구간이라 모든 숫자는 탐색이다.** 판정은 실시간 성적표(5.2·5.6)로만 한다. 뉴스는 쓰지 않았다.", "",
+             f"## 1. 한눈에 비교 (검증 구간 {config.VALID_START} ~)", "",
+             "| 종목 | 분야 | 알고리즘 | 모델 수익 | 들고 있기 | 모델 MDD | 들고 있기 MDD | 칼마 | 정확도 | 늘 최빈 정답 | 방향 적중 | 보유일 | A | B | C |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for c, r in out.items():
+        p = r["periods"].get("검증 구간")
+        if p:
+            lines.append(f"| {r['name']} | {r['sector']} | {r['algorithm']} | {pct(p['return'])} | {pct(p['hold_return'])} | {pct(p['mdd'])} | {pct(p['hold_mdd'])} | "
+                         f"{num(p['calmar'])} | {pct(p['accuracy'])} | {pct(p['most_common'])} | {pct(p['direction_hit'])} | {pct(p['hold_days'])} | "
+                         f"{mark(p['A'])} | {mark(p['B'])} | {mark(p['C'])} |")
+    lines += ["", f"A = MDD 가 들고 있기의 절반 이하이고 수익이 들고 있기의 절반 이상, B = 하락 신호 적중 > 실제 하락 비율, "
+              f"C = +{config.UP_MONTH_MIN_RETURN:.0%} 이상 오른 달 보유일 ≥ {config.UP_MONTH_MIN_HOLD:.0%}.", "",
+              "## 2. 데이터 개요", "", "| 종목 | 구간 | 거래일 | 연 변동성 | 들고 있기 | 정답 상승 | 보합 | 하락 |", "|---|---|---|---|---|---|---|---|"]
+    for c, r in out.items():
+        for name, p in r["periods"].items():
+            lines.append(f"| {r['name']} | {name} | {p['days']} | {pct(p['vol'])} | {pct(p['hold'])} | {pct(p['label_상승'])} | {pct(p['label_보합'])} | {pct(p['label_하락'])} |")
+    lines += ["", f"들고 있기는 수수료 없는 단순 가격 변화다(1·3절은 매수 수수료 포함이라 조금 다르다). 변동성이 클수록 ±{config.LABEL_THRESHOLD:.0%} 기준에서 "
+              "'보합'이 드물어 문제의 성격이 달라진다(7일차에서 본 것).", "",
+              "## 3. 구간별 성적", ""]
+    for c, r in out.items():
+        lines += [f"### {r['name']} ({c}, {r['algorithm']})", "",
+                  "| 구간 | 일수 | 모델 수익 / MDD | 들고 있기 수익 / MDD | 칼마 | 정확도 (최빈) | 상승 신호 적중 | 하락 신호 적중 (실제 하락) | 정반대 오류 | 신호 비중 상승·보합·하락 | A | B | C (상승달 보유) |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for name, p in r["periods"].items():
+            lines.append(f"| {name} | {p['days']} | {pct(p['return'])} / {pct(p['mdd'])} | {pct(p['hold_return'])} / {pct(p['hold_mdd'])} | {num(p['calmar'])} | "
+                         f"{pct(p['accuracy'])} ({pct(p['most_common'])}) | {pct(p['hit_상승'])} | {pct(p['hit_하락'])} ({pct(p['actual_down'])}) | {pct(p['critical_error'])} | "
+                         f"{pct(p['share_상승'])}·{pct(p['share_보합'])}·{pct(p['share_하락'])} | {mark(p['A'])} | {mark(p['B'])} | {mark(p['C'])} ({pct(p['up_hold'])}) |")
+        lines.append("")
+    lines += ["## 4. 연도별 장세 (각 연도 현금에서 시작)", "", "| 종목 | 연도 | 장세 | 모델 수익 / MDD | 들고 있기 수익 / MDD | 정확도 | 보유일 |", "|---|---|---|---|---|---|---|"]
+    for c, r in out.items():
+        for _, y in r["yearly"].iterrows():
+            lines.append(f"| {r['name']} | {y['year']} | {y['regime']} | {pct(y['return'])} / {pct(y['mdd'])} | {pct(y['hold_return'])} / {pct(y['hold_mdd'])} | {pct(y['accuracy'])} | {pct(y['hold_days'])} |")
+    lines += ["", "## 5. 확신도 구간별 적중 (전체 기간)", "", "| 종목 | " + " | ".join(str(b) for b in next(iter(out.values()))["calibration"].index) + " |",
+              "|---|" + "---|" * len(next(iter(out.values()))["calibration"])]
+    for c, r in out.items():
+        cal = r["calibration"]
+        lines.append(f"| {r['name']} | " + " | ".join(f"{pct(row['hit_rate'])} ({int(row['count'])})" for _, row in cal.iterrows()) + " |")
+    lines += ["", "확신도가 높을수록 적중률이 오르면 확신도를 믿을 만하다. 괄호는 신호 수.", "",
+              f"## 6. 지표별 {config.LABEL_HORIZON_DAYS}일 수익률 관련도 ({config.DEV_START} ~ 신호 끝, 운영 지표 {len(config.FEATURE_SET_BASE)}개 중 |IC| 상위 {config.TICKER_ANALYSIS_TOP_FEATURES}개)", "",
+              "IC = 그날 지표 값과 5거래일 뒤 수익률의 순위 상관(t 에 알 수 있던 값), NW t = 5일 겹침 보정 t 값. |t| 가 2 보다 작으면 우연과 구분하기 어렵다. 분야 알고리즘(S4)의 추가 지표는 넣지 않았다.", ""]
+    for c, r in out.items():
+        ic = r["ic"].assign(abs_ic=r["ic"]["ic"].abs()).sort_values("abs_ic", ascending=False).head(config.TICKER_ANALYSIS_TOP_FEATURES)
+        lines += [f"**{r['name']}** — " + ", ".join(f"`{x['feature']}`({x['group']}) {num(x['ic'], 3)} (t {num(x['nw_t'])})" for _, x in ic.iterrows()), ""]
+    lines += ["### 지표 그룹별 평균 |IC|", "", "| 그룹 | " + " | ".join(r["name"] for r in out.values()) + " |", "|---|" + "---|" * len(out)]
+    groups = sorted({g for r in out.values() for g in r["ic"]["group"]})
+    for g in groups:
+        vals = [r["ic"][r["ic"]["group"] == g]["ic"].abs().mean() for r in out.values()]
+        lines.append(f"| {g} | " + " | ".join(num(v, 3) for v in vals) + " |")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def refresh(today: pd.Timestamp | None = None) -> pd.DataFrame:
     """다른 종목 원본에 어제까지의 새 확정 날짜만 덧붙인다(오늘 장중 값은 저장하지 않는다)."""
     today = (pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz=config.KST).tz_localize(None)).normalize()
@@ -390,6 +553,9 @@ if __name__ == "__main__":
         res = study()
         print(res["verdicts"])
         print("저장:", config.DAY7_REPORT_PATH)
+    elif cmd == "analysis":
+        analysis()
+        print("저장:", config.TICKER_ANALYSIS_REPORT_PATH, config.TICKER_ANALYSIS_DIR)
     elif cmd == "live":
         print("\n".join(summary_lines(live_signals(sys.argv[2] if len(sys.argv) > 2 else None))))
     else:
