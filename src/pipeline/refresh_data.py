@@ -35,6 +35,10 @@ def fetch_series(kind: str, name: str, start: str, end: str) -> pd.DataFrame:
         return collect_prices.fetch_ohlcv(config.INVERSE_ETF_CODE, start, end)
     if kind == "prices" and name in config.KR_EXTRA:
         return collect_prices.fetch_close(config.KR_EXTRA[name], start, end)
+    if kind == "tickers" and name.endswith(("_ohlcv", "_flows")):  # 다른 종목 원본(data/raw/tickers). 도구의 실시간 조회용
+        code, part = name.rsplit("_", 1)
+        if code in config.MULTI_TICKERS:
+            return (collect_prices.fetch_ohlcv if part == "ohlcv" else collect_prices.fetch_foreign_net)(code, start, end)
     if kind == "macro":
         return collect_macro.fetch_yf({**config.YF_TICKERS, **config.YF_TICKERS_EXT}[name], start, end)
     raise ValueError(f"받을 수 없는 데이터: {kind}/{name}")
@@ -59,10 +63,10 @@ def append_new(stored: pd.DataFrame, fresh: pd.DataFrame, end: pd.Timestamp) -> 
 
 def last_closed_date(kind: str, name: str, now: pd.Timestamp | None = None) -> pd.Timestamp:
     """그 시장에서 종가가 확정된 가장 최근 현지 날짜."""
-    tz, close = config.MARKET_CLOSE.get(kind if kind == "prices" else name, config.US_MARKET_CLOSE)
+    tz, close = config.MARKET_CLOSE.get("prices" if kind in ("prices", "tickers") else name, config.US_MARKET_CLOSE)  # 다른 종목도 한국장
     local = (now if now is not None else pd.Timestamp.now(tz="UTC")).tz_convert(tz).tz_localize(None)
     day = local.normalize()
-    if kind == "prices":  # 수능일 등 늦게 마감하는 날
+    if kind in ("prices", "tickers"):  # 수능일 등 늦게 마감하는 날
         close = config.KRX_LATE_CLOSE.get(str(day.date()), close)
     hour, minute = map(int, close.split(":"))
     return day if local - day >= pd.Timedelta(hours=hour, minutes=minute) else day - pd.Timedelta(days=1)

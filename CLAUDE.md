@@ -36,6 +36,7 @@ evaluation/        test_queries.csv 와 평가 리포트
 ### 제출 규약 파일의 역할
 - src/agent.py      /query 에이전트. 판단 기록을 근거로 "왜 그 신호였는가"에 답한다
 - src/tools.py      에이전트 도구 9개: 일봉·수급·거시 지표·차트 지표·공시·뉴스 조회, 신호·판단 기록·모의 매매 결과 조회
+                    일봉·수급·차트 지표·신호는 code 인자로 다른 3종목(SK하이닉스·한화에어로스페이스·레인보우로보틱스)도 조회한다(2026-10-23). 뉴스·판단 기록·공시·성과는 삼성전자만
                     수집·계산 함수(src/pipeline)를 감싸기만 하고 새로 계산하지 않는다. 모든 도구는 as_of 시점에 알 수 있던 정보만 돌려준다
                     저장된 데이터를 먼저 쓰고, 저장 범위를 넘으면 실시간으로 받되 data/raw 에 쓰지 않는다
 - src/retriever.py  판단 기록·기사·DART 공시 검색(RAG). 모든 검색은 as_of 날짜 이후 문서를 제외한다
@@ -54,14 +55,15 @@ src/pipeline/features.py         차트 지표 계산, 시점 규칙에 맞춘 �
 src/pipeline/labels.py           5거래일 ±3% 정답 데이터 (기간·기준은 인자로 바꿀 수 있고 기본은 config 값)
 src/pipeline/select_news.py      신호일마다 채점할 기사 30건 선별
 src/pipeline/scoring.py          뉴스 채점 LangGraph (버전 2: 종합 + 분류별 점수 + 하락 위험. 버전이 섞이면 점수 표를 만들지 않는다)
+                                 9일차 기사별 구조화 추출(하루 1회 호출, 회사명 익명화, data/scores/features 캐시, 프롬프트 버전 config.FEATURE_PROMPT_VERSION)
 src/pipeline/leak_test.py        미래 정보 유출 테스트
 src/pipeline/train.py            LightGBM 워크포워드 학습
-src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙)
+src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙). 9일차 일별 뉴스 피처·V1/V2 로지스틱 워크포워드·하락 위험 경보(참고, 운영 신호를 바꾸지 않음)
 src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(재학습 주기 config.RETRAIN_FREQ 안의 첫 거래일 재학습 — 지금 매주, 정답 기간 간격)
                                  뉴스 채점은 15:15 이후 요청할 때만(LLM 7회). 2026-10-22 부터 뉴스는 참고용(config.NEWS_ADJUST_IN_SIGNAL). 결과는 data/processed/signals_live.parquet
-src/ui.py                        Streamlit 화면 (채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
+src/ui.py                        Streamlit 화면 (종목 선택, 채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
 src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고. 다른 종목도 (종목, 알고리즘)마다 같은 기준(SERVICE.md 5.6)
-src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점은 참고용) → 다른 종목 신호 → 성적표 → Gmail 알림
+src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점·기사별 추출은 참고용) → 다른 종목 신호 → 성적표 → 뉴스 V1 참고·경보 → Gmail 알림
 src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_PASSWORD·NOTIFY_TO)
 src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시세·수급·계좌 잔고). 시세·수급은 연결 확인과 예비 출처용이고 운영 수집은 지금 출처 그대로(2026-10-22 사용자 결정)
 src/broker.py                    한국투자증권 주문. 사람이 직접 실행할 때만 쓰고 신호로 자동 주문하지 않는다. 기본 모의투자·주문 꺼짐(2026-10-22 사용자 결정)
@@ -69,6 +71,7 @@ src/pipeline/backtest.py         모의 매매와 성공 기준 A·B 판정
 src/pipeline/multi_ticker.py     7일차 다종목 분석(SK하이닉스·한화에어로스페이스·레인보우로보틱스, 2026-10-22 사용자 요청). 8일차부터 채택 분야 동료 종목도 매일 덧붙임. 2026-10-23 부터 정식 신호(성적표 판정, SERVICE.md 5.6, 사용자 결정). 매매·주문과 연결하지 않음. 분석 기록 SERVICE2.md
 src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우주항공·로봇 각 3종목, 후보 S0 ~ S5 고르기·확인, 채택된 분야의 신호. 2026-10-22 사용자 요청). 매매·주문과 연결하지 않음. 정리 SERVICE2.md 10절
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
+                                 9일차 뉴스 평가(--news: IC·Newey-West·기준선·LLM 지식 기준 전후 분리, 장부 V1·V2·A1 확인 판정 1회)
                                  조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
 tests/                           위 모듈의 테스트
 .claude/agents/                  개발용 검증 서브에이전트 (아래 "검증 에이전트" 참고)
@@ -79,7 +82,7 @@ evaluation/run_eval.py, evaluation/__init__.py /query 평가 실행
 data/raw/        수집 원본. 이미 저장한 행은 수정하지 않는다(주간 갱신은 새 날짜 행만 덧붙인다)
 data/backup/     주간 갱신 전 원본 복사본(git 제외)
 data/processed/  지표·학습용 표·정답 데이터
-data/scores/     뉴스 채점 결과(news_scores.parquet)와 판단 기록(traces/<날짜>.json, 기사 제목이 있어 git 제외)
+data/scores/     뉴스 채점 결과(news_scores.parquet)와 판단 기록(traces/<날짜>.json), 기사별 피처(features/<날짜>.json), 경보 기록(alerts/alerts.jsonl). 기사 제목이 있어 traces·features·alerts 는 git 제외
 data/index/      Chroma 색인
 evaluation/reports/  PoC 보고서, 조건 비교 실험 보고서(experiments_*.md)
 data/experiments/    조건 비교 실험 결과 표(csv, 재생성 가능해 git 제외)

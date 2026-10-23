@@ -134,7 +134,12 @@ def news_score(t: pd.Timestamp) -> dict:
     articles = select_news.select_articles(news, t, days)
     reports = collect_dart.dart_as_of(pd.read_parquet(Path(config.PROCESSED_DIR) / "dart_index.parquet"), t)
     report = reports.sort_values("rcept_dt").iloc[-1] if len(reports) else None
-    return scoring.score_day(t, articles=articles, report=report)
+    trace = scoring.score_day(t, articles=articles, report=report)
+    try:  # 9일차 기사별 추출(참고·경보용). 실패해도 채점 결과는 그대로 쓴다
+        scoring.extract_day(t, articles=articles, raw_news=news)
+    except Exception as e:
+        print(f"기사별 추출 실패: {type(e).__name__}: {e}", flush=True)
+    return trace
 
 
 def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:

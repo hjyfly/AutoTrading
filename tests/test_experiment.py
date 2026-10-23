@@ -167,3 +167,24 @@ def test_인버스와_분할_매매는_섞지_않는다():
     cfgs = ex.expand(dict(config.EXPERIMENT_BASE), {"down_action": ["cash", "inverse"], "position_steps": [1, 2]})
     table, _ = ex.compare(cfgs, FakeData())
     assert len(table) == 3 and table.attrs["skipped"] == 1 and "계산하지 않았다" in ex.to_markdown(table)
+
+
+def test_뉴스_평가_지표_손계산():
+    import numpy as np
+    from src.pipeline import experiment as ex
+    idx = pd.bdate_range("2025-01-01", periods=10)
+    s = pd.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], index=idx, dtype=float)
+    r = pd.Series([-2, -1, 0, 1, 2, 3, 4, 5, 6, 7], index=idx, dtype=float) / 100
+    m = ex.score_metrics(s, r, 0)
+    assert m["ic"] == pytest.approx(1.0) and m["hit"] == pytest.approx(7 / 10)  # 점수는 모두 양수, 수익 양수 7일
+    assert m["spread"] == pytest.approx((0.065) - (-0.015))  # 상위 20%(9·10) 평균 − 하위 20%(1·2) 평균
+    rng = np.random.default_rng(0)
+    x = pd.Series(rng.normal(size=200), index=pd.bdate_range("2025-01-01", periods=200))
+    y = 0.3 * x + pd.Series(rng.normal(size=200), index=x.index)
+    z = (x - x.mean()) / x.std()
+    X = np.column_stack([np.ones(200), z])
+    b = np.linalg.lstsq(X, y.values, rcond=None)[0]
+    u = y.values - X @ b
+    inv = np.linalg.inv(X.T @ X)
+    hc0 = inv @ (X.T * u ** 2) @ X @ inv  # 지연 0 이면 Newey-West = White(HC0)
+    assert ex.newey_west_t(x, y, 0) == pytest.approx(b[1] / np.sqrt(hc0[1, 1]))

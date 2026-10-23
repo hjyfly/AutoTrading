@@ -683,6 +683,226 @@ def parse_value(key: str, text: str):
     return type(base)(text) if base is not None else text
 
 
+# ---- 9일차 뉴스 평가 (DAY9_PLAN.md 3.3, 장부 V1·V2·A1). 과거 구간 숫자는 탐색이고, 확인 구간 판정은 후보마다 한 번만 ----
+
+def newey_west_t(score: pd.Series, ret: pd.Series, lag: int) -> float:
+    """수익률을 표준화 점수에 회귀한 기울기의 Newey-West t 값(지연 lag, Bartlett 가중). 기간이 겹치는 수익률의 자기상관을 보정한다."""
+    import numpy as np
+    d = pd.concat([score, ret], axis=1).dropna()
+    if len(d) < 10 or d.iloc[:, 0].std() == 0:
+        return float("nan")
+    x = (d.iloc[:, 0] - d.iloc[:, 0].mean()) / d.iloc[:, 0].std()
+    y = d.iloc[:, 1].values
+    X = np.column_stack([np.ones(len(x)), x.values])
+    beta = np.linalg.lstsq(X, y, rcond=None)[0]
+    u = y - X @ beta
+    xu = X * u[:, None]
+    S = xu.T @ xu
+    for k in range(1, lag + 1):
+        w = 1 - k / (lag + 1)
+        g = xu[k:].T @ xu[:-k]
+        S += w * (g + g.T)
+    inv = np.linalg.inv(X.T @ X)
+    se = np.sqrt((inv @ S @ inv)[1, 1])
+    return float(beta[1] / se) if se > 0 else float("nan")
+
+
+def score_metrics(score: pd.Series, ret: pd.Series, lag: int) -> dict:
+    """IC(스피어만), 방향 적중률(점수 0 제외), 상하위 20% 수익 차, Newey-West t, 표본 수."""
+    d = pd.concat([score.rename("s"), ret.rename("r")], axis=1).dropna()
+    if len(d) < 10:
+        return {"n": len(d), "ic": float("nan"), "hit": float("nan"), "spread": float("nan"), "nw_t": float("nan")}
+    nz = d[d["s"] != 0]
+    q_hi, q_lo = d["s"].quantile(0.8), d["s"].quantile(0.2)
+    top, bottom = d[d["s"] >= q_hi]["r"], d[d["s"] <= q_lo]["r"]
+    spread = top.mean() - bottom.mean() if q_hi > q_lo else float("nan")
+    return {"n": len(d), "ic": float(d["s"].corr(d["r"], method="spearman")),
+            "hit": float(((nz["s"] > 0) == (nz["r"] > 0)).mean()) if len(nz) else float("nan"),
+            "spread": float(spread), "nw_t": newey_west_t(d["s"], d["r"], lag)}
+
+
+def news_study_inputs() -> dict:
+    """평가 재료: 일별 뉴스 피처, 토론 점수, V1·V2 신호, 숫자 모델 신호, 가격(삼성전자·코스피·SOX)."""
+    from src.pipeline.labels import make_risk_labels
+    raw = Path(config.RAW_DIR)
+    ohlcv = pd.read_parquet(raw / "prices" / "samsung_ohlcv.parquet")
+    close, open_ = ohlcv["Close"].astype(float), ohlcv["Open"].astype(float)
+    kospi = pd.read_parquet(raw / "prices" / "kospi.parquet")["Close"].astype(float)
+    sox = pd.read_parquet(raw / "macro" / "sox.parquet")["value"].astype(float)
+    articles = news_signal.load_article_features()
+    daily = news_signal.daily_features(articles)
+    scores = pd.read_parquet(config.SCORES_PATH).set_index("signal_date")
+    numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)
+    labels = make_labels(close)
+    models = news_signal.news_models(daily, numeric, labels)
+    alerts = news_signal.risk_alerts(articles, daily, scores["news_downside_risk"])
+    return {"close": close, "open": open_, "kospi": kospi, "sox": sox, "articles": articles, "daily": daily, "scores": scores,
+            "numeric": numeric, "labels": labels, "risk": make_risk_labels(close)["risk"], "models": models, "alerts": alerts}
+
+
+def news_targets(inp: dict) -> pd.DataFrame:
+    """신호일 t 종가 기준 미래 수익률(1·2·5일, 다음 날 시가→종가)과 코스피 베타(지난 120일, t 전 값)를 뺀 5일 초과수익."""
+    close, kospi = inp["close"], inp["kospi"].reindex(inp["close"].index).ffill()
+    out = pd.DataFrame(index=close.index)
+    for h in (1, 2, 5):
+        out[f"r{h}"] = close.shift(-h) / close - 1
+    out["oc1"] = close.shift(-1) / inp["open"].shift(-1) - 1
+    rs, rk = close.pct_change(), kospi.pct_change()
+    beta = (rs.rolling(120).cov(rk) / rk.rolling(120).var()).shift(1)  # t 전날까지의 수익률로 추정
+    out["x5"] = out["r5"] - beta * (kospi.shift(-5) / kospi - 1)
+    return out
+
+
+def news_scores_table(inp: dict) -> dict[str, pd.Series]:
+    """평가할 점수들(높을수록 상승 쪽). 하락 위험은 부호를 바꿔 넣는다. 기준선은 t 에 알 수 있던 값만 쓴다."""
+    sc, d, close = inp["scores"], inp["daily"], inp["close"]
+    sox_ret = inp["sox"].pct_change()
+    prev_sox = pd.Series({t: sox_ret[sox_ret.index < t].iloc[-1] if (sox_ret.index < t).any() else float("nan") for t in d.index})
+    out = {"토론 종합 점수": sc["news_consensus"], "토론 삼성 직접": sc["news_samsung_score"], "토론 반도체": sc["news_semis_score"],
+           "토론 거시": sc["news_macro_score"], "토론 하락 위험(−)": -sc["news_downside_risk"],
+           "추출 합계": d["f_total"], "추출 삼성 직접": d["f_samsung_direct"], "추출 반도체 AI": d["f_semi_ai"], "추출 거시": d["f_macro"],
+           "추출 새 기사 합계": d[[f"f_{c}_new" for c in news_signal.FEATURE_CATS]].sum(axis=1), "추출 하락 위험 합(−)": -d["f_risk_sum"]}
+    for name, sig in inp["models"].items():
+        if len(sig):
+            out[f"{name} 상승−하락 확률"] = sig["p_상승"] - sig["p_하락"]
+    num = inp["numeric"]
+    out["기준선: 운영 숫자 모델"] = num["p_상승"] - num["p_하락"]
+    out["기준선: 5일 모멘텀"] = (close.shift(1) / close.shift(6) - 1)
+    out["기준선: 전날 SOX"] = prev_sox
+    return {k: v.reindex(d.index) for k, v in out.items()}
+
+
+def judge_day9(inp: dict, targets: pd.DataFrame) -> dict:
+    """확인 구간에서 V1·V2·A1 을 한 번 판정한다(장부 기준 그대로)."""
+    from sklearn.metrics import roc_auc_score  # noqa: F401  (위험 AUC 는 리포트 표에서 쓴다)
+    from src.pipeline.labels import make_risk_labels
+    lo, hi = (pd.Timestamp(x) for x in config.DAY9_CONFIRM_PERIOD)
+    close = inp["close"][inp["close"].index <= pd.Timestamp(config.DAY9_JUDGE_PRICE_END)]  # 판정 당시 가격으로 고정
+    labels, num, risk = make_labels(close), inp["numeric"], make_risk_labels(close)["risk"]
+    targets = targets.assign(r5=close.shift(-config.LABEL_HORIZON_DAYS) / close - 1)
+    out = {"price_end": config.DAY9_JUDGE_PRICE_END}
+    v1 = inp["models"]["V1"]
+    v1c = v1[(v1.index >= lo) & (v1.index <= hi)] if len(v1) else v1
+    m = score_metrics(v1c["p_상승"] - v1c["p_하락"], targets["r5"], config.LABEL_HORIZON_DAYS - 1) if len(v1c) else {"ic": float("nan"), "spread": float("nan"), "n": 0}
+    out["V1"] = {**m, "passed": bool(m["n"] >= config.DAY9_MIN_SAMPLES and m["ic"] > 0 and m["spread"] > 0)}
+    v2 = inp["models"]["V2"]
+    days = num.index[(num.index >= lo) & (num.index <= hi)]
+    if len(v2) and len(days):
+        v2s = v2["signal"].reindex(days).dropna()
+        days = v2s.index
+        known = labels["label"].reindex(days).dropna()
+        acc_v2 = float((v2s.reindex(known.index) == known).mean())
+        acc_num = float((num["signal"].reindex(known.index) == known).mean())
+        eq_v2 = bt.simulate(v2s, close, close * float("nan"), "cash")["equity"]
+        eq_num = bt.simulate(num["signal"].reindex(days), close, close * float("nan"), "cash")["equity"]
+        s2, sn = bt.summary(eq_v2), bt.summary(eq_num)
+        out["V2"] = {"n": len(days), "n_matured": len(known), "acc": acc_v2, "acc_operational": acc_num, "v2": s2, "operational": sn,
+                     "passed": bool(acc_v2 >= acc_num and s2["calmar"] > sn["calmar"] and abs(s2["mdd"]) <= abs(sn["mdd"]))}
+    else:
+        out["V2"] = {"n": 0, "passed": False}
+    al = inp["alerts"]
+    confirm_days = inp["daily"].index[(inp["daily"].index >= lo) & (inp["daily"].index <= hi)]
+    known = risk.reindex(confirm_days).dropna()
+    alert_days = [t for t in al.index if t in known.index]
+    precision = float(known.reindex(alert_days).mean()) if alert_days else float("nan")
+    base = float(known.mean()) if len(known) else float("nan")
+    lift = precision / base if alert_days and base > 0 else float("nan")
+    out["A1"] = {"n_alerts": len(alert_days), "precision": precision, "base": base, "lift": lift,
+                 "recall": float(known.reindex(alert_days).sum() / known.sum()) if known.sum() else float("nan"),
+                 "by_level": {lv: int((al.loc[alert_days, "level"] == lv).sum()) for lv in ("HIGH", "MEDIUM")} if alert_days else {},
+                 "passed": bool(len(alert_days) >= config.ALERT_MIN_COUNT and lift >= config.ALERT_MIN_LIFT)}
+    return out
+
+
+def news_study(save: bool = True) -> dict:
+    """9일차 뉴스 평가 리포트: 점수별 IC·적중률·상하위 수익 차·Newey-West t, 구간(LLM 학습 데이터 안/뒤, 고르기/확인) 분리, 위험 점수 AUC, 확인 판정."""
+    from sklearn.metrics import roc_auc_score
+    inp = news_study_inputs()
+    targets = news_targets(inp)
+    table = news_scores_table(inp)
+    cutoff = pd.Timestamp(config.LLM_KNOWLEDGE_CUTOFF.get(llm_model_id(), "1900-01-01"))
+    periods = {"전체": (None, None), "LLM 학습 데이터 안": (None, cutoff), "LLM 학습 뒤": (cutoff + pd.Timedelta(days=1), None),
+               "고르기": tuple(pd.Timestamp(x) for x in config.DAY9_SELECT_PERIOD), "확인": tuple(pd.Timestamp(x) for x in config.DAY9_CONFIRM_PERIOD)}
+    rows = []
+    for name, score in table.items():
+        for pname, (lo, hi) in periods.items():
+            s = score[(score.index >= (lo or score.index.min())) & (score.index <= (hi or score.index.max()))]
+            for tgt, lag in (("r5", config.LABEL_HORIZON_DAYS - 1), ("x5", config.LABEL_HORIZON_DAYS - 1), ("r1", 0), ("oc1", 0)):
+                rows.append({"점수": name, "구간": pname, "대상": tgt, **score_metrics(s, targets[tgt], lag)})
+    metrics = pd.DataFrame(rows)
+    risk = inp["risk"]
+    auc_rows = []
+    for name in ("토론 하락 위험(−)", "추출 하락 위험 합(−)"):
+        d = pd.concat([-table[name], risk], axis=1).dropna()
+        auc_rows.append({"점수": name.replace("(−)", ""), "n": len(d),
+                         "AUC": float(roc_auc_score(d.iloc[:, 1], d.iloc[:, 0])) if d.iloc[:, 1].nunique() == 2 else float("nan")})
+    verdict = judge_day9(inp, targets)
+    report = news_study_report(metrics, pd.DataFrame(auc_rows), verdict, inp, cutoff)
+    if save:
+        Path(config.DAY9_REPORT_PATH).write_text(report, encoding="utf-8", newline="\n")
+        out_dir = Path(config.EXPERIMENT_DIR)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        metrics.to_csv(out_dir / "day9_news_metrics.csv", index=False, encoding="utf-8-sig")
+    return {"metrics": metrics, "verdict": verdict, "report": report}
+
+
+def llm_model_id() -> str:
+    """기사 피처를 뽑은 채점 모델 ID."""
+    from src import llm
+    return llm.scoring_model_id()
+
+
+def news_study_report(metrics: pd.DataFrame, auc: pd.DataFrame, verdict: dict, inp: dict, cutoff: pd.Timestamp) -> str:
+    """9일차 뉴스 평가 리포트 본문."""
+    f = lambda v, p=3: "-" if pd.isna(v) else f"{v:.{p}f}"
+    pct = lambda v: "-" if pd.isna(v) else f"{v:.1%}"
+    n_days = len(inp["daily"])
+    lines = [f"# 9일차 뉴스 신호 고도화 평가", "",
+             f"> 작성 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} · 계획 [DAY9_PLAN.md](../../DAY9_PLAN.md) · 장부 V1·V2·A1 · "
+             f"기사 피처 {n_days}일(프롬프트 버전 {config.FEATURE_PROMPT_VERSION}, {llm_model_id()}, 회사명 익명화)",
+             f"> LLM 학습 데이터 기준 {cutoff.date()} (공식 모델 문서). 그 전 구간은 모델이 결과를 기억할 수 있어 따로 본다.",
+             "> **확인 구간 판정(아래 1절)만 사전 등록 판정이고, 나머지 숫자는 모두 탐색이다.** 운영 신호는 바꾸지 않는다.", "",
+             f"## 1. 확인 구간 판정 ({config.DAY9_CONFIRM_PERIOD[0]} ~ {config.DAY9_CONFIRM_PERIOD[1]}, 후보마다 1회, 가격 {config.DAY9_JUDGE_PRICE_END} 까지로 고정)", "",
+             "| ID | 결과 | 숫자 |", "|---|---|---|"]
+    v1, v2, a1 = verdict["V1"], verdict["V2"], verdict["A1"]
+    lines.append(f"| V1 뉴스만 로지스틱 | **{'통과' if v1['passed'] else '불통과'}** | IC {f(v1.get('ic'))}, 상하위 20% 5일 수익 차 {pct(v1.get('spread'))}, 표본 {v1.get('n', 0)}일 |")
+    if v2.get("n"):
+        lines.append(f"| V2 숫자 + 뉴스 | **{'통과' if v2['passed'] else '불통과'}** | 정확도 {pct(v2['acc'])} vs 운영 {pct(v2['acc_operational'])} "
+                     f"(정답 확정 {v2['n_matured']}일) · 수익 {pct(v2['v2']['total_return'])} / MDD {pct(v2['v2']['mdd'])} / 칼마 {f(v2['v2']['calmar'], 2)}"
+                     f" vs 운영 {pct(v2['operational']['total_return'])} / {pct(v2['operational']['mdd'])} / {f(v2['operational']['calmar'], 2)} |")
+    else:
+        lines.append("| V2 숫자 + 뉴스 | **불통과** | 확인 구간 신호 없음 |")
+    lines.append(f"| A1 하락 위험 경보 | **{'통과' if a1['passed'] else '불통과'}** | 경보 {a1['n_alerts']}건 {a1.get('by_level', {})}, 정밀도 {pct(a1['precision'])}"
+                 f" vs 전체 {pct(a1['base'])} (lift {f(a1['lift'], 2)}), 재현율 {pct(a1['recall'])} |")
+    lines += ["", "통과 기준: V1 IC > 0 이고 수익 차 > 0 · V2 정확도 ≥ 운영, 칼마 > 운영, MDD 가 더 깊지 않음 · "
+              f"A1 경보 {config.ALERT_MIN_COUNT}건 이상, lift ≥ {config.ALERT_MIN_LIFT}. 확인 구간 정답 확정 {v1.get('n', 0)}일은 "
+              f"{config.LABEL_HORIZON_DAYS}일 겹침을 빼면 독립 표본이 약 {v1.get('n', 0) // config.LABEL_HORIZON_DAYS}개라 작다. "
+              f"V1 은 계산 가능 조건으로 표본 {config.DAY9_MIN_SAMPLES}일 이상을 함께 본다.", ""]
+    lines += ["## 2. 점수별 정보량 — 5일 수익률 (탐색)", "",
+              "IC = 점수와 미래 수익률의 순위 상관, 적중 = 점수 부호와 수익 부호 일치(점수 0 제외), 차 = 상위 20% − 하위 20% 평균 수익, "
+              "NW t = 겹침 보정 t 값(지연 4). 하락 위험은 부호를 바꿔 '높을수록 상승'으로 맞췄다.", ""]
+    for period in ("전체", "LLM 학습 데이터 안", "LLM 학습 뒤", "고르기", "확인"):
+        sub = metrics[(metrics["구간"] == period) & (metrics["대상"] == "r5")]
+        lines += [f"### {period}", "", "| 점수 | 표본 | IC | 적중 | 상하위 차 | NW t |", "|---|---|---|---|---|---|"]
+        lines += [f"| {r['점수']} | {r['n']} | {f(r['ic'])} | {pct(r['hit'])} | {pct(r['spread'])} | {f(r['nw_t'], 2)} |" for _, r in sub.iterrows()]
+        lines.append("")
+    lines += ["## 3. 다른 기간과 초과수익 (전체 구간, 탐색)", "", "| 점수 | 1일 IC | 다음 날 시가→종가 IC | 5일 IC | 5일 코스피 초과 IC | 5일 초과 NW t |",
+              "|---|---|---|---|---|---|"]
+    allp = metrics[metrics["구간"] == "전체"].set_index(["점수", "대상"])
+    for name in metrics["점수"].unique():
+        g = lambda t, k="ic": allp.loc[(name, t), k] if (name, t) in allp.index else float("nan")
+        lines.append(f"| {name} | {f(g('r1'))} | {f(g('oc1'))} | {f(g('r5'))} | {f(g('x5'))} | {f(g('x5', 'nw_t'), 2)} |")
+    lines += ["", "## 4. 하락 위험 점수의 구분력 (전체 구간, 탐색)", "", "정답: 5거래일 안 최저 종가가 -3% 이하로 내려갔는가(5일차 하락 위험 정의).", "",
+              "| 점수 | 표본 | AUC |", "|---|---|---|"]
+    lines += [f"| {r['점수']} | {r['n']} | {f(r['AUC'])} |" for _, r in auc.iterrows()]
+    al = inp["alerts"]
+    lines += ["", f"## 5. 경보 이력 (전체 {len(al)}건, 탐색)", "",
+              f"월 평균 {len(al) / max(len(inp['daily']) / 21, 1):.1f}건 · HIGH {int((al['level'] == 'HIGH').sum()) if len(al) else 0}건 · "
+              f"MEDIUM {int((al['level'] == 'MEDIUM').sum()) if len(al) else 0}건. 근거 기사 제목은 기사 원문 정책상 이 리포트에 싣지 않고 "
+              f"`{config.ALERTS_PATH}`(git 제외)와 메일에서 본다.", ""]
+    return "\n".join(lines) + "\n"
+
+
 def main(argv=None):
     """예: python -m src.pipeline.experiment --vary horizon_days=3,5,10 --vary down_action=cash,inverse"""
     parser = argparse.ArgumentParser(description="조건 비교 실험 (탐색)")
@@ -693,7 +913,13 @@ def main(argv=None):
     parser.add_argument("--monitor", action="store_true", help="사전 등록한 조건으로 모니터링 리포트를 만든다")
     parser.add_argument("--features", action="store_true", help="지표 그룹 진단과 추천 리포트를 만든다")
     parser.add_argument("--ext", action="store_true", help="4일차 확장 검증 구간(처음 보는 구간)에서 비교한다")
+    parser.add_argument("--news", action="store_true", help="9일차 뉴스 평가 리포트(기사 피처·V1·V2·A1)를 만든다")
     args = parser.parse_args(argv)
+    if args.news:
+        result = news_study()
+        print({k: v.get("passed") for k, v in result["verdict"].items() if isinstance(v, dict)})
+        print("저장:", config.DAY9_REPORT_PATH)
+        return
     if args.features:
         result = feature_study(Data(extended=args.ext))
         rec = result["recommended"]

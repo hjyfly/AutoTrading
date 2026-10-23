@@ -1,7 +1,9 @@
 """Streamlit 화면. 실행: .venv\\Scripts\\streamlit run src/ui.py
 
-왼쪽은 질의응답(에이전트), 오른쪽은 선택한 날짜 기준의 신호·차트·지표·판단 기록·뉴스다.
-오른쪽 데이터는 모두 도구 함수(src/tools.py)로 읽으므로, 선택한 날짜 시점에 알 수 있던 정보만 보인다.
+사이드바에서 종목(삼성전자·SK하이닉스·한화에어로스페이스·레인보우로보틱스)과 기준 날짜를 고른다.
+탭은 질의응답(에이전트), 고른 종목·날짜의 신호·차트·지표(뉴스·판단 기록은 삼성전자만), 리포트·조건 비교다.
+데이터는 모두 도구 함수(src/tools.py)로 읽으므로, 선택한 날짜 시점에 알 수 있던 정보만 보인다.
+매매·주문 대상은 삼성전자뿐이고, 다른 종목은 성적표로 판정하는 신호만 보여 준다(SERVICE.md 5.6).
 """
 import sys
 from pathlib import Path
@@ -17,12 +19,21 @@ import streamlit as st
 from src import agent, config, llm, tools
 from src.pipeline import experiment, live_signal, news_signal, scoreboard
 
-st.set_page_config(page_title=f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
+st.set_page_config(page_title=f"AutoTrading {config.LABEL_HORIZON_DAYS}거래일 신호", layout="wide")
 
 
 @st.cache_data(ttl=600)
-def load_signals() -> pd.DataFrame:
-    """검증 구간 신호와 실시간으로 만든 신호를 합친다(뉴스 보정은 config.NEWS_ADJUST_IN_SIGNAL 일 때만 반영)."""
+def load_signals(code: str = config.SAMSUNG_CODE) -> pd.DataFrame:
+    """검증 구간 신호와 실시간으로 만든 신호를 합친다(뉴스 보정은 config.NEWS_ADJUST_IN_SIGNAL 일 때만 반영).
+    다른 종목은 그 종목 알고리즘의 워크포워드 신호(8일차)에 실시간 기록을 덮어 쓴다."""
+    if code != config.SAMSUNG_CODE:
+        path = Path(config.SECTOR_DIR) / f"signals_{tools.ticker_algorithm(code)}_{code}.parquet"
+        stored = pd.read_parquet(path)[["signal", "confidence"]] if path.exists() else pd.DataFrame(columns=["signal", "confidence"])
+        if Path(config.MULTI_LIVE_PATH).exists():
+            live = pd.read_parquet(config.MULTI_LIVE_PATH)
+            live = live[live["code"] == code][["signal", "confidence"]]
+            stored = pd.concat([stored[~stored.index.isin(live.index)], live]).sort_index()
+        return stored
     numeric = pd.read_parquet(config.SIGNALS_NUMERIC_PATH)[["signal", "confidence"]]
     news = news_signal.load_matching() if config.NEWS_ADJUST_IN_SIGNAL else pd.DataFrame()  # 뉴스 보정을 끄면 숫자 신호 그대로
     if len(news):
@@ -38,9 +49,11 @@ def load_signals() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
-def load_prices() -> pd.Series:
-    """저장된 삼성전자 종가."""
-    return pd.read_parquet(Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet")["Close"].astype(float)
+def load_prices(code: str = config.SAMSUNG_CODE) -> pd.Series:
+    """저장된 종가(삼성전자는 기존 원본, 다른 종목은 data/raw/tickers)."""
+    path = (Path(config.RAW_DIR) / "prices" / "samsung_ohlcv.parquet" if code == config.SAMSUNG_CODE
+            else Path(config.TICKER_RAW_DIR) / f"{code}_ohlcv.parquet")
+    return pd.read_parquet(path)["Close"].astype(float)
 
 
 @st.cache_resource
@@ -164,11 +177,11 @@ def load_equity() -> pd.DataFrame:
     return pd.read_parquet(Path(config.PROCESSED_DIR) / f"equity_numeric_{config.DOWN_ACTION}.parquet")
 
 
-def price_chart(as_of: pd.Timestamp, days: int) -> alt.Chart:
+def price_chart(as_of: pd.Timestamp, days: int, code: str = config.SAMSUNG_CODE) -> alt.Chart:
     """선택한 날짜 전날까지의 종가와 그 기간의 신호 표시."""
-    close = load_prices()
+    close = load_prices(code)
     close = close[close.index < as_of].tail(days)
-    signals = load_signals().reindex(close.index).dropna()
+    signals = load_signals(code).reindex(close.index).dropna()
     base = pd.DataFrame({"date": close.index, "close": close.values})
     marks = pd.DataFrame({"date": signals.index, "close": close.reindex(signals.index).values, "signal": signals["signal"].values})
     line = alt.Chart(base).mark_line().encode(x=alt.X("date:T", title=None), y=alt.Y("close:Q", title="종가", scale=alt.Scale(zero=False)))
@@ -191,16 +204,88 @@ def equity_chart(as_of: pd.Timestamp) -> alt.Chart | None:
                                               color="전략:N").properties(height=260)
 
 
-# ---- 사이드바: 기준 날짜, 오늘 신호 만들기, 비용 ----
+def _mark(v) -> str:
+    """성공 기준 표시."""
+    return "-" if v is None else ("통과" if v else "실패")
+
+
+def samsung_board_view(board: dict):
+    """삼성전자 운영·비교 모델 성적표(요약 줄, 기준 표, 자산 곡선)."""
+    st.markdown("**삼성전자 운영·비교 모델**")
+    for line in scoreboard.summary_lines(board):
+        (st.warning if "경고" in line else st.write)(line)
+    rows = [{"모델": s["title"], "판정 상태": s["criteria"]["status"], "A 위험 대비 수익": _mark(s["criteria"]["A"]["passed"]),
+             "B 하락 신호 적중": _mark(s["criteria"]["B"]["passed"]), "C 반등 지키기": _mark(s["criteria"]["C"]["passed"]),
+             "승격": ("검토 대상" if s["promotion"]["eligible"] else "아님") if "promotion" in s else "운영"}
+            for s in board.get("models", {}).values() if s.get("criteria")]
+    if rows:
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
+    if curves:
+        st.line_chart(pd.DataFrame(curves))
+
+
+def tickers_board_view(board: dict, only: str | None = None):
+    """다른 종목 최근 신호와 성적표. only 를 주면 그 종목만 보여 준다."""
+    st.caption("종목마다 쓰는 알고리즘(S0 단독·S4 분야 공동 학습)으로 매일 기록한 신호를 그 종목 들고 있기와 같은 기준 A·B·C 로 채점한다.")
+    if Path(config.MULTI_LIVE_PATH).exists():
+        recent = scoreboard.load_ticker_live()
+        if only:
+            recent = recent[recent["code"] == only]
+        if len(recent):
+            recent = recent[recent.index == recent.index.max()]
+            in_time = scoreboard.realtime_mask(recent)
+            st.markdown(f"**최근 신호 ({recent.index.max().date()})**")
+            st.dataframe(pd.DataFrame({
+                "종목": [f"{config.MULTI_TICKERS.get(c, (c,))[0]}({c})" for c in recent["code"]],
+                "신호": recent["signal"].values, "확신도": [f"{v:.0%}" for v in recent["confidence"]],
+                "알고리즘": recent["model"].values,
+                "기록": ["실시간" if ok else "사후(성적 제외)" for ok in in_time]}), width="stretch", hide_index=True)
+    entries = {k: v for k, v in board.get("tickers", {}).items() if only is None or v.get("code") == only}
+    if not entries:
+        st.info("아직 이 종목의 실시간 성적이 없다. 평일 15:20 자동 실행 기록부터 쌓인다.")
+        return
+    for s in entries.values():
+        line = scoreboard.entry_line(s)
+        (st.warning if "경고" in line else st.write)(line)
+    rows = [{"종목·알고리즘": s["title"], "정답 확정": s["n_matured"],
+             "정확도": "-" if s["accuracy"] is None else f"{s['accuracy']:.0%}",
+             "판정 상태": s["criteria"]["status"] if "criteria" in s else "-",
+             "A": _mark(s["criteria"]["A"]["passed"]) if "criteria" in s else "-",
+             "B": _mark(s["criteria"]["B"]["passed"]) if "criteria" in s else "-",
+             "C": _mark(s["criteria"]["C"]["passed"]) if "criteria" in s else "-"}
+            for s in entries.values()]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    curves = {s["title"]: pd.Series(s["equity"]) for s in entries.values() if "equity" in s}
+    if curves:
+        st.line_chart(pd.DataFrame(curves))
+
+
+# ---- 사이드바: 종목, 기준 날짜, 오늘 신호 만들기, 비용 ----
 with st.sidebar:
+    st.header("종목")
+    code = st.selectbox("신호를 볼 종목", list(config.MULTI_TICKERS),
+                        format_func=lambda c: f"{config.MULTI_TICKERS[c][0]} ({c})" + (" · 운영·매매" if c == config.SAMSUNG_CODE else ""))
+    name = tools.ticker_name(code)
+    is_samsung = code == config.SAMSUNG_CODE
     st.header("기준 날짜")
     picked = st.date_input(f"이 날짜 {config.SIGNAL_CUTOFF_KST} 시점으로 봄", value=tools.resolve_as_of(None).date())
     as_of = pd.Timestamp(picked)
     use_date_in_chat = st.checkbox("질문에 날짜가 없으면 이 날짜로 묻기", value=True)
     st.divider()
     st.header("신호 만들기")
-    st.caption(f"저장된 신호는 {config.DATA_END} 까지. 그 뒤 날짜는 실시간 데이터로 만든다.")
-    if st.button("숫자 모델 신호 만들기"):
+    st.caption(f"삼성전자 저장 신호는 {config.DATA_END} 까지. 그 뒤 날짜는 실시간 데이터로 만든다. "
+               "평일 15:20 자동 실행이 네 종목 신호를 모두 기록하므로 보통은 누르지 않아도 된다.")
+    if not is_samsung and st.button("다른 종목 신호 만들기 (3종목)"):
+        with st.spinner("다른 종목 원본을 덧붙이고 신호를 만드는 중"):
+            try:
+                from src.pipeline import multi_ticker
+                multi_ticker.refresh(as_of)
+                st.write("\n".join(multi_ticker.summary_lines(multi_ticker.live_signals(str(as_of.date())))))
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"실패: {e}")
+    if is_samsung and st.button("숫자 모델 신호 만들기"):
         with st.spinner("실시간 데이터로 학습·예측 중"):
             try:
                 live_signal.make_signal(str(as_of.date()))
@@ -208,7 +293,7 @@ with st.sidebar:
                 st.success("완료")
             except Exception as e:
                 st.error(f"실패: {e}")
-    if st.button("뉴스 채점까지, 참고용 (약 $0.15, 2~3분)"):
+    if is_samsung and st.button("뉴스 채점까지, 참고용 (약 $0.15, 2~3분)"):
         with st.spinner("뉴스 수집·채점 중"):
             try:
                 out = live_signal.make_signal(str(as_of.date()), with_news=True)
@@ -220,10 +305,13 @@ with st.sidebar:
     spent = llm.total_cost()
     st.metric("LLM 누적 비용", f"${spent:.2f}", help=f"한도 ${config.COST_LIMIT_POC_USD:.0f}")
     st.progress(min(spent / config.COST_LIMIT_POC_USD, 1.0))
-    st.caption(f"모의 매매 규칙: 하락 신호 = {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}")
+    st.caption(f"모의 매매 규칙: 하락 신호 = {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}. 주문은 삼성전자만, 사람이 직접 한다.")
     st.caption("투자 권유가 아니라 모델 판단의 설명이다.")
 
-st.title(f"삼성전자 {config.LABEL_HORIZON_DAYS}거래일 방향 신호 · {as_of.date()} {config.SIGNAL_CUTOFF_KST} 기준")
+st.title(f"{name} {config.LABEL_HORIZON_DAYS}거래일 방향 신호 · {as_of.date()} {config.SIGNAL_CUTOFF_KST} 기준")
+if not is_samsung:
+    st.caption(f"정식 신호(실시간 성적표로 판정) · 매매·주문 대상 아님 · 알고리즘 {tools.ticker_algorithm(code)} "
+               "· 뉴스 채점·판단 기록·공시는 삼성전자만 있다")
 tab_ask, tab_data, tab_report = st.tabs(["질의응답", "신호·데이터", "리포트·조건 비교"])
 
 # ---- 리포트·조건 비교 (고른 날짜와 상관없는 탐색) ----
@@ -232,11 +320,15 @@ with tab_report:
 
 # ---- 신호·데이터 (고른 날짜 시점) ----
 with tab_data:
-    sig = tools.signal_for(str(as_of.date()))
+    sig = tools.signal_for(str(as_of.date()), code)
     c1, c2, c3 = st.columns(3)
     final = sig.get("with_news", {}).get("signal") or sig.get("numeric", {}).get("signal")
     c1.metric("최종 신호", final or "없음")
-    if "numeric" in sig:
+    if not is_samsung and "numeric" in sig:
+        c2.metric("확신도", f"{sig['numeric']['confidence']:.0%}")
+        c3.metric("알고리즘", sig["numeric"]["algorithm"])
+        st.caption(f"출처: {sig['numeric']['source']}")
+    if is_samsung and "numeric" in sig:
         c2.metric("숫자 모델", sig["numeric"]["signal"], f"확신도 {sig['numeric']['confidence']:.0%}", delta_color="off")
     if "with_news" in sig:
         news_note = ("보정됨" if sig["with_news"]["adjusted"] else "보정 없음") if config.NEWS_ADJUST_IN_SIGNAL else "참고용"
@@ -245,7 +337,7 @@ with tab_data:
         st.caption(f"비교용 후보 모델(A+B+D 지표 추가): **{sig['candidate']['signal']}** (확신도 {sig['candidate']['confidence']:.0%}) "
                    "— 최종 신호가 아니며 앞으로의 성과로 기존 모델과 비교 중")
     live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
-    if live_path.exists():  # 그날 실시간으로 기록한 비교 줄(최종 신호 아님). 그날 기록이라 고른 날짜 시점 규칙을 지킨다
+    if is_samsung and live_path.exists():  # 그날 실시간으로 기록한 비교 줄(최종 신호 아님). 그날 기록이라 고른 날짜 시점 규칙을 지킨다
         live = pd.read_parquet(live_path)
         today_rows = live[(live.index == as_of.normalize()) & live["model"].isin([*config.LIVE_EXTRA_FEATURE_SETS, config.LIVE_RISK_MODEL])]
         for model, r in today_rows.set_index("model").iterrows():
@@ -254,17 +346,17 @@ with tab_data:
                            f"(위험 확률 {float(r['p_risk']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
             else:
                 st.caption(f"비교용 지표 묶음 `{model}`: **{r['signal']}** (확신도 {float(r['confidence']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
-    if "note" in sig:
+    if "note" in sig and (is_samsung or "numeric" not in sig):
         st.info(sig["note"])
 
     tab_chart, tab_ind, tab_judge, tab_news, tab_perf, tab_live = st.tabs(
         ["가격·신호", "지표", "판단 기록", "뉴스", "성과", "실시간 성적"])
     with tab_chart:
         days = st.slider("기간(거래일)", 20, 250, 120)
-        st.altair_chart(price_chart(as_of, days), width="stretch")
+        st.altair_chart(price_chart(as_of, days, code), width="stretch")
     with tab_ind:
         try:
-            ind = tools.indicators(str(as_of.date()))
+            ind = tools.indicators(str(as_of.date()), code)
             left, right = st.columns(2)
             left.subheader("차트·수급 (전날 종가 기준)")
             left.dataframe(pd.Series(ind["chart_and_flow"], name="값"), width="stretch")
@@ -275,7 +367,7 @@ with tab_data:
         except Exception as e:
             st.warning(f"지표를 계산하지 못했다: {e}")
     with tab_judge:
-        j = tools.news_judgement(str(as_of.date()))
+        j = tools.news_judgement(str(as_of.date())) if is_samsung else {"note": "뉴스 채점·판단 기록은 삼성전자만 있다. 다른 종목은 숫자 모델 신호만 낸다"}
         if "final" not in j:
             st.info(j.get("note", "판단 기록 없음"))
         else:
@@ -291,14 +383,39 @@ with tab_data:
                 with st.expander(f"{name}: {o['score']:+d} (확신도 {o['confidence']:.2f})"):
                     st.write(o["rationale"])
                     st.caption(f"토론 뒤: {o['change_reason']}")
+        if is_samsung:
+            feats = tools.news_features(str(as_of.date()))
+            st.markdown("**기사별 추출 (9일차, 참고)**")
+            if "articles" not in feats:
+                st.caption(feats["note"])
+            else:
+                if feats["alert"]:
+                    from src.pipeline import news_signal
+                    st.warning(news_signal.render_alert(as_of, feats["alert"], config.DAY9_ALERT_STATUS))
+                v1 = feats.get("v1")
+                if v1 and "signal" in v1:
+                    st.caption(f"뉴스 모델 V1(참고, 장부 V1 확인 통과 · 운영 신호 아님): **{v1['signal']}** "
+                               f"(상승−하락 확률 {v1['score']:+.2f}, {v1['retrained_on']} 재학습, 학습 {v1['train_rows']}행)")
+                st.caption(f"회사명을 익명(A사)으로 바꿔 기사마다 뽑았다 · 그날 모은 기사 {feats['n_collected']}건 · 프롬프트 버전 {feats['prompt_version']}")
+                table = pd.DataFrame(feats["articles"])
+                if len(table):
+                    table["one_line_summary"] = table["one_line_summary"].str.replace(config.ANONYMIZED_NAME, "삼성전자")
+                    st.dataframe(table.rename(columns={"published_kst": "발행(KST)", "title": "제목", "category": "분류", "event_type": "사건",
+                                                       "direction": "방향", "magnitude": "크기", "novelty": "새로움", "downside_risk": "하락 위험",
+                                                       "relevance": "관련도", "one_line_summary": "한 줄 요약"}), width="stretch", hide_index=True)
     with tab_news:
+        if not is_samsung:
+            st.info("뉴스는 삼성전자 관련 기사만 모은다. 아래는 같은 날 삼성전자 뉴스(시장 전반 참고용)다.")
         n = tools.news_for_signal(str(as_of.date()), limit=30)
         st.caption(n["source"])
         if n["articles"]:
             st.dataframe(pd.DataFrame(n["articles"])[["published_kst", "source", "title"]], width="stretch", hide_index=True)
     with tab_perf:
-        chart = equity_chart(as_of)
-        if chart is None:
+        chart = equity_chart(as_of) if is_samsung else None
+        if not is_samsung:
+            st.info("과거 검증 구간 자산 곡선은 삼성전자만 있다. 다른 종목의 과거 비교는 7·8일차 리포트"
+                    "(day7_multi_ticker.md·day8_sector_models.md), 앞으로의 성적은 '실시간 성적' 탭에서 본다.")
+        elif chart is None:
             st.info(f"검증 구간({config.VALID_START}~) 이전 날짜다.")
         else:
             st.caption(f"선택한 날짜 전까지의 모의 매매 자산 곡선(운영 모델 {len(config.FEATURE_SET_BASE)}개 지표·재학습 "
@@ -307,8 +424,8 @@ with tab_data:
                        f"공식 판정은 1~3일차 {len(config.FEATURE_SET_BASE_V1)}개 지표·매월 재학습·하락=인버스 모델이다(day3_backtest.md).")
             st.altair_chart(chart, width="stretch")
     with tab_live:
-        st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다(②안). "
-                   "운영·비교 모델을 SERVICE.md 5절 성공 기준(A 위험 대비 수익, B 하락 신호 적중, C 반등 지키기)으로 판정한다. "
+        st.caption(f"평일 자동 실행으로 장 마감 전에 기록한 신호를 {config.LABEL_HORIZON_DAYS}거래일 뒤 정답이 확정되는 대로 채점한다. "
+                   "삼성전자 운영·비교 모델과 다른 종목을 SERVICE.md 5절 성공 기준(A 위험 대비 수익, B 하락 신호 적중, C 반등 지키기)으로 판정한다. "
                    f"확정 신호 {config.LIVE_PROMOTION_MIN_SIGNALS}개 전까지는 참고 값이다. 장 마감 뒤에 만든 사후 기록은 제외한다.")
         if st.button("성적표 새로 계산"):
             with st.spinner("계산 중"):
@@ -319,47 +436,16 @@ with tab_data:
         else:
             board = json.loads(board_path.read_text(encoding="utf-8"))
             st.caption(f"계산 시각 {board['updated_at']} · 가격 마지막 날 {board.get('price_last_date', '-')}")
-            for line in scoreboard.summary_lines(board):
-                (st.warning if "경고" in line else st.write)(line)
-            rows = []
-            for s in board.get("models", {}).values():
-                c = s.get("criteria")
-                if not c:
-                    continue
-                mark = lambda v: "-" if v is None else ("통과" if v else "실패")
-                rows.append({"모델": s["title"], "판정 상태": c["status"], "A 위험 대비 수익": mark(c["A"]["passed"]),
-                             "B 하락 신호 적중": mark(c["B"]["passed"]), "C 반등 지키기": mark(c["C"]["passed"]),
-                             "승격": ("검토 대상" if s["promotion"]["eligible"] else "아님") if "promotion" in s else "운영"})
-            if rows:
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-            curves = {s["title"]: pd.Series(s["equity"]) for s in board.get("models", {}).values() if "equity" in s}
-            if curves:
-                st.line_chart(pd.DataFrame(curves))
-            st.subheader("다른 종목 (SERVICE.md 5.6, 매매·주문 대상 아님)")
-            st.caption("종목마다 쓰는 알고리즘(S0 단독·S4 분야 공동 학습)으로 매일 기록한 신호를 그 종목 들고 있기와 같은 기준 A·B·C 로 채점한다.")
-            ticker_path = Path(config.MULTI_LIVE_PATH)
-            if ticker_path.exists():
-                recent = scoreboard.load_ticker_live()
-                recent = recent[recent.index == recent.index.max()]
-                in_time = scoreboard.realtime_mask(recent)
-                st.markdown(f"**최근 신호 ({recent.index.max().date()})**")
-                st.dataframe(pd.DataFrame({
-                    "종목": [f"{config.MULTI_TICKERS.get(c, (c,))[0]}({c})" for c in recent["code"]],
-                    "신호": recent["signal"].values, "확신도": [f"{v:.0%}" for v in recent["confidence"]],
-                    "알고리즘": recent["model"].values,
-                    "기록": ["실시간" if ok else "사후(성적 제외)" for ok in in_time]}), width="stretch", hide_index=True)
-            for line in scoreboard.ticker_lines(board):
-                (st.warning if "경고" in line else st.write)(line)
-            mark = lambda v: "-" if v is None else ("통과" if v else "실패")
-            rows = [{"종목·알고리즘": s["title"], "정답 확정": s["n_matured"],
-                     "정확도": "-" if s["accuracy"] is None else f"{s['accuracy']:.0%}",
-                     "판정 상태": s["criteria"]["status"] if "criteria" in s else "-",
-                     "A": mark(s["criteria"]["A"]["passed"]) if "criteria" in s else "-",
-                     "B": mark(s["criteria"]["B"]["passed"]) if "criteria" in s else "-",
-                     "C": mark(s["criteria"]["C"]["passed"]) if "criteria" in s else "-"}
-                    for s in board.get("tickers", {}).values()]
-            if rows:
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            if is_samsung:
+                samsung_board_view(board)
+                st.subheader("다른 종목 (SERVICE.md 5.6, 매매·주문 대상 아님)")
+                tickers_board_view(board)
+            else:
+                st.subheader(f"{name} 실시간 성적 (SERVICE.md 5.6, 매매·주문 대상 아님)")
+                tickers_board_view(board, code)
+                with st.expander("삼성전자(운영) · 다른 종목 성적 보기"):
+                    samsung_board_view(board)
+                    tickers_board_view(board)
 
 # ---- 질의응답 ----
 with tab_ask:
@@ -372,11 +458,15 @@ with tab_ask:
             if turn.get("result"):
                 with st.expander(f"근거 {len(turn['result']['contexts'])}건 · 비용 ${turn['result']['trace'][-1].get('cost_usd', 0):.3f}"):
                     st.json({"trace": turn["result"]["trace"], "contexts": turn["result"]["contexts"]}, expanded=False)
-    question = st.chat_input("예: 이날 신호와 이유는? / 외국인 수급은? / 모델 성과는?")
+    st.caption("네 종목 신호·가격·수급·지표를 물을 수 있다. 뉴스·판단 기록·공시·성과는 삼성전자만 있다. "
+               "질문에 종목이 없으면 사이드바에서 고른 종목으로 묻는다.")
+    question = st.chat_input("예: 이날 신호와 이유는? / SK하이닉스 외국인 수급은? / 삼성전자 모델 성과는?")
     if question:
         asked = question
+        if not is_samsung and not any(v[0] in question or c in question for c, v in config.MULTI_TICKERS.items()):
+            asked = f"{name} {asked}"
         if use_date_in_chat and agent.extract_as_of(question) is None:
-            asked = f"{as_of.date()} 기준: {question}"
+            asked = f"{as_of.date()} 기준: {asked}"
         st.session_state.history.append({"role": "user", "content": asked})
         with st.spinner("답을 만드는 중 (20~40초)"):
             result = agent.answer(asked)

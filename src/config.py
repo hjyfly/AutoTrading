@@ -168,6 +168,41 @@ THROTTLE_RETRIES = 10  # Bedrock 요청 제한(Throttling) 때 다시 시도하�
 THROTTLE_WAIT_SEC = 60
 TRACES_DIR = "data/scores/traces"
 
+# 9일차 뉴스 고도화: 기사별 구조화 추출 (DAY9_PLAN.md 3절, 2026-10-23 사용자 요청. 장부 V1·V2·A1)
+# 채점 모델의 지식 기준(공식 모델 문서, Sonnet 4.6): 믿을 만한 지식 2025-08, 학습 데이터 2026-01. 리포트에서 이 날 전/후를 나눠 본다
+LLM_KNOWLEDGE_CUTOFF = {"global.anthropic.claude-sonnet-4-6": "2026-01-31"}
+FEATURE_PROMPT_VERSION = 1            # 추출 프롬프트 버전. 바꾸면 캐시를 다시 쓰지 않는다
+FEATURES_DIR = "data/scores/features"  # 날짜별 기사 피처(제목이 있어 git 제외)
+ANONYMIZE_TERMS = ["Samsung Electronics", "삼성전자", "Samsung", "삼성"]  # 추출 프롬프트에서 "A사"로 바꾼다(긴 것부터)
+ANONYMIZED_NAME = "A사"
+FEATURE_MAX_ATTEMPTS = 3              # 구조화 출력 형식 오류 때 다시 묻는 최대 횟수
+FEATURE_CONTEXT_DAYS = 3              # 새로움 판단용으로 보여 줄 직전 신호일 수
+FEATURE_CONTEXT_TITLES = 15           # 직전 신호일마다 보여 줄 제목 수(15:15 에 가까운 것부터)
+ARTICLE_CATEGORIES = ["samsung_direct", "semi_ai", "macro", "irrelevant"]
+ARTICLE_EVENTS = ["earnings", "guidance", "hbm_qualification", "customer_win_loss", "capex", "export_control", "tariff_trade",
+                  "rates", "fx", "litigation_regulation", "labor", "shareholder_return", "supply_chain", "geopolitics", "other"]
+NOVELTY_WEIGHTS = {"new": 1.0, "follow_up": 0.6, "rehash": 0.2}
+NEWS_VOLUME_WINDOW = 60               # 보도량 z 를 계산할 지난 신호일 수
+NEWS_MODEL_MIN_ROWS = 60              # V1·V2 로지스틱 회귀가 신호를 내기 시작하는 최소 학습 행 수
+NEWS_MODEL_C = 1.0                    # 로지스틱 회귀 규제 강도(표준화 뒤, 조정하지 않는다)
+DAY9_SELECT_PERIOD = ("2025-11-03", "2026-07-31")   # 고르기(학습 시작) 구간
+DAY9_CONFIRM_PERIOD = ("2026-08-03", "2026-10-20")  # 확인 구간(후보마다 한 번만)
+DAY9_REPORT_PATH = "evaluation/reports/day9_news.md"
+DAY9_JUDGE_PRICE_END = "2026-10-21"  # 확인 판정에 쓴 가격의 마지막 날(판정 1회 고정, 리포트를 다시 만들어도 판정 숫자가 바뀌지 않게)
+DAY9_MIN_SAMPLES = 10                 # IC 를 계산할 수 있는 최소 표본(판정 계산 조건, 확인 구간 48일이라 결과에 영향 없음)
+# A1 하락 위험 경보 (장부 A1, 결과를 본 뒤 바꾸지 않는다)
+ALERT_HIGH_RELEVANCE = 0.6            # HIGH: 이 관련도 이상, 하락 위험 3, 새 기사가 1건 이상
+ALERT_RISK_Z = 2.0                    # MEDIUM: 일별 하락 위험 합의 지난 60 신호일 z 가 이 값 이상
+ALERT_CONSENSUS_RISK = 4              # MEDIUM: 채점 버전 2 종합 하락 위험이 이 값 이상
+ALERT_EVIDENCE_MIN_RISK = 2           # 근거 기사 후보: 하락 위험 2 이상, 관련도 0.5 이상
+ALERT_EVIDENCE_MIN_RELEVANCE = 0.5
+ALERT_TOP_K = 3
+ALERT_COOLDOWN_DAYS = 2               # 같은 사건(사건 종류 + 제목 키)은 이 신호일 수 안에 다시 알리지 않는다(등급이 오르면 허용)
+ALERT_MIN_COUNT = 3                   # 판정: 확인 구간 경보 수 하한
+ALERT_MIN_LIFT = 1.2                  # 판정: 정밀도 ÷ 전체 하락 위험 비율 하한
+ALERTS_PATH = "data/scores/alerts/alerts.jsonl"
+DAY9_ALERT_STATUS = "확인 판정 불통과(lift 0.76) — 참고"  # 장부 A1 2026-10-23 판정. 경보 메일 머리에 표시
+
 # 미래 정보 유출 테스트 (DAY2_PLAN.md 3절, 기본값)
 # 채점 모델을 바꾸면 반드시 다시 돌린다. 지식 기준 시점이 2026년 2~4월보다 늦은 모델은 기억으로 결과를 알 수 있다
 LEAK_TEST_DAYS = 20

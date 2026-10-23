@@ -7,6 +7,8 @@ data/raw/
 data/index/
 data/processed/news.parquet
 data/scores/traces/
+data/scores/features/
+data/scores/alerts/
 
 # Python
 __pycache__/

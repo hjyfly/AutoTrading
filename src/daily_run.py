@@ -76,6 +76,7 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
         except Exception as e:
             lines += ["", f"■ 조건 모니터링 실패: {type(e).__name__}: {e}"]
     if scheduled:
+        lines += ["", f"■ 뉴스 참고 지표·하락 위험 경보 (9일차, 경보는 {config.DAY9_ALERT_STATUS})"] + [f"  {x}" for x in news_alert_lines(today)]
         lines += ["", "■ 실제 계좌(한국투자증권, 읽기 전용)"] + [f"  {x}" for x in account_lines()]
         lines += ["", "■ 다른 종목 신호(매매·주문 대상 아님 · 줄 끝은 쓴 알고리즘)"] + [f"  {x}" for x in others]
         lines += ["", "■ 다른 종목 실시간 성적표(SERVICE.md 5.6)"] + [f"  {x}" for x in scoreboard.ticker_lines(board)]
@@ -96,6 +97,31 @@ def setup_log(today: pd.Timestamp) -> logging.Logger:
     logger.addHandler(handler)
     logger.addHandler(logging.StreamHandler(sys.stdout))
     return logger
+
+
+def news_alert_lines(today: pd.Timestamp) -> list[str]:
+    """오늘 기사 피처로 A1 하락 위험 경보를 판단하고, 경보면 기록하고 메일 문구를 돌려준다(DAY9_PLAN.md 3.2). 실패해도 알림은 보낸다."""
+    from src.pipeline import news_signal
+    try:
+        articles = news_signal.load_article_features()
+        if articles.empty or today not in set(articles["signal_date"]):
+            return ["오늘 기사 피처가 없다(뉴스 채점 전이거나 실패)"]
+        daily = news_signal.daily_features(articles)
+        scores = pd.read_parquet(config.SCORES_PATH).set_index("signal_date")["news_downside_risk"]
+        today_risk = tools.news_judgement(str(today.date())).get("final", {}).get("downside_risk")
+        if today_risk is not None:
+            scores.loc[today] = today_risk
+        v1 = news_signal.v1_signal(today, tools.series_until("prices", "samsung_ohlcv", today)[0]["Close"].astype(float), articles)
+        head = [f"뉴스 모델 V1(참고, 장부 V1 확인 통과): {v1['signal']} (상승−하락 확률 {v1['score']:+.2f})" if v1
+                else "뉴스 모델 V1(참고): 학습 행이 모자라 없음"]
+        alerts = news_signal.risk_alerts(articles, daily, scores)
+        if today not in alerts.index:
+            return head + ["오늘 경보 없음"]
+        alert = alerts.loc[today].to_dict()
+        news_signal.record_alert(today, alert)
+        return head + news_signal.render_alert(today, alert, config.DAY9_ALERT_STATUS).split("\n")
+    except Exception as e:  # 경보 계산 실패가 신호 알림을 막지 않게 한다
+        return [f"경보 계산 실패: {type(e).__name__}: {str(e)[:80]}"]
 
 
 def account_lines() -> list[str]:

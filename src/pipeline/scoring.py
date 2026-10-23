@@ -1,9 +1,10 @@
 import json
 import operator
+import re
 import sys
 import time
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -263,5 +264,188 @@ def main(dates: list[str] | None = None):
     print(config.SCORES_PATH, len(table), f"누적 비용 ${llm.total_cost():.4f}")
 
 
+# ---- 9일차: 기사별 구조화 추출 (DAY9_PLAN.md 3.1). 하루 1회 호출, 회사명 익명화, 결과는 날짜별로 캐시한다 ----
+
+class ArticleFeature(BaseModel):
+    """기사 하나의 구조화 피처. 근거를 먼저 쓴다."""
+
+    no: int = Field(description="기사 번호([번호])")
+    reasoning: str = Field(description="이 기사를 아래처럼 판단한 근거. 한국어 1~2문장")
+    relevance: float = Field(ge=0, le=1, description=f"{config.ANONYMIZED_NAME} 주가와의 관련도 0~1")
+    category: Literal[tuple(config.ARTICLE_CATEGORIES)] = Field(
+        description=f"samsung_direct={config.ANONYMIZED_NAME} 직접, semi_ai=반도체·AI 업황, macro=거시(금리·환율·유가·관세·중국), irrelevant=무관")
+    event_type: Literal[tuple(config.ARTICLE_EVENTS)] = Field(description="사건 종류")
+    direction: int = Field(ge=-1, le=1, description=f"{config.ANONYMIZED_NAME} 주가에 -1 부정, 0 중립, +1 긍정")
+    magnitude: int = Field(ge=1, le=3, description="영향 크기 1~3(기준표)")
+    novelty: Literal["new", "follow_up", "rehash"] = Field(description="new=처음 나온 사실, follow_up=앞선 보도의 후속, rehash=반복·재탕")
+    downside_risk: int = Field(ge=0, le=3, description="방향과 별개로 급락 위험 기여도 0~3(기준표)")
+    one_line_summary: str = Field(description="한 줄 요약(한국어, 기사 제목에 있는 사실만)")
+
+
+class DayFeatures(BaseModel):
+    """그날 기사 전체의 피처."""
+
+    articles: list[ArticleFeature]
+
+
+FEATURE_TASK = (
+    f"위 기사마다 {config.ANONYMIZED_NAME}(한국 대형 반도체·전자 기업) 주가에 대한 피처를 뽑아라. 기사 제목만 있으니 제목에서 읽을 수 있는 만큼만 판단하고, "
+    "근거(reasoning)를 먼저 쓴 뒤 값을 정하라. 모든 기사 번호에 대해 하나씩 답하라.\n"
+    "크기 기준: 3 = 실적·가이던스의 큰 서프라이즈, 핵심 고객 공급 확정·이탈, 새 수출 규제 / 2 = 의미 있는 업황 변화, 경쟁사 주요 사건, 정책 방향 변화 / "
+    "1 = 예상된 내용, 업황 일반론, 반복 보도.\n"
+    "하락 위험 기준: 3 = 수출 규제·제재, 실적 쇼크, 대형 소송·리콜, 지정학 급변 / 2 = 의미 있는 악재 가능성 / 1 = 작은 악재 / 0 = 없음.\n"
+    "새로움은 아래 '직전 신호일 기사'와 비교해 정하라. 직전에 이미 나온 사실이면 follow_up 이나 rehash 다.")
+
+
+def anonymize(text: str) -> str:
+    """회사명을 익명으로 바꾼다(학습 데이터 안 구간에서 모델이 기억한 이후 사건을 떠올리지 않게)."""
+    for term in sorted(config.ANONYMIZE_TERMS, key=len, reverse=True):
+        text = re.sub(re.escape(term), config.ANONYMIZED_NAME, text, flags=re.IGNORECASE)
+    return text
+
+
+def feature_context(t: pd.Timestamp, selected: pd.DataFrame, close: pd.Series) -> str:
+    """새로움 판단용 맥락: 직전 신호일들의 기사 제목(익명화)과 t-1 종가까지의 5·20일 수익률. 모두 t 전에 알 수 있던 것이다."""
+    before = sorted(d for d in selected["signal_date"].unique() if d < t)[-config.FEATURE_CONTEXT_DAYS:]
+    lines = []
+    for d in before:
+        day = selected[selected["signal_date"] == d].sort_values("published_utc").tail(config.FEATURE_CONTEXT_TITLES)
+        lines.append(f"[{pd.Timestamp(d).date()}] " + " / ".join(anonymize(x) for x in day["title"]))
+    close = close[close.index < t]
+    rets = {n: close.iloc[-1] / close.iloc[-1 - n] - 1 for n in (5, 20) if len(close) > n}
+    ret_text = ", ".join(f"{n}일 {r:+.1%}" for n, r in rets.items()) or "없음"
+    return ("## 직전 신호일 기사(새로움 판단용)\n" + ("\n".join(lines) or "(없음)") +
+            f"\n\n## {config.ANONYMIZED_NAME} 최근 수익률(전날 종가 기준)\n{ret_text}")
+
+
+def _day_news(t: pd.Timestamp, raw_news: pd.DataFrame | None) -> pd.Series:
+    """그날 모은 전체 기사 제목. 실시간이면 넘겨받은 기사, 과거면 news.parquet 에서 읽는다."""
+    if raw_news is not None:
+        return raw_news["title"].fillna("")
+    path = Path(config.PROCESSED_DIR) / "news.parquet"
+    if not path.exists():
+        return pd.Series(dtype=str)
+    news = pd.read_parquet(path, columns=["signal_date", "title"])
+    return news.loc[news["signal_date"] == t, "title"].fillna("")
+
+
+def _cluster_sizes(articles: pd.DataFrame, day_titles: pd.Series) -> list[int]:
+    """기사마다 그날 모은 전체 기사 중 같은 제목 키를 가진 기사 수(보도량)."""
+    from src.pipeline.select_news import _dedup_key
+    keys = day_titles.map(_dedup_key).value_counts()
+    return [int(keys.get(_dedup_key(x), 1)) for x in articles["title"].fillna("")]
+
+
+def context_articles() -> pd.DataFrame:
+    """직전 신호일 맥락용 기사: 선별 기사 파일에 판단 기록(실시간 채점일)의 기사를 이어 붙인다. 모두 그날 15:15 전 발행분이다."""
+    selected = pd.read_parquet(Path(config.PROCESSED_DIR) / "selected_news.parquet")
+    last = selected["signal_date"].max()
+    rows = []
+    for path in sorted(Path(config.TRACES_DIR).glob("*.json")):
+        if pd.Timestamp(path.stem) <= last:
+            continue
+        trace = json.loads(path.read_text(encoding="utf-8"))
+        rows += [{"signal_date": pd.Timestamp(trace["signal_date"]), "title": a["title"],
+                  "published_utc": pd.Timestamp(a["published_kst"]).tz_localize(KST).tz_convert("UTC")} for a in trace["articles"]]
+    return pd.concat([selected, pd.DataFrame(rows)], ignore_index=True) if rows else selected
+
+
+def feature_path(t: pd.Timestamp) -> Path:
+    """그날 기사 피처 캐시 파일."""
+    return Path(config.FEATURES_DIR) / f"{pd.Timestamp(t).date()}.json"
+
+
+def extract_day(signal_date, model=None, articles: pd.DataFrame | None = None, close: pd.Series | None = None,
+                selected: pd.DataFrame | None = None, raw_news: pd.DataFrame | None = None) -> dict:
+    """신호일 하나의 기사별 피처를 뽑아 캐시한다. 같은 프롬프트 버전·모델의 캐시가 있으면 LLM 을 부르지 않는다.
+    입력은 t 15:15 전 기사(validate_inputs), 직전 신호일 제목, t-1 종가까지의 수익률뿐이다.
+    실시간 채점에서는 선별 기사(articles)와 그날 모은 전체 기사(raw_news, 보도량용)를 넘긴다."""
+    from src import tools
+    t = pd.Timestamp(signal_date)
+    path = feature_path(t)
+    if path.exists():
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if cached.get("prompt_version") == config.FEATURE_PROMPT_VERSION and cached.get("model") == llm.scoring_model_id():
+            return cached
+    selected = context_articles() if selected is None else selected
+    if articles is None:
+        articles = selected[selected["signal_date"] == t].sort_values("published_utc").reset_index(drop=True)
+    validate_inputs(t, articles, None)
+    close = tools.series_until("prices", "samsung_ohlcv", t)[0]["Close"].astype(float) if close is None else close
+    record = {"signal_date": str(t.date()), "as_of": f"{t.date()} {config.SIGNAL_CUTOFF_KST} KST", "model": llm.scoring_model_id(),
+              "prompt_version": config.FEATURE_PROMPT_VERSION, "anonymized": True, "articles": [], "missing": [], "cost_usd": 0.0}
+    day_titles = _day_news(t, raw_news)
+    record["n_collected"] = int(len(day_titles))  # 보도량(그날 15:15 까지 모은 기사 수)
+    if not articles.empty:
+        model = model or llm.get_scoring_llm()
+        header = anonymize(time_header(str(t.date())))
+        text = "\n".join(anonymize(line) for line in format_articles(articles).split("\n"))
+        messages = [SystemMessage(f"{header}\n너는 뉴스를 기사 단위로 분석해 주가 피처를 뽑는 분석가다."),
+                    HumanMessage(f"{header}\n\n## 뉴스 (t-1 {config.SIGNAL_CUTOFF_KST} ~ t {config.SIGNAL_CUTOFF_KST})\n{text}\n\n"
+                                 f"{feature_context(t, selected, close)}\n\n## 할 일\n{FEATURE_TASK}")]
+        spent_before = llm.total_cost()
+        out, n, attempts, error = None, len(articles), 0, None
+        while attempts < config.FEATURE_MAX_ATTEMPTS:  # 형식 오류면 다시 묻고, 번호가 빠지면 한 번 더 묻고, 그래도 모자라면 받은 것만 쓴다
+            attempts += 1
+            try:
+                got = model.with_structured_output(DayFeatures).invoke(messages)
+            except Exception as e:  # 구조화 출력 검증 실패(허용 밖 값, 목록 대신 문자열 등). 요청 제한은 위로 올린다
+                if "Throttling" in type(e).__name__ or "Throttling" in str(e):
+                    raise
+                error = f"{type(e).__name__}: {str(e)[:200]}"
+                continue
+            out = got if out is None or len(got.articles) > len(out.articles) else out
+            nos = [a.no for a in out.articles if 1 <= a.no <= n]
+            if sorted(set(nos)) == list(range(1, n + 1)) or attempts >= 2:
+                break
+        if out is None:
+            raise ValueError(f"{t.date()} 기사 피처 형식 오류가 {attempts}번 이어졌다: {error}")
+        by_no = {a.no: a.model_dump() for a in out.articles if 1 <= a.no <= n}
+        sizes = _cluster_sizes(articles, day_titles)
+        for i, r in enumerate(articles.itertuples(), start=1):
+            if i not in by_no:
+                record["missing"].append(i)
+                continue
+            record["articles"].append({**by_no[i], "title": r.title, "source": r.source, "url": r.url,
+                                       "published_kst": pd.Timestamp(r.published_utc).tz_convert(KST).strftime("%Y-%m-%d %H:%M"),
+                                       "cluster_size": sizes[i - 1]})
+        record["cost_usd"] = round(llm.total_cost() - spent_before, 6)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    return record
+
+
+def main_features(dates: list[str] | None = None):
+    """주어진 신호일(없으면 뉴스 구간의 선별 기사가 있는 모든 날)의 기사 피처를 뽑는다. 캐시가 있는 날은 건너뛴다."""
+    selected = pd.read_parquet(Path(config.PROCESSED_DIR) / "selected_news.parquet")
+    days = sorted(d for d in selected["signal_date"].unique() if config.NEWS_START <= str(pd.Timestamp(d).date()) <= config.NEWS_END)
+    targets = [pd.Timestamp(d) for d in dates] if dates else days
+    for t in targets:
+        record = None
+        for attempt in range(config.THROTTLE_RETRIES):
+            try:
+                record = extract_day(t, selected=selected)
+                break
+            except ValueError as e:  # 형식 오류가 이어진 날은 건너뛴다(다시 실행하면 그날만 다시 뽑는다)
+                print(pd.Timestamp(t).date(), f"건너뜀: {e}", flush=True)
+                record = {}
+                break
+            except Exception as e:  # Bedrock 요청 제한이면 기다렸다 다시, 그 밖의 오류는 그대로 알린다
+                if "Throttling" not in type(e).__name__ and "Throttling" not in str(e):
+                    raise
+                print(pd.Timestamp(t).date(), f"요청 제한, {config.THROTTLE_WAIT_SEC}초 뒤 다시 ({attempt + 1}/{config.THROTTLE_RETRIES})", flush=True)
+                time.sleep(config.THROTTLE_WAIT_SEC)
+        if record is None:
+            print("요청 제한이 풀리지 않아 멈춘다. 다시 실행하면 이어서 뽑는다", flush=True)
+            break
+        if not record:
+            continue
+        print(pd.Timestamp(t).date(), f"기사 {len(record['articles'])}건, 빠짐 {len(record['missing'])}, 비용 ${record['cost_usd']:.4f}", flush=True)
+    print(f"누적 비용 ${llm.total_cost():.4f}")
+
+
 if __name__ == "__main__":
-    main(sys.argv[1:] or None)
+    if sys.argv[1:2] == ["features"]:
+        main_features(sys.argv[2:] or None)
+    else:
+        main(sys.argv[1:] or None)

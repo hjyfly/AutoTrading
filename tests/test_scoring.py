@@ -145,3 +145,120 @@ def test_채점_형식_버전이_섞이면_막는다(monkeypatch):
     sc.score_day(pd.Timestamp("2026-03-12"), model=StubLLM(), articles=make_articles(0), report=REPORT)
     with pytest.raises(ValueError, match="버전"):
         sc.build_scores_table()
+
+
+class FeatureStub:
+    """기사별 추출을 흉내 내는 가짜 LLM. 처음 skip_first 번은 마지막 번호를 빼고 답한다."""
+
+    def __init__(self, n, skip_first=0):
+        self.n, self.skip, self.calls = n, skip_first, []
+
+    def with_structured_output(self, schema):
+        stub = self
+
+        class Runner:
+            def invoke(self, messages):
+                stub.calls.append(messages)
+                nos = range(1, stub.n + (0 if stub.skip > 0 else 1))
+                stub.skip -= 1
+                return schema(articles=[sc.ArticleFeature(no=i, reasoning="근거", relevance=0.8, category="samsung_direct", event_type="other",
+                                                          direction=1, magnitude=2, novelty="new", downside_risk=1,
+                                                          one_line_summary="A사 요약") for i in nos])
+        return Runner()
+
+
+def _feature_inputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "FEATURES_DIR", str(tmp_path / "features"))
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    prev = make_articles(2).assign(title=["삼성전자 어제 기사", "Samsung yesterday"], signal_date=pd.Timestamp("2026-03-10"),
+                                   published_utc=pd.Timestamp("2026-03-10 05:00", tz="UTC"))
+    today = make_articles(3).assign(signal_date=T)
+    later = make_articles(1).assign(title=["삼성전자 내일 기사"], signal_date=pd.Timestamp("2026-03-12"),
+                                    published_utc=pd.Timestamp("2026-03-12 05:00", tz="UTC"))
+    selected = pd.concat([prev, today, later], ignore_index=True)
+    close = pd.Series(range(100, 130), index=pd.bdate_range(end="2026-03-13", periods=30), dtype=float)
+    return selected, close
+
+
+def test_기사별_추출은_익명화하고_t_전_맥락만_넣고_캐시한다(tmp_path, monkeypatch):
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+    stub = FeatureStub(3)
+    rec = sc.extract_day(T, model=stub, selected=selected, close=close)
+    text = " ".join(m.content for m in stub.calls[0])
+    assert "삼성" not in text and "Samsung" not in text and "A사" in text
+    assert "어제 기사" in text and "내일 기사" not in text  # 직전 신호일 제목만
+    assert "2026-03-11 15:15" in text
+    assert len(rec["articles"]) == 3 and {r["title"] for r in rec["articles"]} == {"삼성전자 기사 0", "삼성전자 기사 1", "삼성전자 기사 2"}  # 기록에는 원래 제목
+    assert sc.extract_day(T, model=None, selected=selected, close=close)["articles"] == rec["articles"]  # 캐시(LLM 안 부름)
+
+
+def test_추출의_수익률_맥락은_t_전날_종가까지만(tmp_path, monkeypatch):
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+    ctx = sc.feature_context(T, selected, close)
+    changed = close.copy()
+    changed[changed.index >= T] *= 3
+    assert sc.feature_context(T, selected, changed) == ctx
+
+
+def test_추출에서_번호가_빠지면_다시_묻고_그래도_빠지면_기록한다(tmp_path, monkeypatch):
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+    stub = FeatureStub(3, skip_first=1)
+    rec = sc.extract_day(T, model=stub, selected=selected, close=close)
+    assert len(stub.calls) == 2 and rec["missing"] == []
+    monkeypatch.setattr(config, "FEATURES_DIR", str(tmp_path / "features2"))
+    stub = FeatureStub(3, skip_first=5)
+    rec = sc.extract_day(T, model=stub, selected=selected, close=close)
+    assert len(stub.calls) == 2 and rec["missing"] == [3] and len(rec["articles"]) == 2
+
+
+def test_추출_입력에_구간_밖_기사가_있으면_멈춘다(tmp_path, monkeypatch):
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+    bad = make_articles(1).assign(published_utc=pd.Timestamp("2026-03-11 07:00", tz="UTC"))  # 16:00 KST
+    with pytest.raises(ValueError):
+        sc.extract_day(T, model=FeatureStub(1), articles=bad, selected=selected, close=close)
+
+
+def test_실시간_추출은_넘겨받은_전체_기사로_보도량을_센다(tmp_path, monkeypatch):
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+    raw = pd.DataFrame({"title": ["삼성전자 기사 0", "삼성전자 기사 0", "삼성전자 기사 1", "다른 기사"]})
+    rec = sc.extract_day(T, model=FeatureStub(3), articles=make_articles(3), selected=selected, close=close, raw_news=raw)
+    assert rec["n_collected"] == 4
+    assert {r["title"]: r["cluster_size"] for r in rec["articles"]}["삼성전자 기사 0"] == 2
+
+
+def test_맥락_기사는_선별_파일_뒤의_판단_기록을_이어_붙인다(tmp_path, monkeypatch):
+    selected, _ = _feature_inputs(tmp_path, monkeypatch)
+    selected.to_parquet(tmp_path / "selected_news.parquet")
+    (tmp_path / "traces").mkdir()
+    trace = {"signal_date": "2026-03-13", "articles": [{"title": "실시간 기사", "published_kst": "2026-03-13 10:00"}]}
+    (tmp_path / "traces" / "2026-03-13.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+    ctx = sc.context_articles()
+    assert "실시간 기사" in set(ctx["title"]) and len(ctx) == len(selected) + 1
+
+
+def test_추출_형식_오류는_다시_묻고_계속되면_멈춘다(tmp_path, monkeypatch):
+    selected, close = _feature_inputs(tmp_path, monkeypatch)
+
+    class Flaky(FeatureStub):
+        def __init__(self, n, fails):
+            super().__init__(n)
+            self.fails = fails
+
+        def with_structured_output(self, schema):
+            runner = super().with_structured_output(schema)
+            stub = self
+
+            class R:
+                def invoke(self, messages):
+                    if stub.fails > 0:
+                        stub.fails -= 1
+                        stub.calls.append(messages)
+                        raise ValueError("형식 오류")
+                    return runner.invoke(messages)
+            return R()
+
+    stub = Flaky(3, fails=1)
+    assert len(sc.extract_day(T, model=stub, selected=selected, close=close)["articles"]) == 3 and len(stub.calls) == 2
+    monkeypatch.setattr(config, "FEATURES_DIR", str(tmp_path / "features3"))
+    with pytest.raises(ValueError):
+        sc.extract_day(T, model=Flaky(3, fails=config.FEATURE_MAX_ATTEMPTS), selected=selected, close=close)

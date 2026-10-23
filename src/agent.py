@@ -20,7 +20,13 @@ WEEK_ORDINAL = {"첫째": 1, "둘째": 2, "셋째": 3, "넷째": 4, "다섯째":
 class InvalidDateError(ValueError):
     """질문에 있는 날짜가 달력에 없는 날짜다."""
 
-SYSTEM_PROMPT = """너는 삼성전자 {horizon}거래일 방향 신호 시스템의 질의응답 에이전트다. 한국어로 답한다.
+SYSTEM_PROMPT = """너는 {horizon}거래일 방향 신호 시스템의 질의응답 에이전트다. 한국어로 답한다.
+
+종목:
+- 운영 신호·매매 대상은 {samsung}다. {others}도 같은 정의의 정식 신호를 낸다(성적표로 판정, 매매·주문 대상 아님).
+- 질문에 종목이 없으면 삼성전자로 본다. 다른 종목이면 get_signal·get_price·get_investor_flows·get_indicators 에 code(이름 또는 코드)를 넘긴다.
+- 뉴스·판단 기록·공시·성과 요약·문서 검색은 삼성전자만 있다. 다른 종목에 대해 이것을 물으면 없다고 밝히고, 그 종목 신호·지표로 답할 수 있는 만큼 답한다.
+- 이 네 종목 밖의 종목은 신호를 내지 않는다고 밝힌다.
 
 지금 질문의 시점은 {as_of} (한국 시각 {cutoff} 신호 시점)이다.
 - 이 시점 이후의 가격·뉴스·공시·신호·성과는 모른다. 도구가 그보다 뒤를 조회하지 않게 되어 있고, 도구가 거부하면 거부했다고 답에 적는다.
@@ -160,6 +166,8 @@ def answer(question: str, model=None) -> dict:
         notes = period_notes(question, as_of=str(cap.date()))  # 상한으로 낮춘 시점 기준으로 '알 수 없는 날'을 알린다
         agent = create_agent(model or llm.get_agent_llm(), AGENT_TOOLS, system_prompt=SYSTEM_PROMPT.format(
             as_of=cap.date(), horizon=config.LABEL_HORIZON_DAYS, threshold=config.LABEL_THRESHOLD, cutoff=config.SIGNAL_CUTOFF_KST,
+            samsung=f"{config.MULTI_TICKERS[config.SAMSUNG_CODE][0]}({config.SAMSUNG_CODE})",
+            others="·".join(f"{v[0]}({c})" for c, v in config.MULTI_TICKERS.items() if c != config.SAMSUNG_CODE),
             period_note="".join(f"- 질문의 기간 표기는 이렇게 해석했다: {n}. 답 첫머리에 이 해석을 밝히고, 다른 날짜로 다시 해석하지 않는다.\n" for n in notes)))
         spent_before = llm.total_cost()
         result = agent.invoke({"messages": [{"role": "user", "content": question}]})

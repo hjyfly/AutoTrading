@@ -213,3 +213,59 @@ def test_뉴스가_참고용이면_최종_신호는_숫자_모델_신호다(monk
 def test_데이터가_없는_날짜의_도구_호출은_에이전트를_멈추지_않고_이유를_돌려준다():
     result = tools.get_indicators.invoke({"as_of": "2019-05-03"})
     assert "error" in result and "2019-05-03" in result["error"]
+
+
+@pytest.fixture
+def ticker_stored(stored):
+    """다른 종목(SK하이닉스) 원본을 가짜 데이터로 더한다."""
+    base = stored[("prices", "samsung_ohlcv")]
+    stored[("tickers", "000660_ohlcv")] = base * 2
+    stored[("tickers", "000660_flows")] = stored[("prices", "samsung_investor_flows")] * 3
+    return stored
+
+
+def test_종목은_이름과_코드로_고르고_없는_종목은_거부한다():
+    assert tools.ticker_code("") == config.SAMSUNG_CODE and tools.ticker_code("SK하이닉스") == "000660"
+    assert tools.ticker_code("277810") == "277810"
+    with pytest.raises(ValueError):
+        tools.ticker_code("카카오")
+
+
+def test_다른_종목_일봉_수급은_그_종목_원본을_as_of_전날까지(ticker_stored):
+    t = DAYS[150]
+    p = tools.price_history(str(t.date()), days=5, code="SK하이닉스")
+    assert p["name"] == "SK하이닉스" and p["rows"][-1]["date"] == str(DAYS[149].date())
+    assert p["rows"][-1]["Close"] == pytest.approx(round(float(ticker_stored[("prices", "samsung_ohlcv")]["Close"].iloc[149] * 2), 4))
+    f = tools.investor_flows(str(t.date()), days=3, code="000660")
+    assert f["rows"][-1]["date"] == str(DAYS[149].date())
+
+
+def test_다른_종목_지표는_미래_데이터가_바뀌어도_같다(ticker_stored):
+    t = DAYS[150]
+    before = tools.indicators(str(t.date()), code="000660")
+    ticker_stored[("tickers", "000660_ohlcv")].loc[DAYS[150]:, "Close"] *= 5  # t 이후 값을 바꾼다
+    after = tools.indicators(str(t.date()), code="000660")
+    assert before["chart_and_flow"] == after["chart_and_flow"] and before["name"] == "SK하이닉스"
+    assert before["chart_and_flow"] != tools.indicators(str(t.date()))["chart_and_flow"]  # 삼성전자와는 다르다
+
+
+def test_다른_종목_신호는_실시간_기록을_먼저_쓰고_없으면_워크포워드_신호(tmp_path, monkeypatch):
+    t = pd.Timestamp("2026-10-23")
+    cols = {"signal": "하락", "confidence": 0.5, "p_상승": 0.2, "p_보합": 0.3, "p_하락": 0.5,
+            "retrained_on": pd.Timestamp("2026-10-19"), "train_last_future_date": pd.Timestamp("2026-10-16")}
+    stored = pd.DataFrame([{**cols, "signal": "상승"}] * 2, index=[t - pd.Timedelta(days=1), t])
+    monkeypatch.setattr(config, "SECTOR_DIR", str(tmp_path))
+    stored.to_parquet(tmp_path / "signals_S0_000660.parquet")
+    live = pd.DataFrame([{**cols, "code": "000660", "model": "S0 단독", "created_at": t + pd.Timedelta(hours=15, minutes=20)}], index=[t])
+    monkeypatch.setattr(config, "MULTI_LIVE_PATH", str(tmp_path / "live.parquet"))
+    live.to_parquet(tmp_path / "live.parquet")
+    now = tools.signal_for(str(t.date()), "SK하이닉스")["numeric"]
+    assert now["signal"] == "하락" and now["source"].startswith("실시간 기록(장 마감 전")
+    before = tools.signal_for(str((t - pd.Timedelta(days=1)).date()), "000660")["numeric"]
+    assert before["signal"] == "상승" and before["source"].startswith("워크포워드")
+
+
+def test_다른_종목_신호도_요청_시점보다_뒤는_거부하고_없는_종목은_이유를_돌려준다():
+    with tools.request_as_of("2026-10-01"):
+        assert "refused" in tools.get_signal.invoke({"date": "2026-10-15", "code": "SK하이닉스"})
+        assert "error" in tools.get_signal.invoke({"date": "2026-09-30", "code": "카카오"})
