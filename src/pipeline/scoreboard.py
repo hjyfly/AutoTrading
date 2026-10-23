@@ -1,6 +1,7 @@
 """실시간 성적표. 매일 기록한 신호(signals_live.parquet)를 정답이 확정되는 대로 채점하고 모델끼리·들고 있기와 비교한다.
 
 - 정답: t 종가 → t+5거래일 종가 ±3%. 5거래일 뒤 종가가 확정된 신호만 채점한다.
+  11일차 기간별 모델(h<N>)은 그 기간 정답(t+N거래일 ±config.HORIZONS[N])으로 채점하고, 승격 비교(5.3)는 그 모델 첫 기록일부터 다시 계산한 운영 모델과 한다.
 - 모의 매매: 첫 기록일 현금 시작, 기록이 빠진 거래일은 '보합'(포지션 유지)으로 본다. 규칙은 backtest.simulate 와 같다.
 - 성능 저하 경고: 최근 DRIFT_WINDOW 개 확정 신호의 정확도가 같은 기간 '항상 가장 많은 정답' 비율보다 낮으면 경고한다.
 - 다른 종목(config.MULTI_TICKERS, SERVICE.md 5.6): signals_live_tickers.parquet 를 (종목, 알고리즘)마다 같은 규칙으로 채점한다.
@@ -91,12 +92,15 @@ def realtime_mask(rows: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(rows["created_at"]) <= deadline
 
 
-def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down_action: str | None = None) -> dict:
+def score_model(signals: pd.Series, samsung: pd.Series, inverse: pd.Series, down_action: str | None = None,
+                horizon: int | None = None) -> dict:
     """한 모델의 기록을 채점한다. signals 는 날짜별 신호(상승·보합·하락). down_action 은 판정에 쓰는 하락 행동(기본 config.DOWN_ACTION).
-    samsung 은 채점 대상 종목의 종가다(옛 이름. 다른 종목은 그 종목 종가가 들어온다). 인버스 가격이 비면 인버스 규칙은 계산에서 빠진다."""
+    samsung 은 채점 대상 종목의 종가다(옛 이름. 다른 종목은 그 종목 종가가 들어온다). 인버스 가격이 비면 인버스 규칙은 계산에서 빠진다.
+    horizon 은 정답 기간(기본 운영 기간). 기준은 config.HORIZONS[horizon]."""
     down_action = down_action or config.DOWN_ACTION
+    n = horizon or config.OPERATIONAL_HORIZON
     signals = signals.sort_index()
-    labels = make_labels(samsung)["label"]
+    labels = make_labels(samsung, n, config.HORIZONS[n])["label"]
     matured = signals[signals.index.isin(labels.index)]
     correct = matured == labels.reindex(matured.index)
     out = {"n_signals": int(len(signals)), "n_matured": int(len(matured)),
@@ -179,7 +183,7 @@ def criteria(n_matured: int, equity: pd.Series, hold: pd.Series, weights: pd.Ser
 def promotion(entry: dict, base: dict, model: str) -> dict:
     """SERVICE.md 5.3 비교 모델 승격 기준: 장부 등록, 확정 신호 40개 이상, 같은 기간 운영 모델보다 칼마가 높고 MDD 가 더 깊지 않음.
     셋을 모두 만족해도 운영 변경은 사용자가 정한다."""
-    registered = model in config.LIVE_REGISTERED_MODELS
+    registered = model in config.LIVE_REGISTERED_MODELS or tools.model_horizon(model) in config.DAY11_LEDGER  # 기간별 모델은 장부 H1 ~ H4
     ready = entry.get("n_matured", 0) >= config.LIVE_PROMOTION_MIN_SIGNALS
     if "model" not in entry or "model" not in base:
         return {"registered": registered, "ready": ready, "eligible": False, "note": "모의 매매 결과가 없다"}
@@ -221,6 +225,8 @@ def build(today: pd.Timestamp | None = None) -> dict:
         board["price_last_date"] = str(samsung.index.max().date())
         extra = {name: f"비교용 지표 묶음 {name}" for name in config.LIVE_EXTRA_FEATURE_SETS}  # 지표 그룹 진단에서 고른 묶음
         extra[config.LIVE_RISK_MODEL] = f"하락 위험 비교 조건 {config.LIVE_RISK_CONDITION}(목표 비중, 비교용)"
+        extra.update({tools.horizon_model(n): f"{config.HORIZON_LABELS[n]}({n}거래일 ±{config.HORIZONS[n]:.1%}) 신호(기간별 참고, 장부 {config.DAY11_LEDGER.get(n, '-')})"
+                      for n in config.HORIZONS if n != config.OPERATIONAL_HORIZON})
         for model, title in {**MODELS, **extra}.items():
             rows = live[live["model"] == model]
             if rows.empty:
@@ -232,12 +238,19 @@ def build(today: pd.Timestamp | None = None) -> dict:
             elif model == config.LIVE_RISK_MODEL:
                 entry.update(score_weight_model(realtime, samsung))
             else:
-                entry.update(score_model(realtime["signal"], samsung, inverse))
+                entry.update(score_model(realtime["signal"], samsung, inverse, horizon=tools.model_horizon(model)))
             board["models"][model] = entry
         base = board["models"].get("base", {})
+        base_rows = live[live["model"] == "base"]
+        base_rows = base_rows[realtime_mask(base_rows)]
         for model, entry in board["models"].items():
-            if model not in ("base", "base_v1"):
-                entry["promotion"] = promotion(entry, base, model)
+            if model in ("base", "base_v1"):
+                continue
+            same = base
+            if tools.model_horizon(model) != config.OPERATIONAL_HORIZON and entry.get("first_date"):  # 기간별 모델은 기록을 늦게 시작해 같은 날부터 다시 계산한다
+                part = base_rows.loc[entry["first_date"]:]
+                same = score_model(part["signal"], samsung, inverse) if len(part) else {}
+            entry["promotion"] = promotion(entry, same, model)
     try:  # 다른 종목 기록 문제로 삼성전자 성적표·알림이 멈추지 않게 한다
         board["tickers"] = score_tickers(today)
     except Exception as e:

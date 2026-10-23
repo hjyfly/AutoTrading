@@ -39,3 +39,6 @@ data/kis/
 # 7일차 다종목 신호·실시간 참고 기록(다시 만들 수 있음, 원본은 data/raw/tickers)
 data/processed/tickers/
 data/processed/sectors/
+
+# 11일차 기간별 워크포워드 신호(다시 만들 수 있음: python -m src.pipeline.experiment --horizons)
+data/processed/horizons/

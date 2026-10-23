@@ -36,6 +36,7 @@ evaluation/        test_queries.csv 와 평가 리포트
 ### 제출 규약 파일의 역할
 - src/agent.py      /query 에이전트. 판단 기록을 근거로 "왜 그 신호였는가"에 답한다
 - src/tools.py      에이전트 도구 9개: 일봉·수급·거시 지표·차트 지표·공시·뉴스 조회, 신호·판단 기록·모의 매매 결과 조회
+                    신호는 horizon 인자로 운영 종목의 기간별 참고 신호(1·3·10·20거래일, 11일차)도 조회한다
                     일봉·수급·차트 지표·신호는 code 인자로 다른 3종목(SK하이닉스·한화에어로스페이스·레인보우로보틱스)도 조회한다(2026-10-23). 뉴스·판단 기록·공시·성과는 삼성전자만
                     수집·계산 함수(src/pipeline)를 감싸기만 하고 새로 계산하지 않는다. 모든 도구는 as_of 시점에 알 수 있던 정보만 돌려준다
                     저장된 데이터를 먼저 쓰고, 저장 범위를 넘으면 실시간으로 받되 data/raw 에 쓰지 않는다
@@ -60,9 +61,10 @@ src/pipeline/leak_test.py        미래 정보 유출 테스트
 src/pipeline/train.py            LightGBM 워크포워드 학습
 src/pipeline/news_signal.py      숫자 모델 신호를 뉴스 합의 점수로 보정 (기준 B 용, 고정 규칙). 9일차 일별 뉴스 피처·V1/V2 로지스틱 워크포워드·하락 위험 경보(참고, 운영 신호를 바꾸지 않음)
 src/pipeline/live_signal.py      오늘(지정일) 신호를 실시간 데이터로 생성. 과거 검증과 같은 규칙(재학습 주기 config.RETRAIN_FREQ 안의 첫 거래일 재학습 — 지금 매주, 정답 기간 간격)
+                                 11일차부터 기간별 참고 신호(config.HORIZONS)를 모델 h<N> 으로 함께 기록(매매 기준은 OPERATIONAL_HORIZON)
                                  뉴스 채점·기사별 추출은 15:15 이후 요청할 때만(LLM 8회, 하루 약 $0.27). 2026-10-22 부터 뉴스는 참고용(config.NEWS_ADJUST_IN_SIGNAL). 결과는 data/processed/signals_live.parquet
 src/ui.py                        Streamlit 화면 (종목 선택, 채팅 + 신호·자산 곡선·지표·판단 기록·실시간 성적)
-src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고. 다른 종목도 (종목, 알고리즘)마다 같은 기준(SERVICE.md 5.6)
+src/pipeline/scoreboard.py       실시간 성적표: 매일 기록한 신호를 정답 확정 뒤 채점, 모델·들고 있기 비교, 성능 저하 경고. 다른 종목도 (종목, 알고리즘)마다 같은 기준(SERVICE.md 5.6). 기간별 모델(h<N>)은 그 기간 정답으로 채점(5.7)
 src/daily_run.py                 평일 15:20 자동 실행: 오늘 신호(운영·비교 모델, 뉴스 채점·기사별 추출은 참고용) → 다른 종목 신호 → 성적표 → 뉴스 V1 참고·경보 → Gmail 알림
 src/notify.py                    Gmail 알림 (.env 의 GMAIL_SENDER·GMAIL_APP_PASSWORD·NOTIFY_TO)
 src/pipeline/kis_client.py       한국투자증권 Open API 조회(토큰·시세·수급·계좌 잔고). 시세·수급은 연결 확인과 예비 출처용이고 운영 수집은 지금 출처 그대로(2026-10-22 사용자 결정)
@@ -75,6 +77,7 @@ src/pipeline/sector_models.py    8일차 분야별 알고리즘(반도체·우�
 src/pipeline/experiment.py       조건 비교 실험(정답 기간·기준, 지표 묶음, 재학습 주기, 체결 시점, 하락 행동, 뉴스 보정 방법). 결과는 모두 탐색이고 공식 판정을 바꾸지 않는다
                                  9일차 뉴스 평가(--news: IC·Newey-West·기준선·LLM 지식 기준 전후 분리, 장부 V1·V2·A1 확인 판정 1회)
                                  조건 모니터링(하나씩 바꾼 민감도 분석 + 해석 리포트 experiments_monitor.md, 금요일 자동 실행)
+                                 11일차 기간별 분석(--horizons: 1·3·5·10·20거래일, 장부 H1 ~ H4 판정은 한 번만, 기록 data/processed/day11_judged.json)
 tests/                           위 모듈의 테스트
 .claude/agents/                  개발용 검증 서브에이전트 (아래 "검증 에이전트" 참고)
 .gitignore, .gitattributes, requirements.txt   git 제외 목록, 줄바꿈 규칙(LF 고정), 의존성
@@ -92,6 +95,7 @@ data/kis/            한국투자증권 토큰·계좌 잔고 기록·주문 기
 data/raw/tickers/    7·8일차 다른 종목 일봉·수급·분야 ETF·국내 지수(kr_*) 원본(새 날짜만 덧붙임)
 data/processed/tickers/  다른 종목 신호 표·실시간 신호 기록(signals_live_tickers.parquet, git 제외)
 data/processed/sectors/  8일차 분야별 후보 신호·고르기·확인 결과 표(재생성 가능해 git 제외)
+data/processed/horizons/ 11일차 기간별 워크포워드 신호 signals_numeric_h<N>[_ext].parquet(재생성 가능해 git 제외)
 
 ## 주고받는 형식 (제출 규약)
 - POST /query 로 받고 question 필드를 읽는다
@@ -128,6 +132,9 @@ data/processed/sectors/  8일차 분야별 후보 신호·고르기·확인 결�
 - 설정값은 src/config.py 에만 두고 코드 곳곳에 숫자를 적지 않는다
 - 종목에 따라 달라지는 기능은 종목 역할(config.MAIN_TICKER·TRADE_TICKERS·NEWS_TICKERS)로 판단하고, 종목 목록·이름은 config.MULTI_TICKERS 에서 만든다(2026-10-23 10일차). 코드에 종목 코드·이름을 직접 적지 않는다(운영 종목 원본 파일 이름과 지난 판정 기록은 예외)
   - 매매 종목(TRADE_TICKERS)은 사용자 결정으로만 바꾼다. 종목 추가는 SERVICE.md 13절 절차(config 한 줄 + multi_ticker add)로 한다
+- 정답 기간(11일차): config.HORIZONS(거래일 → ±기준, √배율 고정)와 OPERATIONAL_HORIZON(운영·매매 기준, 지금 5). 함수는 horizon 인자를 받고 기본은 운영 기간이다
+  - 다른 기간 신호는 참고 신호다(실시간 기록 모델 이름 h<N>, 성적표에서 그 기간 정답으로 채점). 운영 기간을 바꾸는 것은 사용자 결정으로만 한다
+  - 기간별 신호는 지금 운영 종목만 낸다. 다른 종목으로 넓히는 것은 DAY11_PLAN D11-8
 - 지표 묶음은 config.FEATURE_SETS 로 고른다. base_v1(1~3일차 45개)은 이름으로 고정했고, candidate(A+B+D)는 사전 등록 목록이라 결과를 본 뒤 바꾸지 않는다
   - 운영 base 는 base_v1 + RSI(rsi14) 46개다(2026-10-22 사용자 결정). 운영 base 를 바꾸는 것은 사용자 결정으로만 한다
   - 탐색·실시간 비교용으로 config.FEATURE_GROUPS 의 그룹을 이은 'groups:' 묶음도 쓸 수 있다

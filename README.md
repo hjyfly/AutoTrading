@@ -10,6 +10,7 @@
 |---|---|
 | 종목 | 종목 레지스트리(`config.MULTI_TICKERS`): 삼성전자(운영·매매), SK하이닉스, 한화에어로스페이스, 레인보우로보틱스. 설정 한 줄 + 명령 하나로 더할 수 있다 |
 | 신호 정의 | t 일 15:15 신호, t 종가 → t+5 거래일 종가가 +3% 이상 상승 / ±3% 보합 / -3% 이하 하락 |
+| 기간별 신호 | 삼성전자는 1·3·10·20거래일(±1.3%·±2.3%·±4.2%·±6.0%) 참고 신호도 낸다(11일차). 매매 기준은 5거래일뿐 |
 | 모델 | LightGBM 3분류, 지표 46개, 매주 재학습(워크포워드). 로봇 분야는 3종목 공동 학습(S4) |
 | 뉴스 | 삼성전자만. 채점자 3명 토론(LangGraph) + 기사별 구조화 추출. **참고용**이며 신호를 바꾸지 않는다 |
 | 판정 | 앞으로의 날을 기록하는 **실시간 성적표**로만 판정한다. 과거 구간 숫자는 탐색이다 |
@@ -177,7 +178,7 @@ macOS·Linux (cron, 시스템 시간대가 KST 여야 한다):
 | [SERVICE.md](SERVICE.md) | 기획·성공 기준·검증 결과·운영 기능 전체 (기준 문서) |
 | [CLAUDE.md](CLAUDE.md) | 개발 규칙, 파일 역할, 하지 말 것 |
 | [evaluation/reports/README.md](evaluation/reports/README.md) | 리포트 목록과 산출물 네이밍 규칙 |
-| `DAY1_PLAN.md` ~ `DAY10_PLAN.md` | 일차별 계획과 결과 |
+| `DAY1_PLAN.md` ~ `DAY11_PLAN.md` | 일차별 계획과 결과 |
 | [evaluation/reports/preregistration.md](evaluation/reports/preregistration.md) | 사전 등록 장부(모든 판정의 기준과 결과) |
 
 ## 원칙

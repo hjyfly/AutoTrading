@@ -342,9 +342,60 @@ def ticker_signal(date: str, code: str) -> dict:
     return out
 
 
-def signal_for(date: str, code: str | None = None) -> dict:
-    """그날 숫자 모델 신호와 확률, 뉴스 합의(참고용, 운영 신호는 보정하지 않는다). code 가 다른 종목이면 ticker_signal."""
+def horizon_model(n: int | None) -> str:
+    """정답 기간 N 의 실시간 기록 모델 이름. 운영 기간은 base, 다른 기간은 h<N>(11일차)."""
+    n = n or config.OPERATIONAL_HORIZON
+    if n not in config.HORIZONS:
+        raise ValueError(f"지원하지 않는 기간 {n}거래일. 가능: {sorted(config.HORIZONS)}")
+    return "base" if n == config.OPERATIONAL_HORIZON else f"{config.HORIZON_MODEL_PREFIX}{n}"
+
+
+def model_horizon(model: str) -> int:
+    """실시간 기록 모델 이름의 정답 기간. h<N> 이 아니면 운영 기간."""
+    tail = str(model)[len(config.HORIZON_MODEL_PREFIX):]
+    if str(model).startswith(config.HORIZON_MODEL_PREFIX) and tail.isdigit() and int(tail) in config.HORIZONS:
+        return int(tail)
+    return config.OPERATIONAL_HORIZON
+
+
+def horizon_signal(t: pd.Timestamp, n: int) -> dict:
+    """운영 종목의 기간 N 숫자 모델 신호(참고). 실시간 기록(model=h<N>)이 있으면 그것을, 없으면 기간별 과거 검증 신호
+    (config.HORIZON_DIR/signals_numeric_h<N>.parquet, 운영과 같은 워크포워드)를 쓴다. 매매 기준은 운영 기간 그대로다."""
+    out = {"date": str(t.date()), "horizon_days": n, "threshold": config.HORIZONS[n],
+           "note": f"{config.HORIZON_LABELS[n]}({n}거래일 ±{config.HORIZONS[n]:.1%}) 참고 신호다. 매매 기준은 {config.OPERATIONAL_HORIZON}거래일 신호다"}
+    live_path = Path(config.PROCESSED_DIR) / "signals_live.parquet"
+    row, source = None, None
+    if live_path.exists():
+        live = pd.read_parquet(live_path)
+        if "model" in live.columns:
+            live = live[live["model"] == horizon_model(n)]
+            if t in live.index:
+                row, source = live.loc[t], "실시간 생성(live_signal)"
+    stored = Path(config.HORIZON_DIR) / f"signals_numeric_h{n}.parquet"
+    if row is None and stored.exists():
+        table = pd.read_parquet(stored)
+        if t in table.index:
+            row, source = table.loc[t], "기간별 과거 검증 신호(워크포워드)"
+    if row is None:
+        out["note"] += ". " + _no_signal_note(t, config.VALID_START, config.DATA_END, "기간별 검증 구간")
+        return out
+    out["numeric"] = {"signal": row["signal"], "confidence": round(float(row["confidence"]), 3),
+                      "probabilities": {c: round(float(row[f"p_{c}"]), 3) for c in ("상승", "보합", "하락")},
+                      "model_block_start": str(pd.Timestamp(row["retrained_on"]).date()),
+                      "train_label_last_date": str(pd.Timestamp(row["train_last_future_date"]).date()), "source": source}
+    return out
+
+
+def signal_for(date: str, code: str | None = None, horizon: int | None = None) -> dict:
+    """그날 숫자 모델 신호와 확률, 뉴스 합의(참고용, 운영 신호는 보정하지 않는다). code 가 다른 종목이면 ticker_signal.
+    horizon 이 운영 기간이 아니면 그 기간의 참고 신호(horizon_signal, 지금은 운영 종목만)."""
     code = ticker_code(code)
+    n = horizon or config.OPERATIONAL_HORIZON
+    horizon_model(n)  # 지원하지 않는 기간이면 ValueError
+    if n != config.OPERATIONAL_HORIZON:
+        if code != config.MAIN_TICKER:
+            raise ValueError(f"기간별 신호({n}거래일)는 아직 {ticker_name(config.MAIN_TICKER)}만 있다. 다른 종목은 {config.OPERATIONAL_HORIZON}거래일 신호만 있다")
+        return horizon_signal(resolve_as_of(date), n)
     if code != config.MAIN_TICKER:
         return ticker_signal(date, code)
     t = resolve_as_of(date)
@@ -553,15 +604,15 @@ def search_news(as_of: str = "", keyword: str = "", limit: int = 20) -> dict:
     return _call(news_for_signal, as_of, keyword or None, limit)
 
 
-@tool(description=f"그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(뉴스 종목만, 참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다. {CODE_DOC} 운영 종목 밖은 숫자 모델 신호와 쓴 알고리즘만 있다. 매매 종목: {role_names(config.TRADE_TICKERS)}")
-def get_signal(date: str, code: str = "") -> dict:
+@tool(description=f"그날의 모델 신호(상승·보합·하락), 확률, 뉴스 합의(뉴스 종목만, 참고용, 운영 신호를 보정하지 않는다). 질문 시점보다 뒤 날짜는 조회하지 않는다. {CODE_DOC} 운영 종목 밖은 숫자 모델 신호와 쓴 알고리즘만 있다. 매매 종목: {role_names(config.TRADE_TICKERS)}. horizon: 정답 기간(거래일). 비우면 운영 {config.OPERATIONAL_HORIZON}거래일, {ticker_name(config.MAIN_TICKER)}는 참고 신호 {", ".join(str(n) for n in config.HORIZONS if n != config.OPERATIONAL_HORIZON)}거래일도 있다(매매 기준 아님)")
+def get_signal(date: str, code: str = "", horizon: int = 0) -> dict:
     """에이전트 도구(설명은 description: 종목 레지스트리·역할 설정에서 만든다)."""
     refused = _refuse_after_cap(date)
     if refused:
         return refused
     try:
-        return signal_for(date, code or None)
-    except ValueError as e:  # 지원하지 않는 종목
+        return signal_for(date, code or None, horizon or None)
+    except ValueError as e:  # 지원하지 않는 종목·기간
         return {"date": date, "error": str(e)}
 
 

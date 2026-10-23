@@ -269,3 +269,28 @@ def test_다른_종목_신호도_요청_시점보다_뒤는_거부하고_없는_
     with tools.request_as_of("2026-10-01"):
         assert "refused" in tools.get_signal.invoke({"date": "2026-10-15", "code": "SK하이닉스"})
         assert "error" in tools.get_signal.invoke({"date": "2026-09-30", "code": "카카오"})
+
+
+def test_기간별_신호는_실시간_기록을_먼저_쓰고_없으면_기간별_검증_신호(tmp_path, monkeypatch):
+    t = pd.Timestamp("2026-10-23")
+    cols = {"confidence": 0.5, "p_상승": 0.2, "p_보합": 0.3, "p_하락": 0.5,
+            "retrained_on": pd.Timestamp("2026-10-19"), "train_last_future_date": pd.Timestamp("2026-09-18")}
+    monkeypatch.setattr(config, "HORIZON_DIR", str(tmp_path / "h"))
+    monkeypatch.setattr(config, "PROCESSED_DIR", str(tmp_path))
+    (tmp_path / "h").mkdir()
+    pd.DataFrame([{**cols, "signal": "상승"}] * 2, index=[t - pd.Timedelta(days=1), t]).to_parquet(tmp_path / "h" / "signals_numeric_h20.parquet")
+    pd.DataFrame([{**cols, "signal": "하락", "model": "h20"}, {**cols, "signal": "보합", "model": "base"}], index=[t, t]).to_parquet(tmp_path / "signals_live.parquet")
+    now = tools.signal_for(str(t.date()), None, 20)
+    assert now["numeric"]["signal"] == "하락" and now["numeric"]["source"].startswith("실시간") and now["horizon_days"] == 20
+    before = tools.signal_for(str((t - pd.Timedelta(days=1)).date()), None, 20)
+    assert before["numeric"]["signal"] == "상승" and before["numeric"]["source"].startswith("기간별 과거 검증")
+    assert "매매 기준은 5거래일" in before["note"]
+    with tools.request_as_of(str(t.date())):
+        assert "error" in tools.get_signal.invoke({"date": str(t.date()), "code": "SK하이닉스", "horizon": 20})
+        assert "error" in tools.get_signal.invoke({"date": str(t.date()), "horizon": 7})
+
+
+def test_기간_모델_이름():
+    assert tools.horizon_model(None) == "base" and tools.horizon_model(5) == "base" and tools.horizon_model(20) == "h20"
+    assert tools.model_horizon("h20") == 20 and tools.model_horizon("base") == 5 and tools.model_horizon("candidate") == 5
+    assert tools.model_horizon("h7") == 5  # 등록되지 않은 기간은 운영 기간으로 본다

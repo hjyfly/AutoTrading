@@ -1,0 +1,64 @@
+{
+  "judged_at": "2026-10-23 14:46",
+  "period": [
+    "2022-03-04",
+    "2025-04-22"
+  ],
+  "days": 769,
+  "data_end": "2026-10-21",
+  "verdict": {
+    "H1": {
+      "horizon": 1,
+      "threshold": 0.013,
+      "calmar": -0.23682829723359283,
+      "mdd": -0.39957669514432737,
+      "total_return": -0.2613803836121432,
+      "base_calmar": -0.2748540132261907,
+      "base_mdd": -0.40920042027383874,
+      "base_return": -0.30484590078744545,
+      "calmar_ok": true,
+      "mdd_ok": true,
+      "passed": true
+    },
+    "H2": {
+      "horizon": 3,
+      "threshold": 0.023,
+      "calmar": -0.25936813174847867,
+      "mdd": -0.3924799350464595,
+      "total_return": -0.27905264122950835,
+      "base_calmar": -0.2748540132261907,
+      "base_mdd": -0.40920042027383874,
+      "base_return": -0.30484590078744545,
+      "calmar_ok": true,
+      "mdd_ok": true,
+      "passed": true
+    },
+    "H3": {
+      "horizon": 10,
+      "threshold": 0.042,
+      "calmar": -0.15045431017286504,
+      "mdd": -0.4248356009000045,
+      "total_return": -0.18233541721034563,
+      "base_calmar": -0.2748540132261907,
+      "base_mdd": -0.40920042027383874,
+      "base_return": -0.30484590078744545,
+      "calmar_ok": true,
+      "mdd_ok": false,
+      "passed": false
+    },
+    "H4": {
+      "horizon": 20,
+      "threshold": 0.06,
+      "calmar": -0.2701191938550527,
+      "mdd": -0.39058718929239356,
+      "total_return": -0.2880855707751725,
+      "base_calmar": -0.2748540132261907,
+      "base_mdd": -0.40920042027383874,
+      "base_return": -0.30484590078744545,
+      "calmar_ok": true,
+      "mdd_ok": true,
+      "passed": true
+    }
+  },
+  "commit": "680a604"
+}

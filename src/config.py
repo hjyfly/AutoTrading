@@ -63,6 +63,18 @@ REQUEST_PAUSE_SEC = 0.5
 LABEL_HORIZON_DAYS = 5
 LABEL_THRESHOLD = 0.03
 OFFICIAL_LABEL_HORIZON_DAYS = 5  # 1~3일차 공식 판정의 정답 기간(공식 숫자 재현용, 바꾸지 않는다)
+# 11일차 기간별 신호 (DAY11_PLAN.md, 2026-10-23 사용자 결정, 장부 H1 ~ H4). 거래일 N: 정답 기준(±3% × √(N/5), 결과를 본 뒤 바꾸지 않는다)
+HORIZONS = {1: 0.013, 3: 0.023, LABEL_HORIZON_DAYS: LABEL_THRESHOLD, 10: 0.042, 20: 0.06}  # 운영 기간은 운영 정답 기준을 그대로 쓴다
+HORIZON_LABELS = {1: "1일", 3: "3일", 5: "5일", 10: "2주", 20: "한 달"}
+OPERATIONAL_HORIZON = LABEL_HORIZON_DAYS   # 운영·매매 기준 기간. 다른 기간은 판정·실시간 확인 뒤 사용자가 정할 때만 바꾼다
+HORIZON_MODEL_PREFIX = "h"                 # 실시간 기록의 모델 이름: 운영 기간은 base, 다른 기간은 h<N>(예: h20)
+HORIZON_DIR = "data/processed/horizons"    # 기간별 워크포워드 신호(재생성 가능, git 제외)
+DAY11_REPORT_PATH = "evaluation/reports/day11_horizons.md"
+DAY11_JUDGED_PATH = "data/processed/day11_judged.json"   # H1 ~ H4 판정을 이미 했는지(다시 판정하지 않는다)
+DAY11_LEDGER = {1: "H1", 3: "H2", 10: "H3", 20: "H4"}   # 장부 ID(5거래일은 비교 기준이라 판정 대상이 아니다)
+# 기간별 조건 모니터링에서 하나씩 바꿀 조건(정답 기간·기준은 기간 자체라 뺀다, 뉴스는 5거래일만)
+HORIZON_MONITOR_AXES = {"retrain_freq": ["M", "Q"], "train_window": [3], "execution": ["next_open"], "down_action": ["inverse"],
+                        "feature_set": ["candidate"]}
 LABELS_OFFICIAL_PATH = "data/processed/labels_official.parquet"
 
 # 워크포워드 구간 (SERVICE.md 4절, 기본값). 처음 18개월은 학습에만 쓴다

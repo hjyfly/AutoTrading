@@ -87,7 +87,7 @@ def test_뉴스_없이_다시_실행해도_이전_뉴스_보정을_유지한다(
     monkeypatch.setattr(ls, "LIVE_PATH", tmp_path / "live.parquet")
     t = pd.Timestamp("2026-10-21")
     ls.save({"date": t, "model": "base", "signal": "상승", "numeric_signal_label": "보합", "news_consensus": 4.0, "news_consensus_conf": 0.8})
-    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": k.get("feature_set", "base"), "signal": "보합",
+    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": tools.horizon_model(k["horizon"]) if k.get("horizon") else k.get("feature_set", "base"), "signal": "보합",
                                                                "confidence": 0.5, "data_sources": {}})
     monkeypatch.setattr(ls, "risk_signal", lambda *a: (_ for _ in ()).throw(ValueError("시험에서는 건너뛴다")))
     monkeypatch.setattr(config, "NEWS_ADJUST_IN_SIGNAL", True)
@@ -135,7 +135,7 @@ def test_확장_원본은_앞에만_붙이고_날짜가_겹치면_멈춘다(monk
 def test_뉴스_채점이_실패해도_운영_신호는_남는다(tmp_path, monkeypatch):
     monkeypatch.setattr(ls, "LIVE_PATH", tmp_path / "live.parquet")
     t = pd.Timestamp("2026-10-21")
-    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": k.get("feature_set", "base"), "signal": "상승",
+    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": tools.horizon_model(k["horizon"]) if k.get("horizon") else k.get("feature_set", "base"), "signal": "상승",
                                                                "confidence": 0.5, "data_sources": {}})
     monkeypatch.setattr(ls, "risk_signal", lambda *a: (_ for _ in ()).throw(ValueError("시험에서는 건너뛴다")))
     monkeypatch.setattr(ls, "news_ready", lambda t: True)
@@ -144,3 +144,33 @@ def test_뉴스_채점이_실패해도_운영_신호는_남는다(tmp_path, monk
     assert out["signal"] == "상승" and "뉴스 채점 실패" in out["news_status"]
     saved = pd.read_parquet(tmp_path / "live.parquet")
     assert "상승" in saved[saved["model"] == "base"]["signal"].tolist()
+
+
+@pytest.mark.parametrize("n", [1, 20])
+def test_기간별_실시간_신호는_같은_기간_과거_검증과_같다(stored, n):
+    """11일차: 기간 N 실시간 신호도 그 기간 정답으로 학습한 워크포워드와 같은 신호·확률·재학습일이어야 한다."""
+    from src.pipeline import features
+    raw = {"ohlcv": stored[("prices", "samsung_ohlcv")], "flows": stored[("prices", "samsung_investor_flows")],
+           **{k: stored[("macro", k)] for k in {**config.YF_TICKERS, **config.YF_TICKERS_EXT}},
+           **{k: stored[("prices", k)] for k in config.KR_EXTRA}}
+    table = features.build_features(raw=raw)
+    wf = tr.walk_forward(table, make_labels(raw["ohlcv"]["Close"], n, config.HORIZONS[n]), valid_start=str(DAYS[300].date()), feature_set="base")
+    for t in [DAYS[300], DAYS[333], DAYS[400]]:
+        live = ls.numeric_signal(str(t.date()), valid_start=str(DAYS[300].date()), horizon=n)
+        assert live["model"] == f"h{n}" and live["horizon"] == n
+        assert live["signal"] == wf.loc[t, "signal"] and live["confidence"] == pytest.approx(wf.loc[t, "confidence"])
+        assert live["retrained_on"] == wf.loc[t, "retrained_on"] and live["train_last_future_date"] < live["retrained_on"]
+
+
+def test_기간별_신호는_h_모델로_따로_기록되고_운영_신호를_덮지_않는다(tmp_path, monkeypatch):
+    monkeypatch.setattr(ls, "LIVE_PATH", tmp_path / "live.parquet")
+    t = pd.Timestamp("2026-10-21")
+    sig = {None: "상승", 1: "하락", 3: "보합", 10: "하락", 20: "상승"}
+    monkeypatch.setattr(ls, "numeric_signal", lambda *a, **k: {"date": t, "model": tools.horizon_model(k["horizon"]) if k.get("horizon") else k.get("feature_set", "base"),
+                                                               "horizon": k.get("horizon") or 5, "signal": sig.get(k.get("horizon"), "보합"), "confidence": 0.5, "data_sources": {}})
+    monkeypatch.setattr(ls, "risk_signal", lambda *a: (_ for _ in ()).throw(ValueError("시험에서는 건너뛴다")))
+    ls.make_signal("2026-10-21")
+    saved = pd.read_parquet(tmp_path / "live.parquet")
+    by_model = dict(zip(saved["model"], saved["signal"]))
+    assert by_model["base"] == "상승" and by_model["h1"] == "하락" and by_model["h20"] == "상승" and "h5" not in by_model
+    assert saved.set_index("model").loc["h20", "model_config"].startswith("지표 base") and "정답 20거래일 ±6.0%" in saved.set_index("model").loc["h20", "model_config"]

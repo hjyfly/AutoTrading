@@ -130,3 +130,20 @@ def test_하락_위험_워크포워드는_정답_간격을_지키고_미래를_�
     out2 = tr.walk_forward_risk(features, make_risk_labels(close2), valid_start="2025-10-01", feature_set=None, freq="M")
     before = out.index < pd.Timestamp("2025-12-01")  # 이 덩어리의 학습 정답은 cut 전에 끝난다
     pd.testing.assert_frame_equal(out[before], out2[before])
+
+
+def test_20거래일_정답도_재학습일을_넘는_행은_학습에서_빠진다():
+    """11일차: 정답 기간이 길어도 같은 규칙. 재학습일 R 직전 20거래일 정답만 바꿔도 R 덩어리 예측은 같아야 한다."""
+    features, _ = make_data()
+    rng = np.random.default_rng(0)
+    close = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.02, len(features)))), index=features.index)
+    labels = make_labels(close, 20, 0.06)
+    base = tr.walk_forward(features, labels, valid_start="2025-06-02")
+    r = base["retrained_on"].unique()[2]
+    straddle = (labels.index < r) & (labels["future_date"] >= r)
+    assert straddle.sum() == 20
+    flipped = labels.copy()
+    flipped.loc[straddle, "label"] = "하락"
+    changed = tr.walk_forward(features, flipped, valid_start="2025-06-02")
+    block = base["retrained_on"] == r
+    pd.testing.assert_frame_equal(base[block], changed[block])

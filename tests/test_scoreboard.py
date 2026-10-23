@@ -197,3 +197,25 @@ def test_다른_종목은_운영_규칙이_바뀌어도_현금으로_판정하�
     assert "criteria" not in t["012450|S0 단독"] and t["012450|S0 단독"]["n_matured"] is None
     assert "원본 없음" in t["012450|S0 단독"]["drift"]["status"]
     assert sb.score_tickers(DAYS[5])["000660|S0 단독"]["n_signals"] == 5  # 기준일 뒤 기록은 세지 않는다
+
+
+def test_기간별_모델은_그_기간_정답으로_채점하고_같은_날부터_운영과_비교한다(tmp_path, monkeypatch):
+    samsung, inverse = prices(40)
+    live = pd.DataFrame({"model": ["base"] * 30 + ["h20"] * 20 + ["h1"] * 20,
+                         "signal": [UP] * 30 + [UP, DOWN] * 10 + [DOWN] * 20, "confidence": 0.5},
+                        index=list(DAYS[:30]) + list(DAYS[10:30]) * 2)
+    live["created_at"] = live.index + pd.Timedelta(hours=15, minutes=20)
+    live.to_parquet(tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "LIVE_PATH", tmp_path / "live.parquet")
+    monkeypatch.setattr(sb, "load_prices", lambda until: (samsung, inverse))
+    monkeypatch.setattr(config, "SCOREBOARD_PATH", str(tmp_path / "board.json"))
+    board = sb.build(DAYS[-1])
+    h20, h1 = board["models"]["h20"], board["models"]["h1"]
+    assert h20["n_matured"] == 10 and h1["n_matured"] == 20  # 40거래일 중 20거래일 뒤 종가가 있는 날은 앞 20일
+    assert "20거래일" in h20["title"] and "H4" in h20["title"]
+    expect = sb.score_model(live[live["model"] == "h20"]["signal"], samsung, inverse, horizon=20)
+    assert h20["accuracy"] == pytest.approx(expect["accuracy"])
+    p = h20["promotion"]
+    assert p["registered"] and "note" not in p  # 첫 기록일이 늦어도 같은 날부터 다시 계산한 운영 모델과 비교한다
+    same_base = sb.score_model(live[live["model"] == "base"]["signal"].loc[DAYS[10]:], samsung, inverse)
+    assert p["operational_calmar"] == pytest.approx(same_base["model"]["calmar"])

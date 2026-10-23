@@ -188,3 +188,87 @@ def test_뉴스_평가_지표_손계산():
     inv = np.linalg.inv(X.T @ X)
     hc0 = inv @ (X.T * u ** 2) @ X @ inv  # 지연 0 이면 Newey-West = White(HC0)
     assert ex.newey_west_t(x, y, 0) == pytest.approx(b[1] / np.sqrt(hc0[1, 1]))
+
+
+# ---- 11일차 기간별 신호 ----
+
+def test_N거래일마다_방식은_N일째에만_신호를_따르고_사이는_유지한다():
+    idx = pd.bdate_range("2025-01-01", periods=7)
+    sig = pd.Series(["상승", "하락", "하락", "하락", "상승", "하락", "하락"], index=idx)
+    assert ex.every_n(sig, 3).tolist() == ["상승", "보합", "보합", "하락", "보합", "보합", "하락"]
+    assert ex.every_n(sig, 1).tolist() == sig.tolist()
+
+
+def test_기간별_조건과_경로():
+    assert ex.horizon_cfg(None) == {**config.EXPERIMENT_BASE, "threshold": config.HORIZONS[config.OPERATIONAL_HORIZON]}
+    assert ex.horizon_cfg(20)["horizon_days"] == 20 and ex.horizon_cfg(20)["threshold"] == 0.06
+    assert ex.horizon_path("a/b.md", None).name == "b.md" and ex.horizon_path("a/b.md", config.OPERATIONAL_HORIZON).name == "b.md"
+    assert ex.horizon_path("a/b_000660.md", 20).name == "b_000660_h20.md"
+
+
+def test_기간별_구간_성적은_구간_끝까지_확정된_정답만_쓴다():
+    data = FakeData()
+    cfg = ex.horizon_cfg(10)
+    sig = data.signals(cfg)
+    labels = data.labels(10, cfg["threshold"])
+    close = data.samsung["Close"]
+    r = ex.horizon_period(sig, close, labels, "2025-05-01", "2025-06-30", 10)
+    part = sig.loc["2025-05-01":"2025-06-30"]
+    expect = labels[labels["future_date"] <= part.index.max()].index.intersection(part.index)
+    assert r["labeled"] == len(expect) and r["independent"] == len(expect) // 10
+    assert r["days"] == len(part) and set(r["every"]) == {"model", "judge_a", "hold_share"}
+    assert abs(sum(r["label_shares"].values()) - 1) < 1e-9
+    assert r["calibration"]["count"].sum() == len(expect)
+
+
+def test_H_판정은_칼마와_MDD_로_한_번만_한다(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DAY11_JUDGED_PATH", str(tmp_path / "judged.json"))
+    row = lambda calmar, mdd: {"start": "2022-03-04", "end": "2025-04-22", "days": 769, "model": {"calmar": calmar, "mdd": mdd, "total_return": 0.1}}
+    rows = {5: row(1.0, -0.2), 1: row(1.5, -0.2), 3: row(1.5, -0.3), 10: row(0.9, -0.1), 20: row(float("nan"), 0.0)}
+    v = ex.judge_day11(rows, ("2022-03-04", "2025-04-22"))
+    assert not v["recorded"]
+    assert [v["verdict"][h]["passed"] for h in ("H1", "H2", "H3", "H4")] == [True, False, False, False]
+    with pytest.raises(ValueError):
+        ex.judge_day11(rows, ("2022-03-04", "2025-04-30"))  # 등록 구간과 다르면 멈춘다
+    with pytest.raises(ValueError):
+        ex.judge_day11({**rows, 5: row(float("nan"), 0.0)})  # 기준 칼마가 없으면 멈춘다
+    assert not (tmp_path / "judged.json").exists()  # 판정 함수는 기록하지 않는다
+    ex.record_day11(v)
+    again = ex.judge_day11({**rows, 3: row(9.0, -0.01)})  # 숫자가 바뀌어도 기록된 판정을 돌려준다
+    assert again["recorded"] and again["verdict"]["H2"]["passed"] is False
+
+
+def test_기간별_모니터링은_뉴스_조건을_빼고_h_경로에_저장한다(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "HORIZON_MONITOR_AXES", {"execution": ["next_open"]})
+    monkeypatch.setattr(config, "MONITOR_REPORT_PATH", str(tmp_path / "report.md"))
+    monkeypatch.setattr(config, "MONITOR_HISTORY_PATH", str(tmp_path / "history.csv"))
+    days = pd.bdate_range("2025-08-01", "2025-08-29")
+    scores = pd.DataFrame({"signal_date": days, "news_consensus": 4, "news_consensus_conf": 0.9, "no_news": False})
+    result = ex.monitor(FakeData(scores), horizon=10)
+    assert list(result["tables"]) == ["숫자 조건 (검증 구간)"]
+    table = result["tables"]["숫자 조건 (검증 구간)"]
+    assert set(table["horizon_days"]) == {10} and set(table["threshold"]) == {config.HORIZONS[10]}
+    assert (tmp_path / "report_h10.md").exists() and (tmp_path / "history_h10.csv").exists() and not (tmp_path / "report.md").exists()
+
+
+def test_기간별_분석은_모든_기간을_같은_구간에서_계산하고_리포트를_남긴다(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "HORIZON_DIR", str(tmp_path / "h"))
+    monkeypatch.setattr(config, "DAY11_JUDGED_PATH", str(tmp_path / "judged.json"))
+    monkeypatch.setattr(config, "DAY11_REPORT_PATH", str(tmp_path / "day11.md"))
+    monkeypatch.setattr(config, "EXT_VALID_END", "2025-07-31")
+    monkeypatch.setattr(config, "HORIZONS", {1: 0.013, 5: 0.03, 10: 0.042})
+    monkeypatch.setattr(config, "DAY11_LEDGER", {1: "H1", 10: "H3"})
+
+    def fake(extended=False):
+        d = FakeData()
+        d.valid_start = config.VALID_START
+        return d
+    monkeypatch.setattr(ex, "Data", fake)
+    out = ex.horizon_study()
+    starts = {n: r["rows"][0]["start"] for n, r in out["result"].items()}
+    assert len(set(starts.values())) == 1
+    assert set(out["verdict"]["verdict"]) == {"H1", "H3"}
+    report = (tmp_path / "day11.md").read_text(encoding="utf-8")
+    for text in ["장부 H1 ~ H4 판정", "확장 구간 한눈에", "연도별 장세", "확신도 보정", "정답 분포", "N일마다"]:
+        assert text in report
+    assert (tmp_path / "h" / "signals_numeric_h10.parquet").exists() and (tmp_path / "judged.json").exists()

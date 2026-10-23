@@ -17,6 +17,9 @@
 - 종목별 실행(10일차): Data(code=...), 명령줄 --code·--all. 다른 종목은 그 종목 원본(거래정지일 제외)·운영 설정(S0) 기준이고
   인버스 ETF·뉴스 점수가 없다. 리포트는 ticker_path 로 종목 코드를 붙여 따로 저장한다(evaluation/reports/README.md 네이밍 규칙).
 - 9일차 뉴스 평가(--news): 점수별 IC·Newey-West·기준선과 장부 V1·V2·A1 확인 판정(judge_day9). 판정 기록은 장부가 기준이다.
+- 11일차 기간별 신호(--horizons): 1·3·5·10·20거래일 모델을 같은 운영 설정으로 학습해 검증·확장 구간 성적, 연도별 장세, 확신도 보정,
+  기준 A·B·C, 겹침 보정 IC, 두 매매 방식(매일·N거래일마다)을 비교하고 장부 H1 ~ H4 를 한 번만 판정한다(judge_day11).
+  조건 모니터링·지표 그룹 진단도 --horizon N 으로 기간마다 돌린다(리포트 이름 끝 _h<N>).
 """
 import argparse
 import itertools
@@ -28,7 +31,7 @@ import pandas as pd
 from src import config
 from src.pipeline import backtest as bt
 from src.pipeline import news_signal, scoreboard, train
-from src.pipeline.labels import DOWN, UP, make_labels
+from src.pipeline.labels import DOWN, FLAT, UP, make_labels
 
 TRAIN_KEYS = ("horizon_days", "threshold", "feature_set", "retrain_freq", "train_window")
 LABELS = {  # 보고서·화면에 쓰는 한국어 이름
@@ -47,6 +50,18 @@ def ticker_path(path: str, code: str) -> Path:
     """종목별 리포트·이력 경로. 운영 종목은 원래 경로 그대로, 다른 종목은 파일 이름 끝에 _종목코드 를 붙인다."""
     p = Path(path)
     return p if code == config.MAIN_TICKER else p.with_name(f"{p.stem}_{code}{p.suffix}")
+
+
+def horizon_path(path, horizon: int | None) -> Path:
+    """기간별 리포트·이력 경로. 운영 기간이면 그대로, 다른 기간은 파일 이름 끝에 _h<N> 을 붙인다(네이밍 규칙)."""
+    p = Path(path)
+    return p if horizon in (None, config.OPERATIONAL_HORIZON) else p.with_name(f"{p.stem}_h{horizon}{p.suffix}")
+
+
+def horizon_cfg(horizon: int | None) -> dict:
+    """운영 조건에서 정답 기간·기준만 그 기간 값(config.HORIZONS)으로 바꾼 조건."""
+    h = horizon or config.OPERATIONAL_HORIZON
+    return {**config.EXPERIMENT_BASE, "horizon_days": h, "threshold": config.HORIZONS[h]}
 
 
 class Data:
@@ -189,7 +204,8 @@ def run_one(cfg: dict, data: Data) -> dict:
     sim = (bt.simulate_split(sig, samsung_px, cfg["position_steps"], cfg["position_floor"]) if split
            else bt.simulate(sig, samsung_px, inverse_px, cfg["down_action"]))
     hold = bt.buy_and_hold(samsung_px, dates)
-    labels = data.labels(cfg["horizon_days"], cfg["threshold"])["label"]
+    all_labels = data.labels(cfg["horizon_days"], cfg["threshold"])
+    labels = all_labels[all_labels["future_date"] <= dates.max()]["label"]  # 구간 끝까지 확정된 정답만(구간 밖 가격으로 채점하지 않는다)
     m, h = bt.summary(sim["equity"]), bt.summary(hold)
     direction = bt.direction_hit_rate(sig, labels)
     has_label = labels.reindex(dates).notna()
@@ -484,18 +500,23 @@ def group_section(title: str, table: pd.DataFrame, curves: dict[str, pd.Series],
     return lines
 
 
-def monitor(data: Data | None = None, save: bool = True) -> dict:
+def monitor(data: Data | None = None, save: bool = True, horizon: int | None = None) -> dict:
     """사전 등록한 조건 목록(config.MONITOR_AXES·MONITOR_NEWS_AXES)으로 민감도 분석을 돌려 해석 리포트와 이력을 남긴다.
 
     같은 데이터면 숫자가 같다. 저장 데이터·뉴스 점수가 늘어나면 다시 돌릴 때 숫자가 바뀌고, 리포트에 지난 실행과의 차이가 나온다.
     앞으로의 실제 성과는 실시간 성적표(scoreboard.json)에서 가져와 함께 싣는다.
+    horizon 이 운영 기간이 아니면 그 기간의 정답으로 기준 조건을 바꾸고 config.HORIZON_MONITOR_AXES 로 돌린다(뉴스 조건은 뺀다).
     """
     data = data or Data()
+    h = horizon or config.OPERATIONAL_HORIZON
+    operational = h == config.OPERATIONAL_HORIZON
+    base_cfg = horizon_cfg(h)
     run_at = pd.Timestamp.now(tz=config.KST).strftime("%Y-%m-%d %H:%M")
-    numeric, numeric_curves = sensitivity(dict(config.EXPERIMENT_BASE), config.MONITOR_AXES, data)
+    numeric, numeric_curves = sensitivity(base_cfg, config.MONITOR_AXES if operational else config.HORIZON_MONITOR_AXES, data)
     groups = [("숫자 조건 (검증 구간)", numeric, numeric_curves,
-               "숫자 모델의 정답 정의·학습·매매 방식을 하나씩 바꿨다. 나머지 조건은 기준과 같다.", dict(config.EXPERIMENT_BASE))]
-    if data.news_range() is not None:
+               "숫자 모델의 정답 정의·학습·매매 방식을 하나씩 바꿨다. 나머지 조건은 기준과 같다."
+               + ("" if operational else f" 기준은 {h}거래일 ±{config.HORIZONS[h]:.1%} 모델이다(11일차, 운영 설정과 정답만 다름)."), base_cfg)]
+    if operational and data.news_range() is not None:
         news_base = {**config.EXPERIMENT_BASE, "news_mode": "adjust"}
         news, news_curves = sensitivity(news_base, config.MONITOR_NEWS_AXES, data)
         versions = sorted(int(v) for v in data.scores["scoring_version"].unique()) if "scoring_version" in data.scores else [1]
@@ -503,10 +524,11 @@ def monitor(data: Data | None = None, save: bool = True) -> dict:
                        f"뉴스 보정 방법을 하나씩 바꿨다. 기준은 지금 기준 B 규칙(합의 ±{config.NEWS_ADJUST_SCORE}, 확신도 {config.NEWS_ADJUST_MIN_CONF})이다. "
                        f"채점 버전 {versions}, 채점일 {len(data.scores)}일. 뉴스 유출 테스트는 {config.CRITERION_B_START}~{config.CRITERION_B_END}에서만 했다.", news_base))
     all_rows = pd.concat([t.assign(group=g) for g, t, *_ in groups], ignore_index=True)
-    history_path = ticker_path(config.MONITOR_HISTORY_PATH, data.code)
+    history_path = horizon_path(ticker_path(config.MONITOR_HISTORY_PATH, data.code), h)
     previous = pd.read_csv(history_path) if history_path.exists() else pd.DataFrame()
     snapshot = all_rows[all_rows["error"].isna()][["group", "name", "start", "end", "days", "total_return", "mdd", "calmar"]].assign(run_at=run_at)
-    lines = [f"# 조건 모니터링 리포트 — {data.name()}", "", f"계산 시각 {run_at} (KST) · 저장 데이터 끝 {config.DATA_END}"
+    lines = [f"# 조건 모니터링 리포트 — {data.name()}" + ("" if operational else f" · {config.HORIZON_LABELS[h]}({h}거래일) 신호"), "",
+             f"계산 시각 {run_at} (KST) · 저장 데이터 끝 {config.DATA_END}"
              + ("" if data.code == config.MAIN_TICKER else f" · 운영 설정(S0 단독, 지표 {len(config.FEATURE_SET_BASE)}개) 기준, 분야 알고리즘 지표·뉴스·인버스는 없음"), "",
              "> **탐색 결과**: 검증 구간을 이미 본 뒤 조건을 하나씩 바꿔 다시 계산한 숫자다. 공식 판정(기준 A·B)과 운영 설정을 바꾸지 않는다.",
              f"> **다중 비교 경고**: 조건 {len(all_rows)}개를 같은 구간에서 비교했다. 가장 좋아 보이는 조건에는 운이 섞여 있다. "
@@ -532,7 +554,9 @@ def monitor(data: Data | None = None, save: bool = True) -> dict:
     lines += ["## 앞으로의 성과 (실시간 성적표)", "",
               "아래는 매일 장 마감 전에 기록한 실제 신호의 채점 결과다. 위 숫자와 달리 조건을 보고 고를 수 없는 날들이라 가장 믿을 만한 확인 수단이다.", ""]
     board_path = Path(config.SCOREBOARD_PATH)
-    if board_path.exists():
+    if not operational:
+        lines.append(f"- {h}거래일 신호의 실시간 성적은 실시간 성적표의 기간별 줄에서 본다(11일차부터 기록).")
+    elif board_path.exists():
         board = json.loads(board_path.read_text(encoding="utf-8"))
         if data.code == config.MAIN_TICKER:
             lines += [f"- {x}" for x in scoreboard.summary_lines(board)]
@@ -543,7 +567,7 @@ def monitor(data: Data | None = None, save: bool = True) -> dict:
         lines.append("- 아직 성적표가 없다.")
     report = "\n".join(lines) + "\n"
     if save:
-        ticker_path(config.MONITOR_REPORT_PATH, data.code).write_text(report, encoding="utf-8", newline="\n")
+        horizon_path(ticker_path(config.MONITOR_REPORT_PATH, data.code), h).write_text(report, encoding="utf-8", newline="\n")
         history_path.parent.mkdir(parents=True, exist_ok=True)
         pd.concat([previous, snapshot], ignore_index=True).to_csv(history_path, index=False, encoding="utf-8-sig")
     return {"report": report, "tables": {g: t for g, t, *_ in groups}, "curves": {g: c for g, _, c, *_ in groups},
@@ -615,14 +639,16 @@ def study_verdict(r: pd.Series, b: pd.Series) -> tuple[str, bool]:
     return "거의 같음", False
 
 
-def feature_study(data: Data | None = None, save: bool = True) -> dict:
+def feature_study(data: Data | None = None, save: bool = True, horizon: int | None = None) -> dict:
     """지표 그룹 진단. 기준(운영 지표 묶음)에서 기존 그룹을 하나씩 빼고, 후보 그룹을 하나씩 더해 같은 구간에서 비교한다.
 
     추천 규칙(study_verdict)을 통과한 변경을 모두 합친 '추천 묶음' 도 계산한다. 결과는 검증 구간을 본 뒤의 탐색이라
     운영 신호를 바꾸지 않는다. 추천 묶음은 config.LIVE_EXTRA_FEATURE_SETS 에 넣어 앞으로의 날로 다시 확인한다.
+    horizon 이 운영 기간이 아니면 그 기간의 정답(config.HORIZONS)으로 기준과 모든 묶음을 학습한다(11일차).
     """
     data = data or Data()
-    base_cfg = dict(config.EXPERIMENT_BASE)
+    h = horizon or config.OPERATIONAL_HORIZON
+    base_cfg = horizon_cfg(h)
     base_groups = list(config.FEATURE_GROUPS_BASE)
     extras = [g for g in config.FEATURE_GROUPS if g not in base_groups]
     changes = {**{train.group_set_name([x for x in base_groups if x != g]): ("빼기", g) for g in base_groups},
@@ -660,10 +686,11 @@ def feature_study(data: Data | None = None, save: bool = True) -> dict:
     if data.extended:  # 운영 종목은 4일차에 처음 본 구간, 다른 종목은 8일차 고르기·판정 구간과 겹친다
         label = "확장 검증 구간: 처음 보는 데이터" if data.code == config.MAIN_TICKER else "확장 구간: 8일차 판정 구간과 겹침, 탐색"
         report = report.replace("# 지표 그룹 진단", f"# 지표 그룹 진단 ({label})", 1)
-    report = report.replace("# 지표 그룹 진단", f"# 지표 그룹 진단 — {data.name()}", 1)
+    report = report.replace("# 지표 그룹 진단", f"# 지표 그룹 진단 — {data.name()}"
+                            + ("" if h == config.OPERATIONAL_HORIZON else f" · {config.HORIZON_LABELS[h]}({h}거래일 ±{config.HORIZONS[h]:.1%}) 신호"), 1)
     if save:
         path = config.FEATURE_STUDY_EXT_REPORT_PATH if data.extended else config.FEATURE_STUDY_REPORT_PATH
-        ticker_path(path, data.code).write_text(report, encoding="utf-8", newline="\n")
+        horizon_path(ticker_path(path, data.code), h).write_text(report, encoding="utf-8", newline="\n")
     return {"report": report, "table": study, "base": b, "curves": curves, "recommended": recommended}
 
 
@@ -682,8 +709,8 @@ def study_report(study: pd.DataFrame, b: pd.Series, recommended: dict | None) ->
         "칼마": view["calmar"].map(lambda v: f"{v:.2f}"), "포지션 변경": view["trades"].astype(int), "판정": view["verdict"]})
     lines = ["# 지표 그룹 진단", "", f"계산 시각 {run_at} (KST) · 구간 {b['start']} ~ {b['end']} ({int(b['days'])}거래일)", "",
              "> **탐색 결과**: 검증 구간을 이미 본 뒤 지표 그룹을 바꿔 다시 학습한 숫자다. 공식 판정과 운영 신호를 바꾸지 않는다.",
-             f"> **다중 비교 경고**: 묶음 {len(study)}개를 같은 구간에서 비교했다. 정답이 {config.LABEL_HORIZON_DAYS}거래일씩 겹쳐 실제로 독립인 표본은 "
-             f"약 {int(b['days']) // config.LABEL_HORIZON_DAYS}개라, 정확도 몇 %p 차이는 운으로도 생긴다.", "",
+             f"> **다중 비교 경고**: 묶음 {len(study)}개를 같은 구간에서 비교했다. 정답이 {int(b['horizon_days'])}거래일씩 겹쳐 실제로 독립인 표본은 "
+             f"약 {int(b['days']) // int(b['horizon_days'])}개라, 정확도 몇 %p 차이는 운으로도 생긴다.", "",
              f"추천 규칙(고정): 3분류 정확도(±{config.FEATURE_STUDY_ACC_TOL:.0%}p)·수익(±{TOL * 100:.1f}%p)·MDD(±{TOL * 100:.1f}%p) 중 "
              "허용 폭 넘게 나빠진 것이 없고 하나 이상이 허용 폭 넘게 좋아진 변경만 추천한다.", "",
              "## 기준선", "",
@@ -952,6 +979,232 @@ def news_study_report(metrics: pd.DataFrame, auc: pd.DataFrame, verdict: dict, i
     return "\n".join(lines) + "\n"
 
 
+# ---- 11일차 기간별 신호 (DAY11_PLAN.md 8절, 장부 H1 ~ H4). 과거 구간은 모두 탐색이고, H1 ~ H4 판정은 기간마다 한 번만 ----
+
+def every_n(signals: pd.Series, n: int) -> pd.Series:
+    """N거래일마다 한 번(구간 첫날부터) 그날 신호대로 바꾸고, 그 사이 날은 보합(포지션 유지)으로 둔다. 겹치지 않는 매매 방식."""
+    out = pd.Series(FLAT, index=signals.index)
+    out.iloc[::n] = signals.iloc[::n]
+    return out
+
+
+def horizon_period(sig: pd.DataFrame, close: pd.Series, labels: pd.DataFrame, start, end, n: int) -> dict:
+    """한 기간 모델의 한 구간 성적: 매일 신호대로·N거래일마다 두 매매 방식, 정답 적중, 기준 A·B·C, 겹침 보정 IC.
+
+    정답은 구간 끝날까지 확정된 것(future_date ≤ 구간 끝)만 쓴다. 매매는 구간마다 현금에서 다시 시작한다(하락 = 현금).
+    """
+    part = sig.loc[start:end]
+    daily = bt.period_stats(part["signal"], close, labels, start, end)
+    every = bt.period_stats(every_n(part["signal"], n), close, labels, start, end)
+    sim = bt.simulate(part["signal"], close, pd.Series(dtype=float), "cash")
+    up_hold, up_months = bt.up_month_hold((sim["position"] == bt.LONG).astype(float), close)
+    known = labels[labels["future_date"] <= pd.Timestamp(part.index.max())].reindex(part.index)
+    has = known["label"].notna()
+    s, k = part.loc[has, "signal"], known.loc[has, "label"]
+    direction = bt.direction_hit_rate(s, k)
+    shares = k.value_counts(normalize=True)
+    score = part.loc[has, f"p_{UP}"] - part.loc[has, f"p_{DOWN}"]
+    ic = score_metrics(score, known.loc[has, "future_return"], lag=max(n - 1, 0))
+    return {
+        **daily, "every": {"model": every["model"], "judge_a": every["judge_a"], "hold_share": every["hold_share"]},
+        "labeled": int(has.sum()), "independent": int(has.sum()) // n,
+        "most_frequent": shares.idxmax() if len(shares) else None, "most_frequent_accuracy": float(shares.max()) if len(shares) else float("nan"),
+        "label_shares": {c: float(shares.get(c, 0)) for c in (UP, FLAT, DOWN)},
+        "hit_rate": direction["hit_rate"], "critical_error": direction["critical_error_rate"],
+        "up_precision": float((k[s == UP] == UP).mean()) if (s == UP).any() else float("nan"),
+        "b_ok": None if pd.isna(daily["down_precision"]) else bool(daily["down_precision"] > daily["actual_down_share"]),  # 하락 신호가 없으면 판정 없음(성적표와 같음)
+        "up_month_hold": up_hold, "up_months": up_months,
+        "c_ok": None if not up_months else bool(up_hold >= config.UP_MONTH_MIN_HOLD),
+        "ic": ic["ic"], "nw_t": ic["nw_t"], "spread": ic["spread"],
+        "calibration": bt.calibration(part.loc[has, "confidence"], s == k),
+    }
+
+
+def years_of(lo: pd.Timestamp, hi: pd.Timestamp) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """lo~hi 를 해마다 자른 구간. 해의 일부만 들어가면 '(부분)' 을 붙인다(4일차 extended_report 와 같은 규칙)."""
+    out = []
+    for y in range(lo.year, hi.year + 1):
+        s, e = max(lo, pd.Timestamp(f"{y}-01-01")), min(hi, pd.Timestamp(f"{y}-12-31"))
+        partial = s > pd.Timestamp(f"{y}-01-10") or e < pd.Timestamp(f"{y}-12-20")
+        out.append((f"{y}년{' (부분)' if partial else ''}", s, e))
+    return out
+
+
+def horizon_signals(n: int, valid: Data, ext: Data) -> dict:
+    """기간 N 모델의 워크포워드 신호(검증·확장)를 만들고 config.HORIZON_DIR 에 저장한다. 5거래일도 같은 방법으로 다시 만든다(같은 설정의 비교 기준)."""
+    cfg = horizon_cfg(n)
+    out = {"valid": valid.signals(cfg), "ext": ext.signals(cfg)}
+    d = Path(config.HORIZON_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    out["valid"].to_parquet(d / f"signals_numeric_h{n}.parquet")
+    out["ext"].to_parquet(d / f"signals_numeric_h{n}_ext.parquet")
+    return out
+
+
+def judge_day11(ext_rows: dict[int, dict], period: tuple[str, str] | None = None) -> dict:
+    """장부 H1 ~ H4 판정: 확장 구간에서 5거래일 운영 모델보다 칼마가 높고 MDD 가 더 깊지 않으면 통과(매매 기준 후보).
+
+    판정은 한 번만 한다. config.DAY11_JUDGED_PATH 가 있으면 다시 계산하지 않고 기록을 돌려준다(recorded=True).
+    여기서는 기록하지 않는다(record_day11 이 리포트를 만든 뒤 남긴다). period 를 주면 모든 기간이 그 구간·같은 날 수인지 확인한다.
+    """
+    path = Path(config.DAY11_JUDGED_PATH)
+    if path.exists():
+        return {**json.loads(path.read_text(encoding="utf-8")), "recorded": True}
+    spans = {(r["start"], r["end"], r["days"]) for r in ext_rows.values()}
+    if len(spans) != 1:
+        raise ValueError(f"기간마다 판정 구간·날 수가 다르다: {spans}")
+    if period is not None and next(iter(spans))[:2] != tuple(period):
+        raise ValueError(f"판정 구간 {next(iter(spans))[:2]} 이 등록 구간 {tuple(period)} 과 다르다")
+    base = ext_rows[config.OPERATIONAL_HORIZON]["model"]
+    if pd.isna(base["calmar"]):
+        raise ValueError("5거래일 기준 칼마를 계산할 수 없어(MDD 0) 판정하지 않는다")
+    verdict = {}
+    for n, hid in config.DAY11_LEDGER.items():
+        m = ext_rows[n]["model"]
+        calmar_ok = bool(pd.notna(m["calmar"]) and pd.notna(base["calmar"]) and m["calmar"] > base["calmar"] + bt.EPS)
+        mdd_ok = bool(abs(m["mdd"]) <= abs(base["mdd"]) + bt.EPS)
+        verdict[hid] = {"horizon": n, "threshold": config.HORIZONS[n], "calmar": m["calmar"], "mdd": m["mdd"], "total_return": m["total_return"],
+                        "base_calmar": base["calmar"], "base_mdd": base["mdd"], "base_return": base["total_return"],
+                        "calmar_ok": calmar_ok, "mdd_ok": mdd_ok, "passed": calmar_ok and mdd_ok}
+    first = ext_rows[config.OPERATIONAL_HORIZON]
+    return {"judged_at": pd.Timestamp.now(tz=config.KST).strftime("%Y-%m-%d %H:%M"),
+            "period": [first["start"], first["end"]], "days": first["days"], "data_end": config.DATA_END,
+            "verdict": verdict, "recorded": False}
+
+
+def record_day11(verdict: dict) -> None:
+    """처음 한 판정을 기록한다(다시 판정하지 않도록). 코드 버전(git 커밋)을 함께 남긴다."""
+    import subprocess
+    if verdict.get("recorded"):
+        return
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = None
+    path = Path(config.DAY11_JUDGED_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**{k: v for k, v in verdict.items() if k != "recorded"}, "commit": commit}, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+
+
+def horizon_study(save: bool = True) -> dict:
+    """11일차 기간별 분석: 기간마다 검증 구간·확장 구간·연도별 성적, 확신도 보정, 정답 분포·학습 간격을 계산하고 H1 ~ H4 를 판정한다."""
+    valid, ext = Data(), Data(extended=True)
+    close = ext.samsung["Close"].astype(float)
+    ext_start, ext_end = pd.Timestamp(ext.valid_start), pd.Timestamp(config.EXT_VALID_END)
+    result = {}
+    for n in sorted(config.HORIZONS):
+        sig = horizon_signals(n, valid, ext)
+        labels = ext.labels(n, config.HORIZONS[n])
+        v_start, v_end = sig["valid"].index.min(), sig["valid"].index.max()
+        periods = [("확장 구간(판정)", "ext", ext_start, ext_end), *[(name, "ext", s, e) for name, s, e in years_of(ext_start, ext_end)],
+                   ("검증 구간(참고, 이미 본 구간)", "valid", v_start, v_end), *[(f"{name} · 참고", "valid", s, e) for name, s, e in years_of(v_start, v_end)]]
+        rows = [{"name": name, "source": src, **horizon_period(sig[src], close, labels, s, e, n)} for name, src, s, e in periods]
+        first_train = labels[labels["future_date"] < sig["ext"]["retrained_on"].iloc[0]]
+        first_train = first_train[first_train.index.isin(ext.features[train.feature_columns(ext.features, "base")].dropna().index)]  # 확장 구간 첫 재학습의 실제 학습 행
+        result[n] = {"rows": rows, "train_label_shares": first_train["label"].value_counts(normalize=True).to_dict(),
+                     "first_train_rows": int(len(first_train)),
+                     "last_retrained_on": str(pd.Timestamp(sig["valid"]["retrained_on"].iloc[-1]).date()),
+                     "last_train_future_date": str(pd.Timestamp(sig["valid"]["train_last_future_date"].iloc[-1]).date()),
+                     "train_rows": int(sig["valid"]["train_rows"].iloc[-1])}
+    verdict = judge_day11({n: r["rows"][0] for n, r in result.items()}, (str(ext_start.date()), config.EXT_VALID_END))
+    report = horizon_report(result, verdict)
+    if save:
+        Path(config.DAY11_REPORT_PATH).write_text(report, encoding="utf-8", newline="\n")
+        record_day11(verdict)  # 리포트까지 만든 뒤에 판정을 기록한다
+    return {"result": result, "verdict": verdict, "report": report}
+
+
+def horizon_report(result: dict, verdict: dict) -> str:
+    """11일차 기간별 분석 리포트(마크다운)."""
+    pct = lambda v: "" if v is None or pd.isna(v) else f"{v:.1%}"
+    num = lambda v, f="{:.2f}": "" if v is None or pd.isna(v) else f.format(v)
+    name = lambda n: f"{config.HORIZON_LABELS[n]}({n}거래일 ±{config.HORIZONS[n]:.1%})"
+    yes = lambda ok: "없음" if ok is None else ("통과" if ok else "실패")
+
+    def summary_table(idx: int) -> str:
+        """기간마다 한 줄(그 구간의 핵심 숫자)."""
+        rows = []
+        for n, r in result.items():
+            x = r["rows"][idx]
+            rows.append({"기간": name(n), "정답 확정": x["labeled"], "독립 표본": x["independent"], "3분류 정확도": pct(x["accuracy"]),
+                         "늘 최빈": f"{pct(x['most_frequent_accuracy'])}({x['most_frequent']})", "방향 적중": pct(x["hit_rate"]),
+                         "상승 적중": pct(x["up_precision"]), "하락 적중 / 실제 하락": f"{pct(x['down_precision'])} / {pct(x['actual_down_share'])}",
+                         "정반대": pct(x["critical_error"]), "IC": num(x["ic"], "{:+.3f}"), "NW t": num(x["nw_t"], "{:+.2f}"),
+                         "매일: 수익 / MDD / 칼마": f"{x['model']['total_return']:+.1%} / {x['model']['mdd']:.1%} / {num(x['model']['calmar'])}",
+                         "N일마다: 수익 / MDD / 칼마": f"{x['every']['model']['total_return']:+.1%} / {x['every']['model']['mdd']:.1%} / {num(x['every']['model']['calmar'])}",
+                         "A·B·C": f"{yes(x['judge_a'])}·{yes(x['b_ok'])}·{yes(x['c_ok'])}",
+                         "보유일(매일)": pct(x["hold_share"])})
+        return pd.DataFrame(rows).to_markdown(index=False)
+
+    first = next(iter(result.values()))["rows"]
+    ext0, val0 = first[0], next(x for x in first if x["source"] == "valid")
+    lines = [f"# 11일차 기간별 신호 — {config.MULTI_TICKERS[config.MAIN_TICKER][0]}", "",
+             f"계산 시각 {pd.Timestamp.now(tz=config.KST):%Y-%m-%d %H:%M} (KST) · 계획 [DAY11_PLAN.md](../../DAY11_PLAN.md) · 장부 [preregistration.md](preregistration.md) H1 ~ H4", "",
+             f"- 모든 기간이 같은 운영 설정이다: 지표 {len(config.FEATURE_SET_BASE)}개(운영 base), 재학습 {config.RETRAIN_FREQS[config.RETRAIN_FREQ]}, "
+             f"학습은 정답 기간이 재학습일 전에 끝난 행만(누적), 하락 = 현금, t 종가 체결, 수수료 {config.FEE_RATE:.1%}. 정답 기간·기준만 다르다(±{config.LABEL_THRESHOLD:.0%} × √(N/{config.OPERATIONAL_HORIZON})).",
+             "- 매매 방식 두 가지: **매일** = 매일 신호대로(지금 운영 규칙), **N일마다** = N거래일마다 한 번 신호대로 바꾸고 그 사이는 유지(겹치지 않음). 구간마다 현금에서 다시 시작한다.",
+             f"- 기준 A·B·C 는 SERVICE.md 5.2 와 같은 식이다(A 위험 대비 수익, B 하락 신호 적중 > 실제 하락 비율, C 들고 있기 {config.UP_MONTH_MIN_RETURN:+.0%} 이상인 달 보유일 ≥ {config.UP_MONTH_MIN_HOLD:.0%}). 매일 방식 기준.",
+             "- 정확도·IC 는 정답이 N거래일씩 겹쳐 실제 독립 표본은 '독립 표본' 칸 정도다. IC 는 (상승 확률 − 하락 확률) 과 N거래일 수익의 스피어만 상관, "
+             "NW t 는 지연 N-1 Newey-West 로 겹침을 보정한 t 값이다(|t| ≥ 2 면 우연으로 보기 어렵다).",
+             f"- **매매 기준은 {config.OPERATIONAL_HORIZON}거래일 그대로다.** 판정을 통과한 기간도 실시간 성적표에서 확정 신호 {config.LIVE_PROMOTION_MIN_SIGNALS}개 이상 쌓인 뒤 5.3 으로 다시 확인하고, 바꿀지는 사용자가 정한다.", "",
+             "## 장부 H1 ~ H4 판정 (확장 구간, 한 번만)", ""]
+    v = verdict["verdict"]
+    lines += [f"판정 시각 {verdict['judged_at']} · 구간 {verdict['period'][0]} ~ {verdict['period'][1]} · 기준: 같은 구간 5거래일 운영 모델(매일 방식) 칼마 "
+              f"{num(next(iter(v.values()))['base_calmar'])}, MDD {pct(next(iter(v.values()))['base_mdd'])}"
+              + (" · **이미 기록된 판정을 그대로 싣는다(다시 판정하지 않음)**" if verdict.get("recorded") else ""), "",
+              pd.DataFrame([{"ID": hid, "기간": name(x["horizon"]), "수익": f"{x['total_return']:+.1%}", "MDD": pct(x["mdd"]), "칼마": num(x["calmar"]),
+                             "칼마 > 5거래일": yes(x["calmar_ok"]), "MDD 더 깊지 않음": yes(x["mdd_ok"]), "판정": "**통과(매매 기준 후보)**" if x["passed"] else "불통과"}
+                            for hid, x in v.items()]).to_markdown(index=False), "",
+              "확장 구간은 5거래일 모델 판정(4일차)에 이미 쓴 구간이라 가격 흐름을 본 적이 있다(선택 편향). 다른 기간에는 처음 쓰는 판정이다.", "",
+              f"## 확장 구간 한눈에 ({ext0['start']} ~ {ext0['end']}, {ext0['days']}거래일, 들고 있기 {ext0['hold']['total_return']:+.1%} / MDD {pct(ext0['hold']['mdd'])})", "",
+              summary_table(0), "",
+              f"## 검증 구간 한눈에 (참고, 이미 본 구간: {val0['start']} ~ {val0['end']}, {val0['days']}거래일, 들고 있기 {val0['hold']['total_return']:+.1%} / MDD {pct(val0['hold']['mdd'])})", "",
+              summary_table(first.index(val0)), "", "## 연도별 장세 (매일 방식 / N일마다 방식)", "",
+              f"장세는 그 해 들고 있기 수익 ≥ {config.REGIME_UP:+.0%} 상승장, ≤ {config.REGIME_DOWN:+.0%} 하락장. '· 참고' 는 검증 구간(이미 본 구간)이다.", ""]
+    year_rows = []
+    for i, x in enumerate(first):
+        if i in (0, first.index(val0)):
+            continue
+        row = {"구간": x["name"], "장세": x["regime"], "들고 있기": f"{x['hold']['total_return']:+.1%} / {pct(x['hold']['mdd'])}"}
+        for n, r in result.items():
+            y = r["rows"][i]
+            row[config.HORIZON_LABELS[n]] = f"{y['model']['total_return']:+.1%} / {pct(y['model']['mdd'])} · {y['every']['model']['total_return']:+.1%}"
+        year_rows.append(row)
+    lines += [pd.DataFrame(year_rows).to_markdown(index=False), "", "칸: 매일 방식 수익 / MDD · N일마다 방식 수익", ""]
+    lines += ["## 장세별 확인 (4일차와 같은 규칙, 확장 구간 안의 해)", ""]
+    for n, r in result.items():
+        checks = []
+        for x in r["rows"][1:first.index(val0)]:
+            if x["regime"] == "하락장":
+                checks.append(f"{x['name']} 하락장 MDD {pct(x['model']['mdd'])} vs {pct(x['hold']['mdd'])} → {'얕음' if abs(x['model']['mdd']) < abs(x['hold']['mdd']) else '얕지 않음'}")
+            elif x["regime"] == "상승장":
+                checks.append(f"{x['name']} 상승장 수익 {x['model']['total_return']:+.1%} vs 절반 {0.5 * x['hold']['total_return']:+.1%} → "
+                              f"{'이상' if x['model']['total_return'] >= 0.5 * x['hold']['total_return'] else '미만'}")
+        lines.append(f"- {name(n)}: " + ("; ".join(checks) or "상승·하락장 해가 없다"))
+    lines += ["", "## 확신도 보정 (확장 구간, 확신도 구간별 신호 수 · 적중)", ""]
+    cal = {}
+    for n, r in result.items():
+        c = r["rows"][0]["calibration"]
+        cal[config.HORIZON_LABELS[n]] = [f"{int(cnt)} · {pct(hit)}" if cnt else "" for cnt, hit in zip(c["count"], c["hit_rate"])]
+        bins = [str(b) for b in c.index]
+    lines += [pd.DataFrame(cal, index=bins).rename_axis("확신도").reset_index().to_markdown(index=False), "",
+              "확신도가 높은 구간일수록 적중이 높아야 확신도를 믿을 수 있다.", "",
+              "## 정답 분포 · 학습 간격", ""]
+    lines += [pd.DataFrame([{"기간": name(n), **{f"첫 학습 {c}": pct(r["train_label_shares"].get(c, 0)) for c in (UP, FLAT, DOWN)},
+                             "첫 학습 행": r["first_train_rows"],
+                             "확장 구간 상승·보합·하락": " / ".join(pct(r["rows"][0]["label_shares"][c]) for c in (UP, FLAT, DOWN)),
+                             "검증 구간 마지막 재학습": r["last_retrained_on"], "그때 학습 마지막 정답일": r["last_train_future_date"], "그때 학습 행": r["train_rows"]}
+                            for n, r in result.items()]).to_markdown(index=False), "",
+              "'첫 학습' 은 확장 구간 첫 재학습에 실제로 쓴 행(정답이 재학습일 전에 끝나고 지표가 모두 있는 날)이다. "
+              "기간이 길수록 정답이 늦게 확정되어 재학습일 직전 N거래일 행이 학습에서 빠진다(시점 규칙).", "",
+              "## 함께 볼 리포트", "",
+              *[f"- {name(n)}: [조건 모니터링]({horizon_path(Path(config.MONITOR_REPORT_PATH), n).name}) · "
+                f"[지표 그룹 진단(검증)]({horizon_path(Path(config.FEATURE_STUDY_REPORT_PATH), n).name}) · "
+                f"[지표 그룹 진단(확장)]({horizon_path(Path(config.FEATURE_STUDY_EXT_REPORT_PATH), n).name})" for n in result], ""]
+    return "\n".join(lines) + "\n"
+
+
 def main(argv=None):
     """예: python -m src.pipeline.experiment --vary horizon_days=3,5,10 --vary down_action=cash,inverse"""
     parser = argparse.ArgumentParser(description="조건 비교 실험 (탐색)")
@@ -965,7 +1218,15 @@ def main(argv=None):
     parser.add_argument("--news", action="store_true", help="9일차 뉴스 평가 리포트(기사 피처·V1·V2·A1)를 만든다")
     parser.add_argument("--code", default=None, help="종목 코드(비우면 운영 종목). 조건 비교·모니터링·지표 그룹 진단을 그 종목으로 한다")
     parser.add_argument("--all", action="store_true", help="--monitor 와 함께: 종목 레지스트리의 모든 종목")
+    parser.add_argument("--horizons", action="store_true", help="11일차 기간별 분석 리포트와 장부 H1 ~ H4 판정(한 번만)")
+    parser.add_argument("--horizon", default=None, help="--monitor·--features 와 함께: 정답 기간(거래일) 또는 all(config.HORIZONS 전부)")
     args = parser.parse_args(argv)
+    horizons = list(config.HORIZONS) if args.horizon == "all" else [int(args.horizon) if args.horizon else None]
+    if args.horizons:
+        result = horizon_study()
+        print({k: x["passed"] for k, x in result["verdict"]["verdict"].items()}, "(이미 기록된 판정)" if result["verdict"].get("recorded") else "")
+        print("저장:", config.DAY11_REPORT_PATH)
+        return
     if args.news:
         result = news_study()
         print({k: v.get("passed") for k, v in result["verdict"].items() if isinstance(v, dict)})
@@ -973,16 +1234,19 @@ def main(argv=None):
         return
     if args.features:
         data = Data(extended=args.ext, code=args.code)
-        result = feature_study(data)
-        rec = result["recommended"]
-        print("추천 묶음:", rec["feature_set"] if rec else "없음(기존 묶음 유지)")
-        print("저장:", ticker_path(config.FEATURE_STUDY_EXT_REPORT_PATH if args.ext else config.FEATURE_STUDY_REPORT_PATH, data.code))
+        for h in horizons:
+            result = feature_study(data, horizon=h)
+            rec = result["recommended"]
+            print(f"[{h or config.OPERATIONAL_HORIZON}거래일] 추천 묶음:", rec["feature_set"] if rec else "없음(기존 묶음 유지)")
+            print("저장:", horizon_path(ticker_path(config.FEATURE_STUDY_EXT_REPORT_PATH if args.ext else config.FEATURE_STUDY_REPORT_PATH, data.code), h))
         return
     if args.monitor:
         for code in (list(config.MULTI_TICKERS) if args.all else [args.code or config.MAIN_TICKER]):
-            result = monitor(Data(code=code))
-            print(f"[{code}]", "\n".join(result["summary"]))
-            print("저장:", ticker_path(config.MONITOR_REPORT_PATH, code), ticker_path(config.MONITOR_HISTORY_PATH, code))
+            data = Data(code=code)
+            for h in horizons:
+                result = monitor(data, horizon=h)
+                print(f"[{code} · {h or config.OPERATIONAL_HORIZON}거래일]", "\n".join(result["summary"]))
+                print("저장:", horizon_path(ticker_path(config.MONITOR_REPORT_PATH, code), h))
         return
     base = dict(config.EXPERIMENT_BASE)
     for item in args.set:

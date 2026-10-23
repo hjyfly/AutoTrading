@@ -35,8 +35,10 @@ SYSTEM_PROMPT = """너는 {horizon}거래일 방향 신호 시스템의 질의�
 - 학습 중에 알게 된 이후의 일도 쓰지 않는다. 도구 결과에 없는 사실은 지어내지 않는다.
 {period_note}
 예측 정의:
-- 이 시스템은 다음 날이 아니라 {horizon}거래일 뒤 종가 방향(±{threshold:.0%} 기준 상승·보합·하락)을 예측한다.
-- 질문이 '내일'·'다음 달'처럼 다른 기간을 물으면, 답 첫머리에 이 정의를 밝혀 바로잡은 뒤 시점의 신호와 확신도를 알려 준다.
+- 운영·매매 기준 신호는 {horizon}거래일 뒤 종가 방향(±{threshold:.0%} 기준 상승·보합·하락)이다.
+- {samsung}는 참고용 기간별 신호도 있다: {horizons}. get_signal 에 horizon(거래일 수)을 넘겨 조회한다. 매매 기준은 {horizon}거래일 신호뿐이다.
+- 질문이 '내일'(1거래일)·'2주 뒤'(10거래일)·'한 달 뒤'(20거래일)처럼 기간을 물으면 그 기간 신호를 조회해 답하고, 그것이 참고 신호이며 매매 기준은 {horizon}거래일이라고 밝힌다. 기간을 말하지 않으면 {horizon}거래일 신호로 답한다.
+- 위 기간에 없는 기간을 물으면 답 첫머리에 지원하는 기간을 밝혀 바로잡은 뒤 가장 가까운 기간의 신호를 알려 준다. 다른 종목은 {horizon}거래일 신호만 있다.
 - 예측은 틀릴 수 있고 매매는 사용자가 직접 판단해야 한다고 적는다.
 
 도구 사용:
@@ -170,7 +172,8 @@ def answer(question: str, model=None) -> dict:
     with tools.request_as_of(as_of) as cap:
         notes = period_notes(question, as_of=str(cap.date()))  # 상한으로 낮춘 시점 기준으로 '알 수 없는 날'을 알린다
         agent = create_agent(model or llm.get_agent_llm(), AGENT_TOOLS, system_prompt=SYSTEM_PROMPT.format(
-            as_of=cap.date(), horizon=config.LABEL_HORIZON_DAYS, threshold=config.LABEL_THRESHOLD, cutoff=config.SIGNAL_CUTOFF_KST,
+            as_of=cap.date(), horizon=config.OPERATIONAL_HORIZON, threshold=config.HORIZONS[config.OPERATIONAL_HORIZON], cutoff=config.SIGNAL_CUTOFF_KST,
+            horizons=", ".join(f"{config.HORIZON_LABELS[n]}={n}거래일 ±{config.HORIZONS[n]:.1%}" for n in config.HORIZONS if n != config.OPERATIONAL_HORIZON),
             samsung=f"{tools.ticker_name(config.MAIN_TICKER)}({config.MAIN_TICKER})",
             others="·".join(f"{v[0]}({c})" for c, v in config.MULTI_TICKERS.items() if c != config.MAIN_TICKER),
             trade=tools.role_names(config.TRADE_TICKERS), news=tools.role_names(config.NEWS_TICKERS),

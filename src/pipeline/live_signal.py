@@ -6,6 +6,8 @@
   config.NEWS_ADJUST_IN_SIGNAL 일 때만 한다(2026-10-22 부터 꺼짐, 뉴스는 참고용).
   채점 7번 + 기사별 추출 1번(형식 오류면 최대 3번), 하루 약 $0.27 이라 15:15 이후 요청할 때만 돌린다(평일 15:20 자동 실행 포함).
 - 결과는 data/processed/signals_live.parquet 에 날짜별로 남긴다(저장된 검증 신호 파일은 건드리지 않는다).
+- 11일차 기간별 신호: 운영 기간(5거래일) 말고 config.HORIZONS 의 다른 기간도 같은 지표·재학습 규칙으로 학습해 model=h<N> 으로 기록한다
+  (참고 신호, 뉴스 보정 없음, 매매 기준은 운영 기간 그대로). 과거 검증은 experiment.horizon_study 의 기간별 워크포워드와 같다.
 """
 from pathlib import Path
 
@@ -29,8 +31,11 @@ def block_start(t: pd.Timestamp, days: pd.DatetimeIndex, valid_start=None, freq:
     return same_block[0]
 
 
-def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base") -> dict:
-    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base'·'candidate' 또는 그룹 묶음 이름."""
+def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str = "base", horizon: int | None = None) -> dict:
+    """t 일 15:15 에 알 수 있던 데이터로 숫자 모델 신호와 클래스 확률을 만든다. feature_set 은 'base'·'candidate' 또는 그룹 묶음 이름.
+    horizon 은 정답 기간(거래일, 기본 운영 기간). 다른 기간이면 그 기간 정답(config.HORIZONS 기준)으로 학습하고 모델 이름은 h<N> 이다."""
+    n = horizon or config.OPERATIONAL_HORIZON
+    model_name = feature_set if n == config.OPERATIONAL_HORIZON else tools.horizon_model(n)
     t = tools.resolve_as_of(as_of)
     if t.weekday() >= 5:
         raise ValueError(f"{t.date()} 는 주말이라 신호를 만들지 않는다")
@@ -42,7 +47,7 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
         raise ValueError(f"{t.date()} 행을 만들지 못했다")
     cols = feature_columns(table, feature_set)
     features.assert_no_lookahead(table[cols])
-    labels = make_labels(raw["ohlcv"]["Close"].dropna())  # t 이전 종가만으로 만든 정답(정답 기간이 t 전에 끝난 것만 생긴다)
+    labels = make_labels(raw["ohlcv"]["Close"].dropna(), n, config.HORIZONS[n])  # t 이전 종가만으로 만든 정답(정답 기간이 t 전에 끝난 것만 생긴다)
     start = block_start(t, table.index[table[cols].notna().all(axis=1)], valid_start)  # 과거 검증처럼 빈 값 없는 날로 재학습일을 정한다
     train = table[cols].dropna().join(labels[["label", "future_date"]], how="inner")
     train = train[train["future_date"] < start]
@@ -56,7 +61,7 @@ def numeric_signal(as_of: str | None = None, valid_start=None, feature_set: str 
     if row.isna().any(axis=None):
         raise ValueError(f"{t.date()} 특징에 빈 값이 있다: {list(row.columns[row.isna().iloc[0]])}")
     proba = pd.Series(model.predict_proba(row)[0], index=[CLASSES[i] for i in model.classes_]).reindex(CLASSES, fill_value=0.0)
-    return {"date": t, "model": feature_set, "signal": proba.idxmax(), "confidence": float(proba.max()),
+    return {"date": t, "model": model_name, "horizon": n, "signal": proba.idxmax(), "confidence": float(proba.max()),
             **{f"p_{c}": float(proba[c]) for c in CLASSES},
             "retrained_on": start, "train_rows": len(train), "train_last_future_date": train["future_date"].max(),
             "data_sources": sources}
@@ -160,6 +165,17 @@ def make_signal(as_of: str | None = None, with_news: bool = False) -> dict:
         extra.update(numeric_signal_label=extra["signal"], news_status="비교용 묶음은 뉴스 보정 안 함",
                      news_consensus=None, news_consensus_conf=None)
         save(extra)
+    for n in config.HORIZONS:  # 11일차 기간별 참고 신호(실패해도 운영 신호는 만든다). 시점 위반(AssertionError)은 그대로 멈춘다
+        if n == config.OPERATIONAL_HORIZON:
+            continue
+        try:
+            other = numeric_signal(as_of, horizon=n)
+        except (ValueError, KeyError) as e:
+            print(f"{n}거래일 신호 실패: {type(e).__name__}: {e}", flush=True)
+            continue
+        other.update(numeric_signal_label=other["signal"], news_status="기간별 신호는 뉴스 보정 안 함",
+                     news_consensus=None, news_consensus_conf=None)
+        save(other)
     try:  # 5일차 하락 위험 비교 조건(실패해도 운영 신호는 만든다). 시점 위반(AssertionError)은 그대로 멈춘다
         save(risk_signal(as_of))
     except (ValueError, FileNotFoundError, KeyError) as e:
@@ -209,9 +225,12 @@ def _previous_news(t: pd.Timestamp) -> tuple[float, float] | None:
 
 
 def model_config(feature_set: str) -> str:
-    """신호를 만든 모델 설정 요약(나중에 어떤 조건의 신호였는지 추적하려고 기록에 함께 남긴다)."""
+    """신호를 만든 모델 설정 요약(나중에 어떤 조건의 신호였는지 추적하려고 기록에 함께 남긴다). 기간별 모델(h<N>)은 운영 지표 묶음이다."""
+    h = tools.model_horizon(feature_set)
+    if h != config.OPERATIONAL_HORIZON:
+        feature_set = "base"
     n = len(feature_columns(pd.DataFrame(columns=config.FEATURE_SETS["candidate"]), feature_set)) if feature_set != config.LIVE_RISK_MODEL else len(config.FEATURE_SET_BASE)
-    return (f"지표 {feature_set}({n}개) · 정답 {config.LABEL_HORIZON_DAYS}거래일 ±{config.LABEL_THRESHOLD:.0%} · 재학습 "
+    return (f"지표 {feature_set}({n}개) · 정답 {h}거래일 ±{config.HORIZONS[h]:.1%} · 재학습 "
             f"{config.RETRAIN_FREQS[config.RETRAIN_FREQ]} · 학습 {(config.OPERATIONAL_TRAIN_FROM + '~(확장)') if config.OPERATIONAL_EXTENDED_HISTORY else (config.DATA_START + '~')}{'' if not config.TRAIN_WINDOW_YEARS else f'(최근 {config.TRAIN_WINDOW_YEARS}년)'} · "
             f"뉴스 {'보정' if config.NEWS_ADJUST_IN_SIGNAL else '참고용'} · 하락 {config.DOWN_ACTION_LABELS[config.DOWN_ACTION]}")
 

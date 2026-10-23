@@ -59,3 +59,17 @@ def test_다른_종목_참고_신호는_실패해도_줄로_남긴다(monkeypatc
     lines = daily_run.other_ticker_lines(pd.Timestamp("2026-10-21"))
     assert lines[0] == "수집 실패: ConnectionError"
     assert "SK하이닉스(000660): 상승" in lines[1] and "실패" in lines[2]
+
+
+def test_메일의_기간별_신호는_운영_기간을_빼고_한_줄씩(monkeypatch):
+    from src import config, tools
+    from src import daily_run as dr
+    calls = []
+
+    def fake(date, code, n):
+        calls.append(n)
+        return {"numeric": {"signal": "상승", "probabilities": {"상승": 0.5, "보합": 0.3, "하락": 0.2}}} if n != 20 else {"note": "없음"}
+    monkeypatch.setattr(tools, "signal_for", fake)
+    lines = dr.horizon_lines(pd.Timestamp("2026-10-23"))
+    assert config.OPERATIONAL_HORIZON not in calls and len(lines) == len(config.HORIZONS) - 1
+    assert lines[-1].endswith("신호 없음") and "상승 50%" in lines[0]

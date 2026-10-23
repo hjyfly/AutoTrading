@@ -77,7 +77,10 @@ def experiment_tab(code: str):
     name = config.MULTI_TICKERS[code][0]
     st.caption(f"**{name}** 기준(사이드바에서 종목을 바꾼다)."
                + ("" if code == MAIN else f" 운영 종목과 같은 설정(S0 단독, 지표 {len(config.FEATURE_SET_BASE)}개)으로 계산하며, 분야 알고리즘의 추가 지표·뉴스 조건·인버스 규칙은 이 종목에 없다."))
-    sub_report, sub_query, sub_features, sub_tickers = st.tabs([f"모니터링 리포트 · {name}", f"조건 조회 · {name}", f"지표 그룹 진단 · {name}", "종목 비교(전체)"])
+    sub_report, sub_query, sub_features, sub_tickers, sub_horizons = st.tabs([f"모니터링 리포트 · {name}", f"조건 조회 · {name}", f"지표 그룹 진단 · {name}",
+                                                                             "종목 비교(전체)", f"기간별 신호 · {config.MULTI_TICKERS[MAIN][0]}"])
+    with sub_horizons:
+        horizon_report_view()
     with sub_tickers:
         path = Path(config.TICKER_ANALYSIS_REPORT_PATH)
         if st.button("종목 비교 다시 계산 (1~2분, LLM 없음)"):
@@ -95,6 +98,23 @@ def experiment_tab(code: str):
         condition_query_view(code)
     with sub_features:
         feature_study_view(code)
+
+
+def horizon_report_view():
+    """11일차 기간별 신호 분석 리포트와 기간별 조건 모니터링·지표 그룹 진단 리포트(운영 종목만)."""
+    st.caption(f"{'·'.join(str(n) for n in config.HORIZONS)}거래일 신호를 같은 설정으로 비교한 **탐색 결과**와 장부 H1 ~ H4 판정(한 번만). 매매 기준은 "
+               f"{config.OPERATIONAL_HORIZON}거래일 신호다. 다시 계산: `python -m src.pipeline.experiment --horizons`(판정은 기록을 그대로 싣는다).")
+    path = Path(config.DAY11_REPORT_PATH)
+    labels = {n: f"{config.HORIZON_LABELS[n]}({n}거래일)" for n in config.HORIZONS}
+    n = st.selectbox("기간별 세부 리포트", list(config.HORIZONS), index=list(config.HORIZONS).index(config.OPERATIONAL_HORIZON), format_func=labels.get)
+    kind = st.radio("보기", ["기간 비교(전체)", "조건 모니터링", "지표 그룹 진단(검증)", "지표 그룹 진단(확장)"], horizontal=True)
+    target = {"기간 비교(전체)": path, "조건 모니터링": experiment.horizon_path(config.MONITOR_REPORT_PATH, n),
+              "지표 그룹 진단(검증)": experiment.horizon_path(config.FEATURE_STUDY_REPORT_PATH, n),
+              "지표 그룹 진단(확장)": experiment.horizon_path(config.FEATURE_STUDY_EXT_REPORT_PATH, n)}[kind]
+    if Path(target).exists():
+        st.markdown(Path(target).read_text(encoding="utf-8").replace("../../", ""))
+    else:
+        st.info(f"아직 리포트가 없다({target}).")
 
 
 def monitor_report_view(code: str):
@@ -420,6 +440,19 @@ with tab_data:
                            f"(위험 확률 {float(r['p_risk']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
             else:
                 st.caption(f"비교용 지표 묶음 `{model}`: **{r['signal']}** (확신도 {float(r['confidence']):.0%}) — 최종 신호가 아니며 앞으로의 성과로 비교 중")
+    if is_main:  # 11일차 기간별 참고 신호(매매 기준은 운영 기간)
+        rows = []
+        for n in config.HORIZONS:
+            h = sig if n == config.OPERATIONAL_HORIZON else tools.signal_for(str(as_of.date()), code, n)
+            x = h.get("numeric")
+            rows.append({"기간": f"{config.HORIZON_LABELS[n]}({n}거래일 ±{config.HORIZONS[n]:.1%})" + (" · 운영" if n == config.OPERATIONAL_HORIZON else ""),
+                         "신호": x["signal"] if x else "없음", "확신도": f"{x['confidence']:.0%}" if x else "",
+                         **({f"{c} 확률": f"{x['probabilities'][c]:.0%}" for c in ("상승", "보합", "하락")} if x else {}),
+                         "출처": (x.get("source") or "과거 검증 신호(워크포워드)") if x else ""})
+        with st.expander(f"기간별 참고 신호 ({'·'.join(str(n) for n in config.HORIZONS)}거래일)", expanded=True):
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            st.caption(f"모든 기간이 같은 지표·재학습 규칙이고 정답 기간·기준(±{config.LABEL_THRESHOLD:.0%} × √(N/{config.OPERATIONAL_HORIZON}))만 다르다. 매매 기준은 {config.OPERATIONAL_HORIZON}거래일 신호이고, "
+                       "다른 기간은 실시간 성적표로 판정 중인 참고 신호다(DAY11_PLAN.md, 리포트 day11_horizons.md).")
     if "note" in sig and (is_main or "numeric" not in sig):
         st.info(sig["note"])
 

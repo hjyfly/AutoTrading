@@ -65,6 +65,7 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
     if "candidate" in sig:
         c = sig["candidate"]
         lines += ["", f"■ 비교용 후보 모델(A+B+D): {c['signal']} (확신도 {c['confidence']:.0%}) — 최종 신호 아님"]
+    lines += ["", f"■ 기간별 참고 신호(11일차, 매매 기준은 {config.OPERATIONAL_HORIZON}거래일)"] + [f"  {x}" for x in horizon_lines(today)]
     scheduled = board_until is None  # 날짜를 지정한 재실행에서는 갱신·모니터링·다른 종목 신호·경보·계좌를 하지 않는다(그 날짜 뒤 정보가 섞이므로)
     board = scoreboard.build(board_until)
     lines += ["", "■ 실시간 성적표"] + [f"  {x}" for x in scoreboard.summary_lines(board)]
@@ -89,6 +90,23 @@ def compose(today: pd.Timestamp, out: dict, board_until: pd.Timestamp | None = N
         lines += ["", "■ 데이터 경고"] + [f"  {w}" for w in warnings]
     lines += ["", f"LLM 누적 비용 ${llm.total_cost():.2f} / 한도 ${config.COST_LIMIT_POC_USD:.0f}", "", DISCLAIMER]
     return subject, "\n".join(lines)
+
+
+def horizon_lines(today: pd.Timestamp) -> list[str]:
+    """운영 종목의 기간별(1·3·10·20거래일) 참고 신호 한 줄씩. 신호가 없으면 이유를 적는다."""
+    lines = []
+    for n in config.HORIZONS:
+        if n == config.OPERATIONAL_HORIZON:
+            continue
+        r = tools.signal_for(str(today.date()), None, n)
+        x = r.get("numeric")
+        label = f"{config.HORIZON_LABELS[n]}({n}거래일 ±{config.HORIZONS[n]:.1%})"
+        if x:
+            p = x["probabilities"]
+            lines.append(f"{label}: {x['signal']} (상승 {p['상승']:.0%} / 보합 {p['보합']:.0%} / 하락 {p['하락']:.0%})")
+        else:
+            lines.append(f"{label}: 신호 없음")
+    return lines
 
 
 def setup_log(today: pd.Timestamp) -> logging.Logger:

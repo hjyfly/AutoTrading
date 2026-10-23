@@ -14,11 +14,12 @@
 | 일차 결과 리포트 | `day<N>_<주제>.md` (주제는 영어 소문자 snake_case 한두 단어) | `day9_news.md` |
 | 상시 리포트 | `<종류>.md` — 종목마다 따로면 `<종류>_<종목코드>.md`(운영 종목은 코드 없이) | `experiments_monitor_000660.md` |
 | 구간 변형 | 종류 뒤 `_<구간>`(예: `_ext` 확장 구간), 종목 코드는 맨 끝 | `experiments_features_ext.md` |
+| 기간 변형(11일차) | 정답 기간이 운영 기간(5거래일)이 아니면 맨 끝에 `_h<N>`(N = 거래일). 순서: 종류 → 구간 → 종목 코드 → 기간 | `experiments_features_ext_h20.md` |
 | 일회성 조건 비교 | `experiments_<YYYYMMDD>_<HHMM>_<이름>[_<종목코드>].md` (명령줄 `--name`, 화면 저장은 이름 `ui`) | `experiments_20261022_1516_news_rules.md`(이름 예시) |
 | 데이터 출처 점검 | `data_probe_<YYYYMMDD>[_<범위>].md` | `data_probe_20261022_news.md` |
 | 장부 | `preregistration.md` 하나에 사전 등록과 판정을 이어 적는다(ID: 일차마다 글자 하나 + 번호, 예: P1·Q1·R1·V1·A1·M1) | — |
 | 데이터 원본 | `data/raw/<종류>/<이름>.parquet`, 확장 원본은 `<이름>_ext`, 다른 종목은 `data/raw/tickers/<종목코드>_<ohlcv\|flows>.parquet`·`sector_<etf>`·`kr_<지수>` | `data/raw/tickers/000660_ohlcv.parquet` |
-| 신호 표 | `data/processed/signals_<모델>.parquet`, 종목·알고리즘별은 `data/processed/sectors/signals_<알고리즘>_<종목코드>.parquet`, 실시간 기록은 `signals_live*.parquet` | `signals_S4_277810.parquet` |
+| 신호 표 | `data/processed/signals_<모델>.parquet`, 종목·알고리즘별은 `data/processed/sectors/signals_<알고리즘>_<종목코드>.parquet`, 기간별은 `data/processed/horizons/signals_numeric_h<N>[_ext].parquet`(재생성, git 제외), 실시간 기록은 `signals_live*.parquet`(기간별 모델 이름 `h<N>`) | `signals_S4_277810.parquet` |
 | 날짜별 기록 | `data/scores/<종류>/<YYYY-MM-DD>.json`(판단 기록 `traces`, 기사 피처 `features`) | `data/scores/features/2026-10-15.json` |
 | 화면용 표 | `data/processed/tickers/analysis/<표 이름>.parquet` (재생성 가능, git 제외) | `periods.parquet` |
 
@@ -35,6 +36,7 @@
 | [DAY4](../../DAY4_PLAN.md) · [DAY5](../../DAY5_PLAN.md) · [DAY6](../../DAY6_PLAN.md) | 과거 확장 검증 / 하락 위험 모델 / 한국투자증권 API |
 | [DAY7](../../DAY7_PLAN.md) · [DAY8](../../DAY8_PLAN.md) | 다종목 분석 / 분야별 알고리즘 |
 | [DAY9](../../DAY9_PLAN.md) · [DAY10](../../DAY10_PLAN.md) | 뉴스 신호 고도화 / 종목별 플랫폼·모듈화 |
+| [DAY11](../../DAY11_PLAN.md) | 기간별 신호(1·3·5·10·20거래일, 브랜치 `day11-multi-horizon`) |
 | [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) | 외부 뉴스 고도화 지시서(판단은 DAY9_PLAN.md 2절) |
 
 ## 3. 일차 결과 리포트
@@ -49,6 +51,7 @@
 | [day7_multi_ticker.md](day7_multi_ticker.md) | **판정** | 다종목 Q1 ~ Q3 (Q1·Q3 실패, Q2 채택 안 함) |
 | [day8_sector_models.md](day8_sector_models.md) | **판정** | 분야별 R1 ~ R3 (로봇 S4 만 채택) |
 | [day9_news.md](day9_news.md) | **판정** + 탐색 | 뉴스 V1 통과(약함)·V2·A1 불통과, 점수별 IC |
+| [day11_horizons.md](day11_horizons.md) | **판정** + 탐색 | 기간별 H1 ~ H4 판정, 기간마다 검증·확장·연도별·확신도·A·B·C·IC·두 매매 방식 (`python -m src.pipeline.experiment --horizons`, 판정은 기록을 다시 싣는다) |
 
 ## 4. 상시 리포트 (재생성)
 
@@ -63,6 +66,7 @@
 | [experiments_features.md](experiments_features.md) | 지표 그룹 진단 — 삼성전자 | `python -m src.pipeline.experiment --features` |
 | [experiments_features_ext.md](experiments_features_ext.md) | 지표 그룹 진단 — 삼성전자, 확장 구간 | `... --features --ext` |
 | [experiments_features_000660.md](experiments_features_000660.md) · [_012450](experiments_features_012450.md) · [_277810](experiments_features_277810.md) | 지표 그룹 진단 — 다른 종목 | `... --features --code <코드>` |
+| `experiments_monitor_h<N>.md` · `experiments_features_h<N>.md` · `experiments_features_ext_h<N>.md` (N = 1·3·10·20) | 조건 모니터링·지표 그룹 진단 — 삼성전자 기간별(11일차) | `... --monitor --horizon <N\|all>`, `... --features [--ext] --horizon <N\|all>` |
 
 모두 탐색이다(장부는 예외). 화면 "리포트·조건 비교"에서 사이드바 종목으로 같은 리포트를 보고 다시 계산할 수 있다.
 
