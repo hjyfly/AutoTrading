@@ -1,7 +1,7 @@
 # 산출물 목록과 네이밍 규칙
 
 > 작성 2026-10-23(10일차) · 기준 문서 [SERVICE.md](../../SERVICE.md) · 개발 규칙 [CLAUDE.md](../../CLAUDE.md)
-> 이 폴더(`evaluation/reports/`)의 리포트와 저장소 루트의 기획·계획 문서를 종류별로 정리한다. 새 산출물을 만들면 아래 규칙대로 이름을 짓고 이 목록에 한 줄 더한다.
+> 이 폴더(`evaluation/reports/`)의 리포트와 저장소 루트의 기획·계획 문서를 종류별로 정리한다. 남기는 기준: 판정 기록, 지금 상태를 보여 주는 상시 리포트, 결정의 근거가 된 점검 기록. 결론을 옮긴 일회성 스냅숏은 지운다(git 에 남는다). 새 산출물을 만들면 아래 규칙대로 이름을 짓고 이 목록에 한 줄 더한다.
 > **판정** = 사전 등록한 기준으로 한 번만 계산한 결과(바꾸지 않는다). **탐색** = 이미 본 구간을 다시 계산한 숫자(판정에 쓰지 않는다). **재생성** = 데이터가 늘면 다시 만드는 상시 리포트.
 
 ## 1. 네이밍 규칙
@@ -14,7 +14,7 @@
 | 일차 결과 리포트 | `day<N>_<주제>.md` (주제는 영어 소문자 snake_case 한두 단어) | `day9_news.md` |
 | 상시 리포트 | `<종류>.md` — 종목마다 따로면 `<종류>_<종목코드>.md`(운영 종목은 코드 없이) | `experiments_monitor_000660.md` |
 | 구간 변형 | 종류 뒤 `_<구간>`(예: `_ext` 확장 구간), 종목 코드는 맨 끝 | `experiments_features_ext.md` |
-| 일회성 조건 비교 | `experiments_<YYYYMMDD>_<HHMM>_<이름>[_<종목코드>].md` (명령줄 `--name`, 화면 저장은 이름 `ui`) | `experiments_20261022_1516_news_rules.md` |
+| 일회성 조건 비교 | `experiments_<YYYYMMDD>_<HHMM>_<이름>[_<종목코드>].md` (명령줄 `--name`, 화면 저장은 이름 `ui`) | `experiments_20261022_1516_news_rules.md`(이름 예시) |
 | 데이터 출처 점검 | `data_probe_<YYYYMMDD>[_<범위>].md` | `data_probe_20261022_news.md` |
 | 장부 | `preregistration.md` 하나에 사전 등록과 판정을 이어 적는다(ID: 일차마다 글자 하나 + 번호, 예: P1·Q1·R1·V1·A1·M1) | — |
 | 데이터 원본 | `data/raw/<종류>/<이름>.parquet`, 확장 원본은 `<이름>_ext`, 다른 종목은 `data/raw/tickers/<종목코드>_<ohlcv\|flows>.parquet`·`sector_<etf>`·`kr_<지수>` | `data/raw/tickers/000660_ohlcv.parquet` |
@@ -28,6 +28,7 @@
 
 | 문서 | 내용 |
 |---|---|
+| [README.md](../../README.md) | 시스템 소개·빠른 시작·종목 추가·폴더·문서 지도 |
 | [SERVICE.md](../../SERVICE.md) | 시스템 기획·성공 기준·검증 결과·운영 기능 전체(10일차에 SERVICE2.md 통합) |
 | [CLAUDE.md](../../CLAUDE.md) | 개발 규칙, 파일 역할, 하지 말 것 |
 | [DAY1](../../DAY1_PLAN.md) · [DAY2](../../DAY2_PLAN.md) · [DAY3](../../DAY3_PLAN.md) | 데이터 수집 / 뉴스 채점 / 모델 학습·과거 검증 |
@@ -67,14 +68,11 @@
 
 ## 5. 일회성 조건 비교 (탐색)
 
+`python -m src.pipeline.experiment --vary ... --name <이름>` 이나 화면 "보고서로 저장"으로 만들고, 이 표에 한 줄 더한다. 결론을 SERVICE.md 로 옮긴 뒤에는 지워도 된다(같은 명령으로 다시 만든다).
+
 | 리포트 | 비교한 것 |
 |---|---|
-| [experiments_20261022_1121_split.md](experiments_20261022_1121_split.md) | 분할 매매 |
-| [experiments_20261022_1412_ext_window.md](experiments_20261022_1412_ext_window.md) | 확장 구간 학습 창 |
-| [experiments_20261022_1516_news_rules.md](experiments_20261022_1516_news_rules.md) | 뉴스 보정 규칙 |
-| [experiments_20261022_1517_news_fields.md](experiments_20261022_1517_news_fields.md) | 뉴스 점수 종류(종합·분류별) |
-| [experiments_20261022_1517_news_veto.md](experiments_20261022_1517_news_veto.md) | 하락 위험 거부 |
-| [experiments_20261022_1518_news_off.md](experiments_20261022_1518_news_off.md) | 뉴스 끄기 |
+| (지금 없음) | 2026-10-22 의 6개(분할 매매·학습 창·뉴스 보정 규칙·점수 종류·하락 위험 거부·뉴스 끄기)는 결론을 SERVICE.md 11.3·11.5·12절로 옮기고 2026-10-23 정리했다. 원본은 git 커밋 `1008b79` 에서 볼 수 있다 |
 
 ## 6. 데이터 출처 점검
 
